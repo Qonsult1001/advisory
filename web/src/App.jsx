@@ -3598,6 +3598,27 @@ function AdminCenter() {
         </Field>
       </div>
 
+      <SubHead>Project memory — context every agent gets</SubHead>
+      <div style={{ ...s.card, padding: "20px 22px" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr", gap: 20, alignItems: "start" }}>
+          <Field label="Context format">
+            <select value={d.contextFormat || "said"} onChange={(e) => update({ contextFormat: e.target.value })} style={{ ...s.select, width: "100%" }}>
+              {(d.contextFormats || ["said", "md"]).map((x) => <option key={x} value={x}>{x === "said" ? ".said brain (semantic + symbols)" : ".md source map"}</option>)}
+            </select>
+          </Field>
+          <div style={{ fontSize: 12, color: C.sub, lineHeight: 1.6 }}>
+            {(d.contextFormat || "said") === "said"
+              ? <>The <b>.said brain</b> indexes the whole codebase (AST-aware) into a portable file agents query for
+                  full-project context — like Cursor. Built once on the next run; agents use <code style={s.code}>said ask/sym/grep</code>.
+                  It’s downloadable “memory as a service”.</>
+              : <>A plain <b>PROJECT_CONTEXT.md</b> map (file tree + structure). Lighter, human-readable, but no semantic/symbol search.</>}
+            <div style={{ marginTop: 8 }}>
+              <a href={`${API}/admin/context/download`} style={s.linkGreen} title="Download the current project brain">⬇ Download {(d.contextFormat || "said") === "said" ? "Advisory.said" : "PROJECT_CONTEXT.md"}</a>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <div style={{ marginTop: 20, display: "flex", gap: 10, alignItems: "center" }}>
         <button style={{ ...s.add, opacity: busy ? 0.6 : 1 }} disabled={busy} onClick={save}>{busy ? "Saving…" : "Save Administration settings"}</button>
         <span style={{ fontSize: 11.5, color: C.dim }}>Saved to the signed policy. Keys are stored server-side and never shown again.</span>

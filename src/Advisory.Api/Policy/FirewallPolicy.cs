@@ -288,6 +288,10 @@ public class AdminSettings
     public string Runtime { get; set; } = "docker";       // docker | podman | none
     // Database backing the platform (matches docker-compose default).
     public string Database { get; set; } = "sqlserver";   // sqlserver | postgres | sqlite
+    // How the project-context "memory" is built for agents:
+    //   said — the .said brain (AST-aware, semantic + symbol search via tools/said; queryable, downloadable)
+    //   md   — a plain PROJECT_CONTEXT.md source map
+    public string ContextFormat { get; set; } = "said";
 }
 
 /// <summary>Admin config for a built-in source type: its credential/endpoint and enabled state.</summary>

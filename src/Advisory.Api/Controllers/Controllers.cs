@@ -1535,10 +1535,12 @@ public class AdminController : ControllerBase
             memoryMb = ad.MemoryMb,
             runtime = ad.Runtime,
             database = ad.Database,
+            contextFormat = string.IsNullOrWhiteSpace(ad.ContextFormat) ? "said" : ad.ContextFormat,
             // option catalogs so the UI can render dropdowns without hardcoding
             standards = new[] { "anthropic", "openai", "cursor-cli", "claude-cli" },
             runtimes = new[] { "docker", "podman", "none" },
             databases = new[] { "sqlserver", "postgres", "sqlite" },
+            contextFormats = new[] { "said", "md" },
             taskKinds = new[] { "research", "planning", "execution", "documentation" },
         });
     }
@@ -1547,7 +1549,7 @@ public class AdminController : ControllerBase
         List<Advisory.Api.Policy.AiAgent>? Agents,
         Advisory.Api.Policy.TaskRouting? MutationRouting,
         Advisory.Api.Policy.TaskRouting? EvolutionRouting,
-        int? MemoryMb, string? Runtime, string? Database);
+        int? MemoryMb, string? Runtime, string? Database, string? ContextFormat);
 
     /// <summary>Save admin settings into the signed policy (admin only). A blank ApiKey on an agent
     /// keeps that agent's existing key (so the masked UI never wipes a stored secret).</summary>
@@ -1574,9 +1576,27 @@ public class AdminController : ControllerBase
         if (req.MemoryMb is { } m) ad.MemoryMb = Math.Max(0, m);
         if (!string.IsNullOrWhiteSpace(req.Runtime)) ad.Runtime = req.Runtime!;
         if (!string.IsNullOrWhiteSpace(req.Database)) ad.Database = req.Database!;
+        if (!string.IsNullOrWhiteSpace(req.ContextFormat)) ad.ContextFormat = req.ContextFormat!;
 
         await _policy.UpdateAsync(next, _user.Name);
         return Ok(new { saved = true, agents = ad.Agents.Count });
+    }
+
+    /// <summary>Download the current project-context "memory" — the .said brain or the .md map —
+    /// so it can be used as a portable artifact (said-memory-as-a-service). Served from the repo
+    /// mounted read-only at /workspace (falls back to the working dir).</summary>
+    [HttpGet("context/download")]
+    public ActionResult DownloadContext()
+    {
+        var fmt = _policy.Current.Admin.ContextFormat;
+        var name = string.Equals(fmt, "md", StringComparison.OrdinalIgnoreCase) ? "PROJECT_CONTEXT.md" : "Advisory.said";
+        foreach (var root in new[] { "/workspace", Directory.GetCurrentDirectory(), "." })
+        {
+            var p = Path.Combine(root, name);
+            if (System.IO.File.Exists(p))
+                return PhysicalFile(Path.GetFullPath(p), "application/octet-stream", name);
+        }
+        return NotFound(new { error = $"{name} not built yet — run a mutation cycle (the worker builds it once) or rebuild context." });
     }
 
     /// <summary>Resolved per-phase routing for the worker to consume: for a given cycle
