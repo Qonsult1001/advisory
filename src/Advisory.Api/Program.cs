@@ -119,6 +119,8 @@ else
     builder.Services.AddSingleton<IIntakeQueue, InMemoryQueue>();
 builder.Services.AddHostedService<IntakeConsumer>();
 builder.Services.AddSingleton<INexusClient, NexusClient>();
+builder.Services.AddHttpClient("github", c => c.Timeout = TimeSpan.FromSeconds(15));
+builder.Services.AddSingleton<IGitRepoClient, GitHubRepoClient>();
 builder.Services.AddHostedService<PromotionBridge>();
 
 builder.Services.AddCors(o => o.AddDefaultPolicy(p =>

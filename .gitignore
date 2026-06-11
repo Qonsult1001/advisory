@@ -34,12 +34,15 @@ tools/privacy-filter/node_modules/
 Thumbs.db
 .claude/
 
-# Track the evolution slash-command, ignore the rest of .claude runtime
+# Track the mutate/evolve skills + commands, ignore the rest of .claude runtime
 !.claude/
 !.claude/commands/
 !.claude/commands/**
+!.claude/skills/
+!.claude/skills/**
 .claude/*
 !.claude/commands
+!.claude/skills
 
 # Mutation queue (bind-mounted runtime data — request files dropped by the dashboard)
 .evolution-queue/
