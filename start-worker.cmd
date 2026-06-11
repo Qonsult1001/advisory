@@ -37,9 +37,11 @@ echo Leave this window open. Press Ctrl+C to stop the worker.
 echo.
 
 REM FORCE_RUN bypasses the hour-gate so a clicked ticket runs immediately.
-REM Use a NON-login shell (-c, not -lc) so a broken ~/.profile can't perturb the environment,
-REM and pin HOME to USERPROFILE so the claude CLI always finds your login at ~/.claude.
+REM IMPORTANT: do NOT set HOME to a Windows path. The cycle's `claude -p` runs inside WSL, where
+REM HOME='C:\Users\...' is a RELATIVE path — npm/claude then write their caches INTO the repo as a
+REM literal "C:\Users\Carter" tree, which the cycle commits (huge junk PRs). Let each shell use its
+REM native HOME; auth comes from CLAUDE_CODE_OAUTH_TOKEN in .env (sourced by the worker), not ~/.claude.
 set FORCE_RUN=true
-"%BASH%" -c "export HOME='%USERPROFILE%'; export ADVISORY_API='%ADVISORY_API%'; export FORCE_RUN=true; ./scripts/mutate-claude.sh --loop 10s"
+"%BASH%" -c "export ADVISORY_API='%ADVISORY_API%'; export FORCE_RUN=true; ./scripts/mutate-claude.sh --loop 10s"
 
 endlocal
