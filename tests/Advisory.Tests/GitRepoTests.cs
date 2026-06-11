@@ -92,6 +92,26 @@ public class GitRepoLinkTests
     }
 
     [Fact]
+    public async Task GitRepoLink_RejectsBareName()
+    {
+        // A bare name (no '/') must be rejected — the scan route needs owner/repo.
+        var client = NewClient();
+        var body = new { fullName = "test", url = "https://github.com/test" };
+        var resp = await client.PostAsJsonAsync("/api/scans/git-repositories", body);
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task GitRepoLink_RejectsMultiSegmentName()
+    {
+        // Three-segment names (org/repo/extra) must also be rejected.
+        var client = NewClient();
+        var body = new { fullName = "org/repo/extra", url = "https://github.com/org/repo/extra" };
+        var resp = await client.PostAsJsonAsync("/api/scans/git-repositories", body);
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    [Fact]
     public async Task GitRepositories_unlink_removes_repo()
     {
         var client = NewClient();
