@@ -515,9 +515,10 @@ public class ScansController : ControllerBase
 {
     private readonly INexusClient _nexus;
     private readonly Advisory.Api.Scan.ScanStore _scans;
-    private readonly IGitRepoClient _git;
-    public ScansController(INexusClient nexus, Advisory.Api.Scan.ScanStore scans, IGitRepoClient git)
-    { _nexus = nexus; _scans = scans; _git = git; }
+    private readonly IPolicyStore _policy;
+    private readonly ICurrentUser _user;
+    public ScansController(INexusClient nexus, Advisory.Api.Scan.ScanStore scans, IPolicyStore policy, ICurrentUser user)
+    { _nexus = nexus; _scans = scans; _policy = policy; _user = user; }
 
     [HttpGet("repositories")]
     public async Task<ActionResult> Repositories(CancellationToken ct)
@@ -528,16 +529,50 @@ public class ScansController : ControllerBase
     }
 
     /// <summary>
-    /// Git repositories under observation — powers the "Git Repositories" tab in Xray Scans List.
-    /// Requires GITHUB_OWNER (or falls back to the owner extracted from EVOLUTION_REPO).
-    /// When unconfigured returns { configured: false, repositories: [] } — never 404.
+    /// Git repositories manually linked for observation (control: SEC-SRC-01) — powers the
+    /// "Git Repositories" tab in Xray Scans List. Always returns configured:true; the list is
+    /// empty until an admin adds repos via POST. No external GitHub config required.
     /// </summary>
     [HttpGet("git-repositories")]
-    public async Task<ActionResult> GitRepositories(CancellationToken ct)
+    public ActionResult GitRepositories()
     {
-        if (!_git.IsConfigured) return Ok(new { configured = false, repositories = Array.Empty<object>() });
-        var repos = await _git.ListRepositoriesAsync(ct);
+        var repos = _policy.Current.LinkedGitRepos;
         return Ok(new { configured = true, count = repos.Count, repositories = repos });
+    }
+
+    public record LinkGitRepoRequest(string FullName, string Url, string? DefaultBranch, string? Visibility, string? Language);
+
+    /// <summary>Link a git repository for observation (Admin). Idempotent by FullName.</summary>
+    [HttpPost("git-repositories")]
+    [Authorize(Policy = Policies.CanAdmin)]
+    public async Task<ActionResult> LinkGitRepo([FromBody] LinkGitRepoRequest req, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(req.FullName) || string.IsNullOrWhiteSpace(req.Url))
+            return BadRequest(new { error = "fullName and url are required" });
+        var next = JsonSerializer.Deserialize<FirewallPolicy>(JsonSerializer.Serialize(_policy.Current))!;
+        if (next.LinkedGitRepos.Any(r => r.FullName.Equals(req.FullName, StringComparison.OrdinalIgnoreCase)))
+            return Ok(new { linked = true, already = true });
+        next.LinkedGitRepos.Add(new LinkedGitRepo
+        {
+            FullName = req.FullName,
+            Url = req.Url,
+            DefaultBranch = req.DefaultBranch ?? "main",
+            Visibility = req.Visibility ?? "private",
+            Language = req.Language,
+        });
+        await _policy.UpdateAsync(next, _user.Name);
+        return Ok(new { linked = true, count = next.LinkedGitRepos.Count });
+    }
+
+    /// <summary>Unlink a git repository (Admin). Uses a catch-all route so slashes in FullName are preserved.</summary>
+    [HttpDelete("git-repositories/{*fullName}")]
+    [Authorize(Policy = Policies.CanAdmin)]
+    public async Task<ActionResult> UnlinkGitRepo(string fullName, CancellationToken ct)
+    {
+        var next = JsonSerializer.Deserialize<FirewallPolicy>(JsonSerializer.Serialize(_policy.Current))!;
+        var removed = next.LinkedGitRepos.RemoveAll(r => r.FullName.Equals(fullName, StringComparison.OrdinalIgnoreCase));
+        if (removed > 0) await _policy.UpdateAsync(next, _user.Name);
+        return Ok(new { removed });
     }
 
     /// <summary>
