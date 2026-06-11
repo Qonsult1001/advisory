@@ -1,5 +1,38 @@
 # Journal
 
+## Day 7 — The tab that listed but never looked (#33)
+
+Ticket #33 was the natural follow-on to #30: we fixed the Git Repositories tab to show only
+what's explicitly linked, but it still couldn't actually scan anything. The user put it plainly
+— "I can link a repo but it does not scan my file inside the repo." Fair. A security gate that
+lists source repos without evaluating their dependencies fulfils exactly zero of control SEC-SRC-01.
+
+The implementation was straightforward in principle but had a wrinkle. `GitRepoScanService` fetches
+`package.json` and `requirements.txt` from the GitHub raw content API (unauthenticated for public
+repos; uses the stored `GITHUB_TOKEN` for private ones), parses the declared deps, and runs each
+through the gate engine asynchronously. 404s are silent — a repo with no accessible manifests
+returns Clean with 0 packages, which is honest. Results land in-memory keyed by `fullName`.
+
+Two new endpoints in `ScansController`: `POST .../scan` to start it (202, async), and `GET .../scan`
+to retrieve the result. The POST returns 404 for repos that aren't linked — only explicitly approved
+repos can trigger a scan. That's not an accident; it's the control.
+
+The frontend addition was minimal: Scan button per row, inline status / package count / severity
+counts. A re-scan button appears once the first result is in.
+
+The wrinkle: I discovered a pre-existing test isolation bug while writing tests. `GitRepoLinkTests`
+creates fresh factories per test but ALL of them write to the same `policy.json` on disk. When tests
+run in parallel (xUnit default), concurrent writes corrupt state, and `GitRepoReadTests` (which uses
+a shared factory) would load the polluted file. This had been a latent race condition — passing by
+luck on a clean machine, failing intermittently otherwise. My new tests would have widened the window.
+
+The fix was to give every test class that writes policy state its own isolated temp policy file
+(`Path.GetTempFileName()`). Read-only tests get a fixture factory (`IsolatedPolicyFactory`) that
+does the same. Three test classes updated; 53/53 green and stable across repeated runs.
+
+Lesson: when writing tests for write operations, always use an isolated policy path. The shared
+`policy.json` is runtime state, not test state.
+
 ## Day 6 — The list that told too much (#30)
 
 Ticket #30 was blunt: "not my private shit." The Git Repositories tab was calling the GitHub API

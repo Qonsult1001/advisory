@@ -1,48 +1,56 @@
-# Session Plan — Day 6 (2026-06-11)
+# Session Plan — Day 7 (2026-06-11)
 
-## Ticket #30 — Git Repositories Scans List: replace auto-listing with manual repo management
+## Ticket
+**#33 — Git Repo: Update with Scan capability**
+Users can link a repository in the Xray → Scans → Git Repositories tab but cannot scan the
+files inside it. The column shows no scan data and there is no "Scan" button.
 
-**Control mapping:** Data minimisation (NIST SSDF PO.2 / GDPR). The previous behaviour
-auto-listed ALL private GitHub repos for the configured owner, exposing an operator's full
-repo inventory to anyone with viewer access. The fix gives admins explicit control over
-which repos are under observation.
+## Impact × Urgency
+- **Impact: High** — the core value proposition of the Git Repositories tab is to observe
+  supply-chain risk inside source repos; a tab that only lists repos without scanning them
+  fulfils no security control.
+- **Urgency: Medium** — no regression (the tab was never scanning); new missing capability.
+- Priority: implement this session.
 
-**Impact:** High — private repo inventory exposed by default.
-**Urgency:** High — user explicitly reported the gap.
-**Score:** High × High → address this session.
+## Control mapping
+Control **SEC-SRC-01**: git repositories linked for observation must be scannable —
+meaning the gate must be able to evaluate their declared package dependencies against the
+same vuln sources it uses for Nexus artifacts. Absence of scan capability is a gap in this
+control.
 
-### Task 1: Update tests first
+## Task (one task, ticket #33)
 
-Update `tests/Advisory.Tests/GitRepoTests.cs`:
-- `GitRepositories_unconfigured_returns_empty_list` → now expects `configured: true, count: 0`
-  (endpoint is always functional; no external config required).
-- Add `GitRepositories_link_and_list` → POST a repo, GET returns it.
-- Add `GitRepositories_unlink` → POST then DELETE, GET returns empty list.
+### What
+Add "scan" capability to linked git repositories:
+1. **`GitRepoScanService`** (new, `src/Advisory.Api/Scan/GitRepoScanService.cs`):
+   - Fetches known manifest files from `raw.githubusercontent.com` for each repo
+     (package.json → npm, requirements.txt → PyPI; silently skips 404s).
+   - Parses declared dependencies and evaluates each via the gate engine.
+   - Stores results in-memory keyed by `fullName`. Updates asynchronously.
 
-### Task 2: Model — add `LinkedGitRepo` + `LinkedGitRepos` to `FirewallPolicy`
+2. **Two new endpoints** in `ScansController`:
+   - `POST /api/scans/git-repositories/{*fullName}/scan` → start a scan (202 Accepted).
+     Returns 404 if the repo is not linked.
+   - `GET /api/scans/git-repositories/{*fullName}/scan` → retrieve stored scan result.
+     Returns 404 if no scan has been run yet.
 
-Add `LinkedGitRepo` record to `FirewallPolicy.cs`. Add `List<LinkedGitRepo> LinkedGitRepos`
-property (empty default). Entries are persisted in the signed policy — changes are versioned
-and auditable.
+3. **Frontend** (`web/src/App.jsx`):
+   - Add `api.scanGitRepo` and `api.getGitRepoScan` to the API object.
+   - Add a "Scan" button per row in the Git Repositories table.
+   - Show scan status (Scanning / Done / Failed), packages found, and worst severity
+     inline on the row after a scan has been run.
 
-### Task 3: Backend — change GET, add POST/DELETE in `ScansController`
+### Test (proves the control works)
+New tests in `GitRepoTests.cs`:
+- `GitRepoScan_returns_404_when_repo_not_linked` — confirms the gate doesn't scan
+  repos that have not been explicitly linked (prevents scope creep).
+- `GitRepoScan_returns_202_for_linked_repo` — confirms start-scan is accepted.
+- `GitRepoScanResult_returns_200_after_scan_started` — confirms the result endpoint
+  returns a parseable response (any status) after a scan has been initiated.
 
-- `GET /api/scans/git-repositories` → return `policy.LinkedGitRepos` (always `configured:true`).
-  Remove dependency on `IGitRepoClient.IsConfigured`.
-- `POST /api/scans/git-repositories` (Admin) → link a new repo (FullName + Url required).
-  Idempotent by FullName.
-- `DELETE /api/scans/git-repositories/{*fullName}` (Admin) → unlink by FullName.
-
-### Task 4: Frontend — replace auto-list with manual add/remove UI
-
-- `GET /api/scans/git-repositories` response: `configured: true` always; no "GITHUB_OWNER unset" card.
-- "Link Repository" button opens a small inline form (FullName + URL fields).
-- Each row gains a Delete (unlink) icon that calls `DELETE /api/scans/git-repositories/{fullName}`.
-- Add `linkGitRepo` / `unlinkGitRepo` helpers to the API object.
-
-### Build verification
-```
-dotnet build src/Advisory.Api/Advisory.Api.csproj -c Release --nologo
-dotnet test tests/Advisory.Tests/Advisory.Tests.csproj --nologo
-npm --prefix web run build
-```
+### Smallest correct change
+- One new service file (~100 lines).
+- Two new controller actions appended to the existing `ScansController` (no new class).
+- Registration in Program.cs (one line).
+- Frontend additions to existing `api` object + table rows (~30 lines).
+- No changes to auth, policy signing, audit hash-chain, Dockerfiles, or CI.

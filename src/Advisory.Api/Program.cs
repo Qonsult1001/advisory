@@ -70,6 +70,7 @@ builder.Services.AddSingleton<IWormSink, FileWormSink>();
 builder.Services.AddSingleton<IAuditLog, AuditLog>();
 builder.Services.AddSingleton<IGroqClient, GroqClient>();
 builder.Services.AddSingleton<Advisory.Api.Scan.OnDemandScanService>();
+builder.Services.AddSingleton<Advisory.Api.Scan.GitRepoScanService>();
 builder.Services.AddSingleton<Advisory.Api.Catalog.ConsumedModelStore>();
 builder.Services.AddSingleton<Advisory.Api.Evolution.EvolutionService>();
 builder.Services.AddSingleton<Advisory.Api.Research.ResearchService>();

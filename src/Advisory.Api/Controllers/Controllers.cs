@@ -515,10 +515,12 @@ public class ScansController : ControllerBase
 {
     private readonly INexusClient _nexus;
     private readonly Advisory.Api.Scan.ScanStore _scans;
+    private readonly Advisory.Api.Scan.GitRepoScanService _gitScans;
     private readonly IPolicyStore _policy;
     private readonly ICurrentUser _user;
-    public ScansController(INexusClient nexus, Advisory.Api.Scan.ScanStore scans, IPolicyStore policy, ICurrentUser user)
-    { _nexus = nexus; _scans = scans; _policy = policy; _user = user; }
+    public ScansController(INexusClient nexus, Advisory.Api.Scan.ScanStore scans,
+        Advisory.Api.Scan.GitRepoScanService gitScans, IPolicyStore policy, ICurrentUser user)
+    { _nexus = nexus; _scans = scans; _gitScans = gitScans; _policy = policy; _user = user; }
 
     [HttpGet("repositories")]
     public async Task<ActionResult> Repositories(CancellationToken ct)
@@ -573,6 +575,32 @@ public class ScansController : ControllerBase
         var removed = next.LinkedGitRepos.RemoveAll(r => r.FullName.Equals(fullName, StringComparison.OrdinalIgnoreCase));
         if (removed > 0) await _policy.UpdateAsync(next, _user.Name);
         return Ok(new { removed });
+    }
+
+    /// <summary>
+    /// Start a scan of a linked git repository (control SEC-SRC-01): fetch manifest files
+    /// (package.json, requirements.txt) and evaluate declared dependencies through the gate.
+    /// Returns 404 if the repo is not linked — only explicitly approved repos are scanned.
+    /// The scan runs asynchronously; poll GET .../scan for results.
+    /// </summary>
+    [HttpPost("git-repositories/{owner}/{repo}/scan")]
+    public ActionResult StartGitRepoScan(string owner, string repo)
+    {
+        var fullName = $"{owner}/{repo}";
+        var linked = _policy.Current.LinkedGitRepos
+            .Any(r => r.FullName.Equals(fullName, StringComparison.OrdinalIgnoreCase));
+        if (!linked) return NotFound(new { error = $"Repository '{fullName}' is not linked. Link it first via POST /api/scans/git-repositories." });
+        var result = _gitScans.Start(fullName);
+        return Accepted(result);
+    }
+
+    /// <summary>Retrieve the stored scan result for a linked git repository. 404 if no scan has been run yet.</summary>
+    [HttpGet("git-repositories/{owner}/{repo}/scan")]
+    public ActionResult GetGitRepoScan(string owner, string repo)
+    {
+        var fullName = $"{owner}/{repo}";
+        var result = _gitScans.Get(fullName);
+        return result is null ? NotFound(new { error = "No scan result yet. Trigger one via POST .../scan." }) : Ok(result);
     }
 
     /// <summary>

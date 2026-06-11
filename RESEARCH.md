@@ -55,6 +55,12 @@ service registration, the class, the interface, and the "github" HttpClient regi
 Program.cs to clean up dead code. Low risk, but a compliance tidy: unused registered services
 are noise in a dependency audit.
 
+### [ ] Git repo scan: extend to NuGet, Go, Cargo manifests
+**Section:** Xray
+**Goal:** `GitRepoScanService` currently supports `package.json` (npm) and `requirements.txt`
+(PyPI). Extend to `*.csproj` / `Directory.Packages.props` (NuGet), `go.mod` (Go), and
+`Cargo.toml` (Cargo) so the gate evaluates the full declared dependency surface of linked repos.
+
 ### [ ] Reachability-aware vuln scoring vs competitors
 **Section:** Xray
 **Source:** Endor Labs / Snyk reachability; arXiv cs.CR call-graph reachability

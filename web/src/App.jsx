@@ -23,6 +23,8 @@ const api = {
   getGitRepos: () => fetch(`${API}/scans/git-repositories`).then((r) => r.json()),
   linkGitRepo: (body) => fetch(`${API}/scans/git-repositories`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).then((r) => r.json()),
   unlinkGitRepo: (fullName) => fetch(`${API}/scans/git-repositories/${encodeURIComponent(fullName)}`, { method: "DELETE" }).then((r) => r.json()),
+  scanGitRepo: (fullName) => fetch(`${API}/scans/git-repositories/${fullName}/scan`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).then((r) => r.json()),
+  getGitRepoScan: (fullName) => fetch(`${API}/scans/git-repositories/${fullName}/scan`).then((r) => r.status === 404 ? null : r.json()),
   getRepoArtifacts: (repo) => fetch(`${API}/scans/repository/${encodeURIComponent(repo)}/artifacts`).then((r) => r.json()),
   getArtifactScan: (repo, eco, name, version, rescan) => fetch(`${API}/scans/artifact?repo=${encodeURIComponent(repo)}&ecosystem=${eco}&name=${encodeURIComponent(name)}&version=${encodeURIComponent(version)}${rescan ? "&rescan=true" : ""}`).then((r) => r.json()),
   getQuarantine: () => fetch(`${API}/quarantine`).then((r) => r.json()),
@@ -1352,6 +1354,8 @@ function ScansRepos({ onOpen }) {
   const [sort, setSort] = useState({ key: "name", dir: 1 });
   const [linkForm, setLinkForm] = useState(null); // null=hidden, {}=open
   const [linkSaving, setLinkSaving] = useState(false);
+  const [scanResults, setScanResults] = useState({}); // fullName → scan result
+  const [scanning, setScanning] = useState({}); // fullName → bool
   useEffect(() => { api.getScans().then(setData).catch(() => setData({ configured: false, repositories: [] })).finally(() => setLoading(false)); }, []);
   useEffect(() => {
     if (sub !== "git" || gitData !== null) return;
@@ -1369,6 +1373,20 @@ function ScansRepos({ onOpen }) {
   };
   const handleUnlink = (fullName) => {
     api.unlinkGitRepo(fullName).then(() => refreshGit()).catch(() => {});
+  };
+  const handleScan = (fullName) => {
+    setScanning((s) => ({ ...s, [fullName]: true }));
+    api.scanGitRepo(fullName)
+      .then((r) => { setScanResults((prev) => ({ ...prev, [fullName]: r })); })
+      .catch(() => {})
+      .finally(() => {
+        // Poll once after a short delay to pick up fast completions.
+        setTimeout(() => {
+          api.getGitRepoScan(fullName).then((r) => {
+            if (r) setScanResults((prev) => ({ ...prev, [fullName]: r }));
+          }).catch(() => {}).finally(() => setScanning((s) => ({ ...s, [fullName]: false })));
+        }, 3000);
+      });
   };
   const subTabs = [["git", "Git Repositories"], ["repositories", "Repositories"], ["builds", "Builds"], ["bundles", "Release Bundles"], ["packages", "Packages"]];
   let repos = (data?.repositories || []);
@@ -1471,32 +1489,65 @@ function ScansRepos({ onOpen }) {
             </div>
           )}
           <table style={s.table}><thead><tr>
-            {["Repository", "Visibility", "Language", "Default Branch", "Linked At", ""].map((l) => (
+            {["Repository", "Visibility", "Language", "Default Branch", "Scan Status", "Packages", "Issues", "Linked At", ""].map((l) => (
               <th key={l} style={s.th}>{l}</th>
             ))}
           </tr></thead><tbody>
             {(gitData.repositories || []).length === 0 && (
-              <tr><td style={{ ...s.td, color: C.sub }} colSpan={6}>
+              <tr><td style={{ ...s.td, color: C.sub }} colSpan={9}>
                 No repositories linked. Use &ldquo;Link Repository&rdquo; to add one.
               </td></tr>
             )}
-            {(gitData.repositories || []).map((r) => (
-              <tr key={r.fullName} style={s.tr}>
-                <td style={{ ...s.td, fontWeight: 600 }}>
-                  <a href={r.url} target="_blank" rel="noopener noreferrer" style={{ color: C.accentDim, textDecoration: "none" }}>{r.fullName}</a>
-                </td>
-                <td style={{ ...s.td, color: C.sub, fontSize: 12.5 }}>{r.visibility}</td>
-                <td style={{ ...s.td, color: C.sub, fontSize: 12.5 }}>{r.language || "—"}</td>
-                <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11.5 }}>{r.defaultBranch}</td>
-                <td style={{ ...s.td, color: C.sub, fontSize: 11.5, whiteSpace: "nowrap" }}>{r.linkedAt ? new Date(r.linkedAt).toLocaleDateString() : "—"}</td>
-                <td style={s.td} onClick={(e) => e.stopPropagation()}>
-                  <button onClick={() => handleUnlink(r.fullName)} title="Unlink repository"
-                    style={{ background: "transparent", border: "none", color: C.sub, cursor: "pointer", fontSize: 14, padding: "2px 6px" }}>
-                    ✕
-                  </button>
-                </td>
-              </tr>
-            ))}
+            {(gitData.repositories || []).map((r) => {
+              const sr = scanResults[r.fullName];
+              const isScan = !!scanning[r.fullName];
+              const verdictColor = !sr ? C.sub : sr.verdict === "Vulnerable" ? C.block : sr.verdict === "Clean" ? C.allow : C.warn;
+              return (
+                <tr key={r.fullName} style={s.tr}>
+                  <td style={{ ...s.td, fontWeight: 600 }}>
+                    <a href={r.url} target="_blank" rel="noopener noreferrer" style={{ color: C.accentDim, textDecoration: "none" }}>{r.fullName}</a>
+                  </td>
+                  <td style={{ ...s.td, color: C.sub, fontSize: 12.5 }}>{r.visibility}</td>
+                  <td style={{ ...s.td, color: C.sub, fontSize: 12.5 }}>{r.language || "—"}</td>
+                  <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11.5 }}>{r.defaultBranch}</td>
+                  <td style={s.td}>
+                    {!sr && !isScan && (
+                      <button onClick={() => handleScan(r.fullName)}
+                        style={{ fontSize: 11.5, padding: "3px 10px", borderRadius: 5, border: `1px solid ${C.line}`, background: C.surface, color: C.sub, cursor: "pointer" }}>
+                        Scan
+                      </button>
+                    )}
+                    {isScan && !sr && <span style={{ fontSize: 11.5, color: C.sub }}>Scanning…</span>}
+                    {sr && (
+                      <span style={{ fontSize: 11.5, fontWeight: 600, color: verdictColor }}>
+                        {sr.status === "Scanning" ? "Scanning…" : sr.verdict}
+                      </span>
+                    )}
+                  </td>
+                  <td style={{ ...s.td, fontSize: 12 }}>{sr ? sr.packagesFound : "—"}</td>
+                  <td style={{ ...s.td, fontSize: 12 }}>
+                    {sr && sr.status === "Done"
+                      ? (sr.critical > 0 ? <span style={{ color: C.block, fontWeight: 700 }}>{sr.critical}C</span>
+                        : sr.high > 0 ? <span style={{ color: C.warn, fontWeight: 600 }}>{sr.high}H</span>
+                        : <span style={{ color: C.allow }}>0</span>)
+                      : "—"}
+                  </td>
+                  <td style={{ ...s.td, color: C.sub, fontSize: 11.5, whiteSpace: "nowrap" }}>{r.linkedAt ? new Date(r.linkedAt).toLocaleDateString() : "—"}</td>
+                  <td style={s.td} onClick={(e) => e.stopPropagation()}>
+                    {sr && sr.status !== "Scanning" && (
+                      <button onClick={() => handleScan(r.fullName)} title="Re-scan"
+                        style={{ background: "transparent", border: "none", color: C.sub, cursor: "pointer", fontSize: 12, padding: "2px 6px", marginRight: 2 }}>
+                        ↺
+                      </button>
+                    )}
+                    <button onClick={() => handleUnlink(r.fullName)} title="Unlink repository"
+                      style={{ background: "transparent", border: "none", color: C.sub, cursor: "pointer", fontSize: 14, padding: "2px 6px" }}>
+                      ✕
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
           </tbody></table>
         </div>
       )}
