@@ -1158,6 +1158,66 @@ public class EvolutionController : ControllerBase
 }
 
 /// <summary>
+/// Evolution (research): the forward-looking loop that studies the supply-chain security landscape
+/// (arXiv, NIST SSDF, SLSA, competitor controls) and files enhancement candidates by product section.
+/// It NEVER edits product code — approving a finding files a `mutation` ticket the bug-fix loop
+/// implements (PR-only). Runs weekly or via "Run research now".
+/// </summary>
+[ApiController]
+[Route("api/research")]
+[Authorize(Policy = Policies.CanViewer)]
+public class ResearchController : ControllerBase
+{
+    private readonly Advisory.Api.Research.ResearchService _svc;
+    public ResearchController(Advisory.Api.Research.ResearchService svc) { _svc = svc; }
+
+    [HttpGet("status")]
+    public ActionResult Status() => Ok(_svc.Status());
+
+    /// <summary>The research backlog grouped by product section (the dashboard's Evolution tab).</summary>
+    [HttpGet("findings")]
+    public ActionResult Findings()
+    {
+        var gaps = _svc.Gaps();
+        var bySection = Advisory.Api.Research.ResearchService.Sections.Select(sec => new
+        {
+            section = sec,
+            open = gaps.Where(g => g.Section == sec && !g.Closed).ToList(),
+            closed = gaps.Where(g => g.Section == sec && g.Closed).ToList(),
+        }).ToList();
+        return Ok(new
+        {
+            total = gaps.Count,
+            closed = gaps.Count(g => g.Closed),
+            open = gaps.Count(g => !g.Closed),
+            sections = bySection,
+        });
+    }
+
+    public record RunReq(string? Topic);
+
+    /// <summary>Queue a research run now (admin). Local /evolve loop drains it; writes RESEARCH.md only.</summary>
+    [HttpPost("run")]
+    [Authorize(Policy = Policies.CanAdmin)]
+    public async Task<ActionResult> Run([FromBody] RunReq? req, CancellationToken ct)
+    {
+        var (ok, detail) = await _svc.RunNowAsync(req?.Topic, ct);
+        return ok ? Accepted(new { status = "queued", detail }) : BadRequest(new { error = detail });
+    }
+
+    public record ApproveReq(string GapId);
+
+    /// <summary>Approve a finding (admin) → file a `mutation` ticket so the bug-fix loop can implement it.</summary>
+    [HttpPost("approve")]
+    [Authorize(Policy = Policies.CanAdmin)]
+    public async Task<ActionResult> Approve([FromBody] ApproveReq req, CancellationToken ct)
+    {
+        var (ok, detail, url) = await _svc.ApproveAsync(req.GapId, ct);
+        return ok ? Accepted(new { status = "filed", detail, url }) : BadRequest(new { error = detail });
+    }
+}
+
+/// <summary>
 /// On-Demand Scanning (JFrog parity): trigger an ad-hoc scan of any package through the real
 /// gate engine and watch the row go Scanning → Done with severity / issue / violation counts.
 /// </summary>

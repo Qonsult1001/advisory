@@ -71,6 +71,7 @@ builder.Services.AddSingleton<IGroqClient, GroqClient>();
 builder.Services.AddSingleton<Advisory.Api.Scan.OnDemandScanService>();
 builder.Services.AddSingleton<Advisory.Api.Catalog.ConsumedModelStore>();
 builder.Services.AddSingleton<Advisory.Api.Evolution.EvolutionService>();
+builder.Services.AddSingleton<Advisory.Api.Research.ResearchService>();
 builder.Services.AddSingleton<Advisory.Api.Catalog.AiCatalogService>();
 builder.Services.AddSingleton<Advisory.Api.Catalog.WeightVerifier>();
 builder.Services.AddSingleton<Advisory.Api.Catalog.VerificationJobService>();
