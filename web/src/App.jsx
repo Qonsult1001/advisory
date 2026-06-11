@@ -51,6 +51,7 @@ const api = {
   evoRuns: () => fetch(`${API}/evolution/runs`).then((r) => r.json()),
   evoRun: (id) => fetch(`${API}/evolution/run/${id}`).then((r) => r.json()),
   evolve: (ticket) => fetch(`${API}/evolution/evolve`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ticket }) }).then((r) => r.json()),
+  evoDecision: (id, decision, subIssue) => fetch(`${API}/evolution/run/${id}/decision`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ decision, subIssue }) }).then((r) => r.json()),
   researchStatus: () => fetch(`${API}/research/status`).then((r) => r.json()),
   researchFindings: () => fetch(`${API}/research/findings`).then((r) => r.json()),
   researchRun: (topic) => fetch(`${API}/research/run`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ topic }) }).then((r) => r.json()),
@@ -3417,8 +3418,9 @@ function AiCatalog({ initialTab = "registry", setTab: setNavTab }) {
 // ── Evolution — GitHub tickets drive automated PRs via the evolution engine (PR-only) ──
 const EVO_STATUS = {
   queued: { c: "#6e7479", t: "Queued" }, running: { c: "#1f7fd1", t: "Running" },
+  "awaiting-approval": { c: "#d99016", t: "Needs approval" },
   tests: { c: "#1f7fd1", t: "Testing" }, "pr-open": { c: "#40be46", t: "PR open" },
-  skipped: { c: "#6e7479", t: "No change" }, failed: { c: "#d63649", t: "Failed" },
+  skipped: { c: "#6e7479", t: "No change" }, failed: { c: "#d63649", t: "Failed" }, rejected: { c: "#d63649", t: "Rejected" },
 };
 // Live elapsed since a run was picked up by the worker (mm:ss).
 function elapsed(since) {
@@ -3604,6 +3606,37 @@ function AdminCenter() {
   );
 }
 
+// Interactive run control — the plan checkpoint. Shown when a run is awaiting-approval: the operator
+// reads the proposed plan and Approves, Rejects, or adds a sub-issue to refine before implementation.
+function ApprovalPanel({ run, onDecided }) {
+  const [busy, setBusy] = useState(null);
+  const [note, setNote] = useState("");
+  const decide = async (decision) => {
+    setBusy(decision);
+    await api.evoDecision(run.id, decision, note || null).catch(() => {});
+    setBusy(null); onDecided && onDecided();
+  };
+  return (
+    <div style={{ background: "#fffaf0", borderTop: `1px solid ${C.warn}`, borderBottom: `1px solid ${C.warn}`, padding: "16px 20px" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+        <span style={{ fontSize: 13, fontWeight: 700, color: C.warn }}>⏸ Plan needs your approval</span>
+        <span style={{ fontSize: 11.5, color: C.sub }}>#{run.ticket} · the engine paused before writing any code</span>
+      </div>
+      <pre style={{ ...s.codeBlock, maxHeight: 320, whiteSpace: "pre-wrap", margin: "0 0 12px", background: C.surface }}>{run.plan || "(no plan posted yet — waiting for the worker)"}</pre>
+      <Field label="Sub-issue / correction (optional — refine the plan before it implements)">
+        <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2}
+          placeholder="e.g. don't touch the gate; also add a test for the unconfigured case"
+          style={{ ...s.inputText, width: "100%", resize: "vertical", marginBottom: 10 }} />
+      </Field>
+      <div style={{ display: "flex", gap: 10 }}>
+        <button onClick={() => decide("approve")} disabled={busy} style={{ ...s.add, background: C.allow }}>{busy === "approve" ? "Approving…" : "✓ Approve & implement"}</button>
+        <button onClick={() => decide("refine")} disabled={busy || !note} style={{ ...s.add, background: C.info, opacity: note ? 1 : 0.5 }}>{busy === "refine" ? "Refining…" : "↺ Refine with note"}</button>
+        <button onClick={() => decide("reject")} disabled={busy} style={{ ...s.btnGhost, color: C.block, borderColor: C.block }}>{busy === "reject" ? "Rejecting…" : "✕ Reject"}</button>
+      </div>
+    </div>
+  );
+}
+
 function Evolution() {
   const [status, setStatus] = useState(null);
   const [tickets, setTickets] = useState(null);
@@ -3735,6 +3768,11 @@ function Evolution() {
                   <td style={s.td}>{r.prUrl ? <a href={r.prUrl} target="_blank" rel="noreferrer" style={s.linkGreen}>PR ↗</a> : "—"}</td>
                   <td style={{ ...s.td, color: C.sub, fontSize: 11 }}>{active ? elapsed(r.pickedUpAt || r.startedAt) : new Date(r.startedAt).toLocaleTimeString()}</td>
                 </tr>
+                {r.status === "awaiting-approval" && (
+                  <tr><td colSpan={7} style={{ padding: 0 }}>
+                    <ApprovalPanel run={r} onDecided={load} />
+                  </td></tr>
+                )}
                 {openRun === r.id && (
                   <tr><td colSpan={7} style={{ padding: "12px 18px", background: C.bg2 }}>
                     <pre style={{ ...s.codeBlock, maxHeight: 300, whiteSpace: "pre-wrap" }}>{r.log || "(no log)"}</pre>

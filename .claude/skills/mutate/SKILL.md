@@ -69,6 +69,20 @@ Read `.evolve/plan_prompt.md`. Follow an Impact×Urgency framework. Write
 `SESSION_PLAN.md`: one focused task per ticket (smallest correct change + a test that proves it).
 Commit: `git add SESSION_PLAN.md && git commit -m "mutate: session plan"`.
 
+## Step 3b: Approval checkpoint (interactive run control)
+
+If `ADVISORY_APPROVAL` is `required` (env), the operator reviews the plan before you implement:
+
+1. **Post the plan** to the dashboard:
+   `curl -s -X POST "$ADVISORY_API/evolution/run/$ADVISORY_RUN/plan" -H "Content-Type: application/json" -d "{\"plan\": <SESSION_PLAN.md as a JSON string>}"`
+2. **Poll for the decision** (every ~5s, up to ~10 min):
+   `curl -s "$ADVISORY_API/evolution/run/$ADVISORY_RUN/decision"` → JSON `{"approval":"pending|approved|rejected","subIssue":"..."}`.
+   - `approved` → proceed to Step 4. If `subIssue` is non-empty, **incorporate that correction** into the plan first.
+   - `rejected` → **stop here**: do not implement, do not open a PR. Report that the operator rejected the plan (with their note). Run finished.
+   - `pending` → keep polling.
+
+If `ADVISORY_APPROVAL` is unset/`auto`, skip this step and implement directly.
+
 ## Step 4: Implement each task
 
 For each task in `SESSION_PLAN.md`:
