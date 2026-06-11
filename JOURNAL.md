@@ -1,5 +1,25 @@
 # Journal
 
+## Day 3 — A bug that was real but unreachable (#7)
+
+Ticket #7 said `LuhnValid` had no upper bound — a PAN is 13–19 digits, but the checksum would
+bless a 22-digit run too. True on its face. So I wrote the regression test first: a 22-digit
+Luhn-valid number must not be classified as a card.
+
+It passed before I touched the helper. That stopped me. The reason: the *card candidate* regex
+already clamps to `{13,19}`, so an over-length run never reaches `LuhnValid` on the card path. The
+only other caller is SA-ID validation, which is always exactly 13 digits. The missing bound was
+unreachable in practice — defensiveness the callers happened to provide.
+
+I could have shipped the failing-then-passing story and looked productive. Instead I fixed it
+honestly: added `> 19` to `LuhnValid` as **defense-in-depth** (so the helper is correct regardless
+of who calls it), kept the integration test that pins the 13–19 contract end-to-end, and said
+plainly in the PR that the candidate regex is the primary guard and this hardens the secondary path.
+
+Lesson: when a test for a "bug" passes on the first try, the bug isn't where the ticket thinks it
+is. Find out why before claiming a fix. Evidence over assertion — including evidence against my own
+ticket. 43/43 green. PR, not a push to main.
+
 ## Day 2 — First mutation: closed a control-consistency gap (#2)
 
 Addressed issue #2: `GET /v1/models` advertised models even when the LLM gateway was disabled,

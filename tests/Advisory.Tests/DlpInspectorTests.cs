@@ -69,6 +69,15 @@ public class DlpInspectorTests
     }
 
     [Fact]
+    public async System.Threading.Tasks.Task Over_length_luhn_valid_run_is_not_a_card()
+    {
+        // #7: a 22-digit Luhn-valid number is OUTSIDE the 13-19 PAN range and must NOT be a card.
+        //     (1234567890123456789012 passes the Luhn checksum but is too long to be a card.)
+        var r = await new DlpInspector(new OfflineGroq(), new OfflinePf()).InspectAsync(Body("ledger entry 1234567890123456789012 posted"), All(true));
+        Assert.DoesNotContain(r.Findings, f => f.Category == DlpInspector.CARD);
+    }
+
+    [Fact]
     public async System.Threading.Tasks.Task Detects_email_and_aws_secret()
     {
         var r = await new DlpInspector(new OfflineGroq(), new OfflinePf()).InspectAsync(Body("email jane@bank.co.za key AKIAIOSFODNN7EXAMPLE"), All(true));

@@ -270,7 +270,10 @@ public class DlpInspector
     private static bool LuhnValid(string digits)
     {
         digits = Regex.Replace(digits, @"\D", "");
-        if (digits.Length < 13) return false;
+        // A PAN is 13-19 digits (ISO/IEC 7812). Reject anything outside that range so the checksum
+        // can never bless an over-/under-length run as a card — defense-in-depth even though the
+        // candidate regex ({13,19}) is the primary length guard. (#7)
+        if (digits.Length is < 13 or > 19) return false;
         int sum = 0; bool alt = false;
         for (int i = digits.Length - 1; i >= 0; i--)
         {
