@@ -8,12 +8,17 @@ tree-sitter) into `Advisory.said`, and agents query it with `ask` / `sym` / `gre
 `said.exe` is a ~44 MB compiled binary, so it's **gitignored**, not stored in the repo. Each machine
 builds it once. The generated `Advisory.said` brain is also gitignored (the worker rebuilds it).
 
-## Build it (one-time, needs Rust + the SAID-ECHO checkout)
+Two self-contained exes (encoder model baked in via `include_bytes!` — no DLLs, no side files):
+- `said.exe` — the CLI used by the worker to build/query the project brain.
+- `said-mcp.exe` — the stdio MCP server, so agents/IDEs can query the brain over MCP.
+
+## Build them (one-time, needs Rust + the SAID-ECHO checkout)
 
 ```cmd
-cargo build --release -p said-cli --features "code embed-model" ^
-  --manifest-path G:\development\SAID-ECHO\Cargo.toml
-copy /Y G:\development\SAID-ECHO\target\release\said.exe tools\said\said.exe
+cargo build --release -p said-cli --features "code embed-model" --manifest-path G:\development\SAID-ECHO\Cargo.toml
+cargo build --release -p said-mcp --features "code embed-model" --manifest-path G:\development\SAID-ECHO\Cargo.toml
+copy /Y G:\development\SAID-ECHO\target\release\said.exe     tools\said\said.exe
+copy /Y G:\development\SAID-ECHO\target\release\said-mcp.exe tools\said\said-mcp.exe
 ```
 
 The **`code`** feature is essential — it bakes in the tree-sitter grammars (C#, TS/JS, Python, Go,

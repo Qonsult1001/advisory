@@ -268,9 +268,20 @@ public class TaskRouting
 /// <summary>Global platform settings surfaced in the Administration view.</summary>
 public class AdminSettings
 {
-    public List<AiAgent> Agents { get; set; } = new();    // the AI agents the operator can pick from
-    public TaskRouting MutationRouting { get; set; } = new();
-    public TaskRouting EvolutionRouting { get; set; } = new();
+    // Ships with a working default: the local Claude Code CLI (the worker's own login — no key, no
+    // config). Operators can edit/add agents and route phases; out of the box everything runs on this.
+    public List<AiAgent> Agents { get; set; } = new()
+    {
+        new AiAgent { Id = "claude-cli", Name = "Claude Code (local CLI)", Standard = "claude-cli",
+            Model = "claude-opus-4-8", Enabled = true,
+            Persona = "You are Advisory's compliance-officer engineer. Map every change to a control, "
+                + "write the test first, keep the change minimal and PR-only, and never weaken a security control." },
+    };
+    // Default routing: every phase on the local Claude CLI, run sequentially. Operators retarget per phase.
+    public TaskRouting MutationRouting { get; set; } = new()
+    { Research = "claude-cli", Planning = "claude-cli", Execution = "claude-cli", Documentation = "claude-cli", Mode = "sequential" };
+    public TaskRouting EvolutionRouting { get; set; } = new()
+    { Research = "claude-cli", Planning = "claude-cli", Documentation = "claude-cli", Mode = "sequential" };
     // Memory budget the agents may use (MB); 0 => engine default.
     public int MemoryMb { get; set; } = 0;
     // Container/runtime the platform deploys + creates temp test environments on.
