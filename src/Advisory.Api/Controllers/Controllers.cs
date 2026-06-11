@@ -1479,3 +1479,108 @@ public class AiController : ControllerBase
         return sb.ToString();
     }
 }
+
+/// <summary>
+/// Admin Center: global platform configuration surfaced under the Administration view —
+/// the AI agents the operator can use (any provider/standard), per-task agent routing for the
+/// mutation/evolution loops, and memory + DB/runtime selection. Credentials are stored in the
+/// signed policy (self-hosted) and NEVER returned to the client — only whether a key is set.
+/// </summary>
+[ApiController]
+[Route("api/admin")]
+[Authorize(Policy = Policies.CanViewer)]
+public class AdminController : ControllerBase
+{
+    private readonly IPolicyStore _policy;
+    private readonly Advisory.Api.Auth.ICurrentUser _user;
+    public AdminController(IPolicyStore policy, Advisory.Api.Auth.ICurrentUser user) { _policy = policy; _user = user; }
+
+    static object MaskAgent(Advisory.Api.Policy.AiAgent a) => new
+    {
+        a.Id, a.Name, a.Standard, a.Model, a.Endpoint, a.CursorUser, a.Persona, a.Enabled,
+        hasKey = !string.IsNullOrWhiteSpace(a.ApiKey),   // persona is not secret; key never exposed
+    };
+
+    /// <summary>Current admin settings (keys masked). Powers the Administration view.</summary>
+    [HttpGet("settings")]
+    public ActionResult Get()
+    {
+        var ad = _policy.Current.Admin;
+        return Ok(new
+        {
+            agents = ad.Agents.Select(MaskAgent),
+            mutationRouting = ad.MutationRouting,
+            evolutionRouting = ad.EvolutionRouting,
+            memoryMb = ad.MemoryMb,
+            runtime = ad.Runtime,
+            database = ad.Database,
+            // option catalogs so the UI can render dropdowns without hardcoding
+            standards = new[] { "anthropic", "openai", "cursor-cli", "claude-cli" },
+            runtimes = new[] { "docker", "podman", "none" },
+            databases = new[] { "sqlserver", "postgres", "sqlite" },
+            taskKinds = new[] { "research", "planning", "execution", "documentation" },
+        });
+    }
+
+    public record AdminUpdate(
+        List<Advisory.Api.Policy.AiAgent>? Agents,
+        Advisory.Api.Policy.TaskRouting? MutationRouting,
+        Advisory.Api.Policy.TaskRouting? EvolutionRouting,
+        int? MemoryMb, string? Runtime, string? Database);
+
+    /// <summary>Save admin settings into the signed policy (admin only). A blank ApiKey on an agent
+    /// keeps that agent's existing key (so the masked UI never wipes a stored secret).</summary>
+    [HttpPut("settings")]
+    [Authorize(Policy = Policies.CanAdmin)]
+    public async Task<ActionResult> Save([FromBody] AdminUpdate req, CancellationToken ct)
+    {
+        var json = JsonSerializer.Serialize(_policy.Current);
+        var next = JsonSerializer.Deserialize<FirewallPolicy>(json)!;
+        var ad = next.Admin;
+
+        if (req.Agents is not null)
+        {
+            var existing = ad.Agents.ToDictionary(x => x.Id, x => x.ApiKey);
+            foreach (var a in req.Agents)
+            {
+                // preserve a stored key when the client sends it blank (it only ever received hasKey)
+                if (string.IsNullOrWhiteSpace(a.ApiKey) && existing.TryGetValue(a.Id, out var k)) a.ApiKey = k;
+            }
+            ad.Agents = req.Agents;
+        }
+        if (req.MutationRouting is not null) ad.MutationRouting = req.MutationRouting;
+        if (req.EvolutionRouting is not null) ad.EvolutionRouting = req.EvolutionRouting;
+        if (req.MemoryMb is { } m) ad.MemoryMb = Math.Max(0, m);
+        if (!string.IsNullOrWhiteSpace(req.Runtime)) ad.Runtime = req.Runtime!;
+        if (!string.IsNullOrWhiteSpace(req.Database)) ad.Database = req.Database!;
+
+        await _policy.UpdateAsync(next, _user.Name);
+        return Ok(new { saved = true, agents = ad.Agents.Count });
+    }
+
+    /// <summary>Resolved per-phase routing for the worker to consume: for a given cycle
+    /// ("mutation"|"evolution") return each phase → the full agent spec (standard/model/endpoint/
+    /// cursorUser; key still masked) plus the run mode (sequential|parallel). The local worker reads
+    /// this to dispatch research/planning/execution/documentation to the right agent.</summary>
+    [HttpGet("routing/{cycle}")]
+    public ActionResult Routing(string cycle)
+    {
+        var ad = _policy.Current.Admin;
+        var r = cycle?.ToLowerInvariant() == "evolution" ? ad.EvolutionRouting : ad.MutationRouting;
+        object? Resolve(string? id)
+        {
+            if (string.IsNullOrWhiteSpace(id)) return null;
+            var a = ad.Agents.FirstOrDefault(x => x.Id == id && x.Enabled);
+            return a is null ? null : new { a.Id, a.Name, a.Standard, a.Model, a.Endpoint, a.CursorUser, a.Persona, hasKey = !string.IsNullOrWhiteSpace(a.ApiKey) };
+        }
+        return Ok(new
+        {
+            cycle = cycle?.ToLowerInvariant() ?? "mutation",
+            mode = string.IsNullOrWhiteSpace(r.Mode) ? "sequential" : r.Mode,
+            research = Resolve(r.Research),
+            planning = Resolve(r.Planning),
+            execution = Resolve(r.Execution),
+            documentation = Resolve(r.Documentation),
+        });
+    }
+}

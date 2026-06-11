@@ -53,3 +53,10 @@ data/
 C:*
 web/C:*
 *Carter*
+
+# Generated project-context brain/map (rebuilt by the worker; not source)
+Advisory.said
+PROJECT_CONTEXT.md
+
+# said.exe is a 44MB compiled binary — build it locally, do not commit (see tools/said/README.md)
+tools/said/said.exe

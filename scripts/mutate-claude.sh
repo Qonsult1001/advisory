@@ -78,6 +78,36 @@ HB_PID=""
 start_heartbeat() { ( while true; do api_post "evolution/worker/ping" '{}'; sleep 30; done ) & HB_PID=$!; }
 stop_heartbeat()  { [ -n "$HB_PID" ] && kill "$HB_PID" 2>/dev/null; HB_PID=""; }
 trap 'stop_heartbeat' EXIT
+
+# PROJECT CONTEXT (Cursor-style full-project awareness for whichever agent runs).
+# Format: .said brain (preferred — semantic + symbol search via tools/said) or a plain .md map.
+# Built ONCE if absent; pass FORCE_CONTEXT=true (or the Admin "Rebuild context" hits this) to redo.
+SAID_BIN="./tools/said/said.exe"
+CONTEXT_FORMAT="${CONTEXT_FORMAT:-said}"
+build_context() {
+  if [ "$CONTEXT_FORMAT" = "said" ] && [ -x "$SAID_BIN" ]; then
+    if [ ! -f Advisory.said ] || [ "${FORCE_CONTEXT:-}" = "true" ]; then
+      echo "[$(date '+%F %T')] building project context (.said brain)…"
+      [ "${FORCE_CONTEXT:-}" = "true" ] && rm -f Advisory.said 2>/dev/null
+      "$SAID_BIN" init >/dev/null 2>&1 || true
+      "$SAID_BIN" add --dir src >/dev/null 2>&1 || true
+      "$SAID_BIN" add --dir web/src >/dev/null 2>&1 || true
+      "$SAID_BIN" add --dir tests >/dev/null 2>&1 || true
+    fi
+  else
+    # Markdown fallback: a file tree + per-file head, built once.
+    if [ ! -f PROJECT_CONTEXT.md ] || [ "${FORCE_CONTEXT:-}" = "true" ]; then
+      echo "[$(date '+%F %T')] building project context (PROJECT_CONTEXT.md)…"
+      {
+        echo "# Project Context — Advisory"; echo
+        echo "Auto-generated map of the codebase for agent context. Regenerate with FORCE_CONTEXT=true."; echo
+        echo "## Source tree"; echo '```'
+        git ls-files src web/src tests 2>/dev/null | head -400
+        echo '```'
+      } > PROJECT_CONTEXT.md 2>/dev/null || true
+    fi
+  fi
+}
 progress() {   # progress <stage> [status] [prUrl] [logline]
   [ -n "$CUR_RUN" ] || return 0
   local stage="$1" status="${2:-}" pr="${3:-}" log="${4:-}"
@@ -178,6 +208,21 @@ run_cycle() {
 
   # PRs that already existed before this run — so we only claim a PR the cycle actually created.
   local before; before="$(gh pr list --state open --json number --jq '[.[].number]|join(",")' 2>/dev/null || true)"
+
+  # PROJECT CONTEXT — give every agent full-codebase awareness (like Cursor). Build it ONCE if
+  # missing; reuse thereafter (set CONTEXT_FORMAT=said|md, default said). The /mutate skill reads it.
+  build_context
+
+  # EPIC C — per-task agent routing. Fetch the operator's routing (which agent runs research /
+  # planning / execution / documentation, and whether sequentially or in parallel) and drop it where
+  # the /mutate skill reads it, so each phase dispatches to its assigned agent.
+  local routing; routing="$(curl -s -m 5 "$API/admin/routing/mutation" 2>/dev/null || echo '{}')"
+  printf '%s\n' "$routing" > .evolve/routing.json 2>/dev/null || true
+  if printf '%s' "$routing" | grep -q '"name"'; then
+    local mode; mode="$(printf '%s' "$routing" | grep -oE '"mode":"[a-z]+"' | head -1 | cut -d'"' -f4)"
+    progress "plan" "running" "" "routing loaded (${mode:-sequential}) — see .evolve/routing.json"
+    echo "[$(date '+%F %T')] task routing: ${routing}"
+  fi
 
   progress "plan" "running" "" "evolve: planning + implementing the fix"
   # The evolve engine (Claude Code) runs the /mutate skill: plan, write a failing test, implement,
