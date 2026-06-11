@@ -1,0 +1,18 @@
+0 verbose cli /usr/bin/node /usr/bin/npm
+1 info using npm@10.8.2
+2 info using node@v20.19.4
+3 silly config load:file:/usr/lib/node_modules/npm/npmrc
+4 silly config load:file:/mnt/g/development/Advisory/web/.npmrc
+5 silly config load:file:/mnt/g/development/Advisory/web/C:\Users\Carter/.npmrc
+6 silly config load:file:/usr/etc/npmrc
+7 verbose title npm run build
+8 verbose argv "run" "build"
+9 verbose logfile logs-max:10 dir:/mnt/g/development/Advisory/web/C:\Users\Carter/.npm/_logs/2026-06-11T13_53_04_259Z-
+10 verbose logfile /mnt/g/development/Advisory/web/C:\Users\Carter/.npm/_logs/2026-06-11T13_53_04_259Z-debug-0.log
+11 silly logfile done cleaning log files
+12 verbose cwd /mnt/g/development/Advisory/web
+13 verbose os Linux 5.15.167.4-microsoft-standard-WSL2
+14 verbose node v20.19.4
+15 verbose npm  v10.8.2
+16 verbose exit 0
+17 info ok

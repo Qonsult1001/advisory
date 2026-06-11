@@ -1,0 +1,16 @@
+0 verbose cli /usr/bin/node /usr/bin/npm
+1 info using npm@10.8.2
+2 info using node@v20.19.4
+3 silly config load:file:/usr/lib/node_modules/npm/npmrc
+4 silly config load:file:/mnt/g/development/Advisory/C:\Users\Carter/.npmrc
+5 silly config load:file:/usr/etc/npmrc
+6 verbose title npm root
+7 verbose argv "root" "--global"
+8 verbose logfile logs-max:10 dir:/mnt/g/development/Advisory/C:\Users\Carter/.npm/_logs/2026-06-11T13_45_55_923Z-
+9 verbose logfile /mnt/g/development/Advisory/C:\Users\Carter/.npm/_logs/2026-06-11T13_45_55_923Z-debug-0.log
+10 verbose cwd /mnt/g/development/Advisory
+11 verbose os Linux 5.15.167.4-microsoft-standard-WSL2
+12 verbose node v20.19.4
+13 verbose npm  v10.8.2
+14 verbose exit 0
+15 info ok

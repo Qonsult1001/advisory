@@ -1,0 +1,36 @@
+0 verbose cli /usr/bin/node /usr/bin/npm
+1 info using npm@10.8.2
+2 info using node@v20.19.4
+3 silly config load:file:/usr/lib/node_modules/npm/npmrc
+4 silly config load:file:/mnt/g/development/Advisory/web/web/.npmrc
+5 silly config load:file:/mnt/g/development/Advisory/web/C:\Users\Carter/.npmrc
+6 silly config load:file:/mnt/g/development/Advisory/web/web/etc/npmrc
+7 verbose title npm run build
+8 verbose argv "--prefix" "web" "run" "build"
+9 verbose logfile logs-max:10 dir:/mnt/g/development/Advisory/web/C:\Users\Carter/.npm/_logs/2026-06-11T13_51_06_909Z-
+10 verbose logfile /mnt/g/development/Advisory/web/C:\Users\Carter/.npm/_logs/2026-06-11T13_51_06_909Z-debug-0.log
+11 silly logfile done cleaning log files
+12 verbose stack Error: Could not read package.json: Error: ENOENT: no such file or directory, open '/mnt/g/development/Advisory/web/web/package.json'
+12 verbose stack     at async open (node:internal/fs/promises:639:25)
+12 verbose stack     at async readFile (node:internal/fs/promises:1246:14)
+12 verbose stack     at async read (/usr/lib/node_modules/npm/node_modules/@npmcli/package-json/lib/read-package.js:9:18)
+12 verbose stack     at async PackageJson.load (/usr/lib/node_modules/npm/node_modules/@npmcli/package-json/lib/index.js:130:31)
+12 verbose stack     at async PackageJson.normalize (/usr/lib/node_modules/npm/node_modules/@npmcli/package-json/lib/index.js:116:5)
+12 verbose stack     at async #run (/usr/lib/node_modules/npm/lib/commands/run-script.js:85:13)
+12 verbose stack     at async RunScript.exec (/usr/lib/node_modules/npm/lib/commands/run-script.js:39:7)
+12 verbose stack     at async Npm.exec (/usr/lib/node_modules/npm/lib/npm.js:207:9)
+12 verbose stack     at async module.exports (/usr/lib/node_modules/npm/lib/cli/entry.js:74:5)
+13 error code ENOENT
+14 error syscall open
+15 error path /mnt/g/development/Advisory/web/web/package.json
+16 error errno -2
+17 error enoent Could not read package.json: Error: ENOENT: no such file or directory, open '/mnt/g/development/Advisory/web/web/package.json'
+18 error enoent This is related to npm not being able to find a file.
+18 error enoent
+19 verbose cwd /mnt/g/development/Advisory/web
+20 verbose os Linux 5.15.167.4-microsoft-standard-WSL2
+21 verbose node v20.19.4
+22 verbose npm  v10.8.2
+23 verbose exit -2
+24 verbose code -2
+25 error A complete log of this run can be found in: /mnt/g/development/Advisory/web/C:\Users\Carter/.npm/_logs/2026-06-11T13_51_06_909Z-debug-0.log
