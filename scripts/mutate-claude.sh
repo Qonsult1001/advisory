@@ -70,6 +70,14 @@ fi
 # ---- progress reporting to the dashboard (best-effort; never fails the cycle) ----
 api_post() { curl -s -m 5 -X POST "$API/$1" -H "Content-Type: application/json" -d "$2" >/dev/null 2>&1 || true; }
 heartbeat() { api_post "evolution/worker/ping" '{}'; }
+
+# BACKGROUND heartbeat: a /mutate cycle blocks for minutes inside `claude`, during which the worker
+# can't ping — so the dashboard flipped to OFFLINE mid-run (the worker can't do two things at once).
+# Fix: fork a subshell that pings every 30s and keep its PID so we can stop it when the cycle ends.
+HB_PID=""
+start_heartbeat() { ( while true; do api_post "evolution/worker/ping" '{}'; sleep 30; done ) & HB_PID=$!; }
+stop_heartbeat()  { [ -n "$HB_PID" ] && kill "$HB_PID" 2>/dev/null; HB_PID=""; }
+trap 'stop_heartbeat' EXIT
 progress() {   # progress <stage> [status] [prUrl] [logline]
   [ -n "$CUR_RUN" ] || return 0
   local stage="$1" status="${2:-}" pr="${3:-}" log="${4:-}"
@@ -158,6 +166,7 @@ claude_ready() {
 }
 
 run_cycle() {
+  start_heartbeat   # keep pinging in the background so the dashboard stays "online" through the long run
   progress "setup" "running" "" "worker picked up the ticket"
   echo "[$(date '+%F %T')] /mutate cycle start (run=${CUR_RUN:-?})"
 
@@ -229,6 +238,7 @@ run_once() {
   heartbeat
   if drain_queue; then
     run_cycle
+    stop_heartbeat   # cycle done — back to the foreground per-tick heartbeat
   else
     echo "[$(date '+%F %T')] queue empty — nothing to do (worker online)"
   fi
