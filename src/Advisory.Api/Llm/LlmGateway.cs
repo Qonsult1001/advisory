@@ -187,6 +187,7 @@ public class LlmGatewayController : ControllerBase
             ScanPii = p.ScanPii, ScanCards = p.ScanCards, ScanSecrets = p.ScanSecrets, ScanCode = p.ScanCode,
             BlockPii = p.BlockPii, BlockCards = p.BlockCards, BlockSecrets = p.BlockSecrets, BlockCode = p.BlockCode,
             UseAi = p.UseAiDlp, UsePrivacyFilter = p.UsePrivacyFilter,
+            CustomRules = p.CustomDlpRules.Where(r => r.Enabled).Select(r => (r.Name, r.Pattern, r.Block)).ToList(),
         };
         var dlp = await _dlp.InspectAsync(body, dlpCfg, ct);
         rec.Dlp = dlp.Findings;

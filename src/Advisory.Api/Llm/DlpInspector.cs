@@ -125,6 +125,7 @@ public class DlpInspector
         // text never leaves the network). FALLBACK: the Groq classifier. The deterministic regex/Luhn
         // layer above always runs regardless, so DLP is never fully off.
         var pfUsed = false;
+        var pfSpans = new List<(string Sample, string Rule)>();  // exact strings PF flagged, for redaction
         if (cfg.UsePrivacyFilter && cfg.ScanPii && _pf.Configured)
         {
             try
@@ -133,6 +134,8 @@ public class DlpInspector
                 if (pf.Ok)
                 {
                     pfUsed = true;
+                    foreach (var e in pf.Entities)
+                        if (!string.IsNullOrWhiteSpace(e.Sample)) pfSpans.Add((e.Sample, e.Rule));
                     foreach (var grp in pf.Entities.GroupBy(e => (e.Category, e.Rule)))
                     {
                         var cat = grp.Key.Category == "Secret" ? SECRET : grp.Key.Rule == "URL" || grp.Key.Rule == "DATE" ? PII : grp.Key.Category;
@@ -170,15 +173,31 @@ public class DlpInspector
             catch { /* AI is best-effort; deterministic layer already ran */ }
         }
 
-        // Block when any ENABLED category that the policy treats as blocking has a finding.
-        var blocking = findings.Where(f => cfg.CategoryBlocks(f.Category)).ToList();
-        var block = blocking.Count > 0;
-        var reason = block
-            ? string.Join("; ", blocking.GroupBy(b => b.Category).Select(g => $"{g.Key} ({string.Join(",", g.Select(x => x.Rule).Distinct())})"))
-            : null;
+        // ---- Custom admin-defined rules (org-specific patterns) ----
+        var customBlocking = new List<string>();
+        foreach (var (name, pattern, ruleBlocks) in cfg.CustomRules)
+        {
+            if (string.IsNullOrWhiteSpace(pattern)) continue;
+            try
+            {
+                var re = new Regex(pattern, RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(200));
+                var matches = re.Matches(text);
+                if (matches.Count == 0) continue;
+                findings.Add(new DlpFinding("Custom", name, ruleBlocks ? "High" : "Medium", matches.Count, Mask(matches[0].Value), "custom"));
+                if (ruleBlocks) customBlocking.Add(name);
+            }
+            catch { /* a bad/timeout regex is ignored, never crashes the gateway */ }
+        }
+
+        // Block when any ENABLED built-in category, or a blocking custom rule, has a finding.
+        var blocking = findings.Where(f => f.Category != "Custom" && cfg.CategoryBlocks(f.Category)).ToList();
+        var block = blocking.Count > 0 || customBlocking.Count > 0;
+        var parts = blocking.GroupBy(b => b.Category).Select(g => $"{g.Key} ({string.Join(",", g.Select(x => x.Rule).Distinct())})").ToList();
+        if (customBlocking.Count > 0) parts.Add($"Custom ({string.Join(",", customBlocking.Distinct())})");
+        var reason = block ? string.Join("; ", parts) : null;
 
         var original = text.Length > 2000 ? text[..2000] + "…" : text;
-        return new DlpResult(findings, Redact(text, findings), original, block, reason);
+        return new DlpResult(findings, Redact(text, findings, pfSpans, cfg.CustomRules), original, block, reason);
     }
 
     // ---- AI classifier ----
@@ -268,23 +287,42 @@ public class DlpInspector
         return s[..2] + new string('•', Math.Min(8, s.Length - 4)) + s[^2..];
     }
 
-    /// <summary>Redacted preview: replace every detected value so the UI shows context, never the secret.</summary>
-    private static string Redact(string text, List<DlpFinding> findings)
+    /// <summary>Redacted preview: replace EVERY detected value so the redacted view never leaks PII —
+    /// regex/Luhn patterns, the AI Privacy Filter's exact spans (names, addresses, account numbers),
+    /// payment cards, and CVV. This is the text the audit log stores as "what would leave".</summary>
+    private static string Redact(string text, List<DlpFinding> findings, List<(string Sample, string Rule)>? pfSpans = null,
+        List<(string Name, string Pattern, bool Block)>? customRules = null)
     {
         var preview = text.Length > 2000 ? text[..2000] + "…" : text;
-        // Cards first (before PHONE eats the digits), matching raw and spaced/dashed forms. When the
-        // text has card context, redact every 13-19 digit run (Luhn-invalid included); otherwise only
-        // Luhn-valid ones — mirroring the detection logic so context-flagged cards never leak.
+
+        // 0) Custom admin rules — mask their matches too.
+        if (customRules is { Count: > 0 })
+            foreach (var (name, pattern, _) in customRules)
+            {
+                if (string.IsNullOrWhiteSpace(pattern)) continue;
+                try { preview = new Regex(pattern, RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(200)).Replace(preview, _ => $"[{name}:REDACTED]"); }
+                catch { }
+            }
+
+        // 1) AI Privacy Filter spans first — names, addresses, account numbers it flagged in free text.
+        //    Replace the exact strings (longest first so substrings don't break the match).
+        if (pfSpans is { Count: > 0 })
+            foreach (var (sample, rule) in pfSpans.Where(s => s.Sample.Length >= 2).OrderByDescending(s => s.Sample.Length))
+                preview = preview.Replace(sample, $"[{rule}:REDACTED]");
+
+        // 2) Cards (matching raw and spaced/dashed forms). With card context, redact every 13-19 digit
+        //    run (Luhn-invalid included); else only Luhn-valid — mirrors detection so cards never leak.
         if (findings.Any(f => f.Category == CARD))
         {
             var ctx = CardContext.IsMatch(preview);
             preview = Regex.Replace(preview, @"(?<!\d)(?:\d[ \-]?){13,19}(?!\d)",
                 m => (ctx || LuhnValid(m.Value)) ? "[CREDIT_CARD:REDACTED]" : m.Value);
-            // Also redact the CVV digits when present.
             preview = Cvv.Replace(preview, m => Regex.Replace(m.Value, @"\d", "•"));
         }
+
+        // 3) All regex patterns INCLUDING phone — a detected phone number must be masked in the preview.
         foreach (var (cat, rule, re, _) in Patterns)
-            if (findings.Any(f => f.Rule == rule) && rule != "PHONE")
+            if (findings.Any(f => f.Rule == rule))
                 preview = re.Replace(preview, _ => $"[{rule}:REDACTED]");
         return preview;
     }
@@ -297,6 +335,7 @@ public class DlpSettings
     public bool BlockPii, BlockCards, BlockSecrets, BlockCode;
     public bool UseAi;             // Groq classifier fallback for free-text PII/code
     public bool UsePrivacyFilter;  // on-prem OpenAI Privacy Filter as the primary PII engine
+    public List<(string Name, string Pattern, bool Block)> CustomRules = new();  // admin-defined patterns
 
     public bool CategoryEnabled(string cat) => cat switch
     {

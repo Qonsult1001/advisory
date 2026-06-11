@@ -166,6 +166,20 @@ public class LlmGatewayPolicy
     public bool BlockSecrets { get; set; } = true;
     public bool ScanCode { get; set; } = true;
     public bool BlockCode { get; set; } = false;           // notify by default (dev help is legitimate)
+
+    // --- Custom DLP rules added by an admin via the UI. Each is a named regex; matches are recorded
+    //     and (if Block) reject the call. Lets compliance add org-specific patterns (employee IDs,
+    //     project codenames, internal hostnames) without a code change. ---
+    public List<CustomDlpRule> CustomDlpRules { get; set; } = new();
+}
+
+/// <summary>An admin-defined DLP pattern (control SEC-LLM-02).</summary>
+public class CustomDlpRule
+{
+    public string Name { get; set; } = "";        // e.g. "EMPLOYEE_ID"
+    public string Pattern { get; set; } = "";      // a .NET regex
+    public bool Block { get; set; } = false;       // block the call, or just record
+    public bool Enabled { get; set; } = true;
 }
 
 /// <summary>An AppTrust application: a named deliverable whose supply chain we monitor.</summary>

@@ -4140,6 +4140,44 @@ function BarChart({ data, title }) {
   );
 }
 
+// Editable list of custom DLP regex rules (name + pattern + block toggle), stored in the signed policy.
+function CustomDlpRules({ rules, onChange }) {
+  const [draft, setDraft] = useState({ name: "", pattern: "", block: false });
+  const valid = draft.name.trim() && draft.pattern.trim();
+  const add = () => {
+    if (!valid) return;
+    onChange([...(rules || []), { name: draft.name.trim().toUpperCase().replace(/\s+/g, "_"), pattern: draft.pattern, block: draft.block, enabled: true }]);
+    setDraft({ name: "", pattern: "", block: false });
+  };
+  const update = (i, patch) => onChange(rules.map((r, j) => j === i ? { ...r, ...patch } : r));
+  const remove = (i) => onChange(rules.filter((_, j) => j !== i));
+  return (
+    <div style={{ padding: "0 22px 8px" }}>
+      <table style={s.table}><thead><tr>
+        {["Name", "Pattern (regex)", "Enabled", "Block", ""].map((c) => <th key={c} style={s.th}>{c}</th>)}
+      </tr></thead><tbody>
+        {(rules || []).length === 0 && <tr><td colSpan={5} style={{ ...s.td, color: C.sub }}>No custom rules yet.</td></tr>}
+        {(rules || []).map((r, i) => (
+          <tr key={i} style={s.tr}>
+            <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11.5 }}>{r.name}</td>
+            <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11, color: C.sub, maxWidth: 360, overflow: "hidden", textOverflow: "ellipsis" }} title={r.pattern}>{r.pattern}</td>
+            <td style={s.td}><Switch on={r.enabled !== false} onChange={(v) => update(i, { enabled: v })} /></td>
+            <td style={s.td}><Switch on={!!r.block} onChange={(v) => update(i, { block: v })} /></td>
+            <td style={{ ...s.td, textAlign: "right" }}><button style={s.remove} onClick={() => remove(i)}>Remove</button></td>
+          </tr>
+        ))}
+        <tr style={s.tr}>
+          <td style={s.td}><input style={{ ...s.formInput, width: 140 }} placeholder="EMPLOYEE_ID" value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} /></td>
+          <td style={s.td}><input style={{ ...s.formInput, width: "100%", fontFamily: C.mono }} placeholder="\\bEMP\\d{6}\\b" value={draft.pattern} onChange={(e) => setDraft({ ...draft, pattern: e.target.value })} /></td>
+          <td style={s.td}>—</td>
+          <td style={s.td}><Switch on={draft.block} onChange={(v) => setDraft({ ...draft, block: v })} /></td>
+          <td style={{ ...s.td, textAlign: "right" }}><button style={{ ...s.add, opacity: valid ? 1 : 0.5 }} disabled={!valid} onClick={add}>+ Add</button></td>
+        </tr>
+      </tbody></table>
+    </div>
+  );
+}
+
 function LlmGateway({ policy, setPolicy, save, saving }) {
   const [data, setData] = useState(null);
   const [engine, setEngine] = useState(null);
@@ -4329,8 +4367,8 @@ function LlmGateway({ policy, setPolicy, save, saving }) {
             <table style={s.table}><thead><tr>
               {["Category", "What it catches", "Scan", "Block"].map((c) => <th key={c} style={s.th}>{c}</th>)}
             </tr></thead><tbody>
-              {[["PII", "Pii", "Names, addresses, SA ID, email, phone, IBAN — POPIA/GDPR"],
-                ["Cards", "Cards", "Credit-card numbers (Luhn-validated)"],
+              {[["PII", "Pii", "Names, addresses, SA ID, email, phone, IBAN — POPIA/GDPR (AI + regex)"],
+                ["Cards", "Cards", "Credit-card numbers (Luhn + 'card/cvv' context) and CVV"],
                 ["Secrets", "Secrets", "API keys, tokens, private keys"],
                 ["Code", "Code", "Proprietary / confidential source code"]].map(([cat, key, desc]) => (
                 <tr key={cat} style={s.tr}>
@@ -4341,6 +4379,13 @@ function LlmGateway({ policy, setPolicy, save, saving }) {
                 </tr>
               ))}
             </tbody></table>
+
+            <SubHead>Custom rules — org-specific patterns</SubHead>
+            <div style={{ padding: "4px 22px 8px", color: C.sub, fontSize: 12 }}>
+              Add your own regex rules (employee IDs, project codenames, internal hostnames). Matches are
+              recorded and redacted; tick <b>Block</b> to also reject the call.</div>
+            <CustomDlpRules rules={llm.customDlpRules || []} onChange={(v) => setLlm({ customDlpRules: v })} />
+
             <div style={{ padding: "12px 22px" }}>
               <button onClick={save} disabled={saving} style={s.save}>{saving ? "Signing…" : "Commit & sign policy"}</button>
             </div>
