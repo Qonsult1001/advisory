@@ -139,6 +139,17 @@ public class EvolutionService
         .Where(r => r.Status is "queued")
         .OrderBy(r => r.StartedAt).FirstOrDefault();
 
+    /// <summary>Delete a consumed queue request. The API runs as root in the container, so it can
+    /// remove a request file the host worker can't (ownership mismatch on the bind mount).
+    /// Only basenames inside the queue dir are accepted — no path traversal.</summary>
+    public bool ConsumeRequest(string file)
+    {
+        var name = Path.GetFileName(file);   // strip any path; only a plain filename is allowed
+        if (string.IsNullOrWhiteSpace(name) || !name.EndsWith(".request")) return false;
+        try { var p = Path.Combine(QueueDir, name); if (File.Exists(p)) File.Delete(p); return true; }
+        catch { return false; }
+    }
+
     /// <summary>Queue a ticket for the LOCAL mutation loop to pick up. We don't dispatch CI because
     /// CI has no Claude login; the local loop (scripts/mutate-claude.sh --loop) drains this queue and
     /// runs the /mutate cycle with your Claude session, PR-only.</summary>

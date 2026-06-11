@@ -28,7 +28,9 @@ echo Leave this window open. Press Ctrl+C to stop the worker.
 echo.
 
 REM FORCE_RUN bypasses the hour-gate so a clicked ticket runs immediately.
+REM Use a NON-login shell (-c, not -lc) so a broken ~/.profile can't perturb the environment,
+REM and pin HOME to USERPROFILE so the claude CLI always finds your login at ~/.claude.
 set FORCE_RUN=true
-"%BASH%" -lc "ADVISORY_API='%ADVISORY_API%' FORCE_RUN=true ./scripts/mutate-claude.sh --loop 1m"
+"%BASH%" -c "export HOME='%USERPROFILE%'; export ADVISORY_API='%ADVISORY_API%'; export FORCE_RUN=true; ./scripts/mutate-claude.sh --loop 1m"
 
 endlocal

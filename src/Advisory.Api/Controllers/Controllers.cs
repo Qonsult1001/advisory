@@ -1140,6 +1140,15 @@ public class EvolutionController : ControllerBase
     [HttpGet("next")]
     public ActionResult Next() => Ok(new { run = _svc.NextQueued() });
 
+    public record ConsumeReq(string File);
+
+    /// <summary>Worker asks the API (root) to delete a consumed queue request it can't remove itself
+    /// (the bind-mounted file is root-owned; the host worker user can't rm it).</summary>
+    [HttpPost("queue/consume")]
+    [Authorize(Policy = Policies.CanAdmin)]
+    public ActionResult ConsumeQueue([FromBody] ConsumeReq req)
+        => Ok(new { removed = _svc.ConsumeRequest(req.File) });
+
     public record ProgressReq(string? Stage, string? Status, string? PrUrl, string? Log);
 
     /// <summary>Worker reports live progress for a run (stage → % + ETA on the dashboard).</summary>

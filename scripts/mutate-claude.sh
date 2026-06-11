@@ -39,6 +39,14 @@ progress() {   # progress <stage> [status] [prUrl] [logline]
 # Pull the next queued run id from the API (so we report against the dashboard's run row).
 next_run_id() { curl -s -m 5 "$API/evolution/next" 2>/dev/null | grep -oE '"id":"[a-z0-9]+"' | head -1 | cut -d'"' -f4; }
 
+# Ask the API (root in the container) to delete the consumed request — works even when the host
+# user can't remove a root-owned file on the bind mount. Falls back to a local rm.
+consume_request() {   # consume_request <basename>
+  curl -s -m 5 -X POST "$API/evolution/queue/consume" -H "Content-Type: application/json" \
+    -d "$(printf '{"file":"%s"}' "$1")" >/dev/null 2>&1 || true
+  rm -f "$QUEUE_DIR/$1" 2>/dev/null || true   # best-effort; ignore permission errors
+}
+
 drain_queue() {   # returns 0 if a request was found (work to do), 1 if none
   [ -d "$QUEUE_DIR" ] || return 1
   local found=1
@@ -47,7 +55,7 @@ drain_queue() {   # returns 0 if a request was found (work to do), 1 if none
     # request format: line1=ticket, line2=runId, line3=timestamp
     CUR_RUN="$(sed -n '2p' "$req" 2>/dev/null | tr -d '[:space:]')"
     echo "[$(date '+%F %T')] picked up $(basename "$req") (run=${CUR_RUN:-?})"
-    rm -f "$req"
+    consume_request "$(basename "$req")"   # remove via API (root) so it isn't re-picked next tick
     found=0
   done
   [ -z "$CUR_RUN" ] && CUR_RUN="$(next_run_id)"   # fall back to whatever the API has queued
