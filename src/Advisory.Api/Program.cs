@@ -58,6 +58,7 @@ builder.Services.AddHttpClient("groq", c => c.Timeout = TimeSpan.FromSeconds(30)
 builder.Services.AddHttpClient("itsm", c => c.Timeout = TimeSpan.FromSeconds(10));
 builder.Services.AddHttpClient("artifactory", c => c.Timeout = TimeSpan.FromSeconds(10));
 builder.Services.AddHttpClient("nexus", c => c.Timeout = TimeSpan.FromSeconds(60));
+builder.Services.AddHttpClient("github", c => { c.Timeout = TimeSpan.FromSeconds(15); c.DefaultRequestHeaders.Add("User-Agent", "Advisory-GitRepos"); });
 builder.Services.AddHttpClient("catalog", c => { c.Timeout = TimeSpan.FromSeconds(12); c.DefaultRequestHeaders.Add("User-Agent", "Advisory-Catalog"); });
 builder.Services.AddHttpClient("oprisk", c => { c.Timeout = TimeSpan.FromSeconds(10); c.DefaultRequestHeaders.Add("User-Agent", "Advisory-OpRisk"); });
 builder.Services.AddHttpClient("hf", c => { c.Timeout = TimeSpan.FromSeconds(15); c.DefaultRequestHeaders.Add("User-Agent", "Advisory-AiCatalog"); });
@@ -119,6 +120,7 @@ else
     builder.Services.AddSingleton<IIntakeQueue, InMemoryQueue>();
 builder.Services.AddHostedService<IntakeConsumer>();
 builder.Services.AddSingleton<INexusClient, NexusClient>();
+builder.Services.AddSingleton<Advisory.Api.Integrations.IGitRepoClient, Advisory.Api.Integrations.GitHubRepoClient>();
 builder.Services.AddHostedService<PromotionBridge>();
 
 builder.Services.AddCors(o => o.AddDefaultPolicy(p =>

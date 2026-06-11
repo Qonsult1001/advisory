@@ -1342,11 +1342,18 @@ function ConfigIcons() {
 
 function ScansRepos({ onOpen }) {
   const [data, setData] = useState(null);
+  const [gitData, setGitData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [gitLoading, setGitLoading] = useState(false);
   const [sub, setSub] = useState("repositories");
   const [q, setQ] = useState("");
   const [sort, setSort] = useState({ key: "name", dir: 1 });
   useEffect(() => { api.getScans().then(setData).catch(() => setData({ configured: false, repositories: [] })).finally(() => setLoading(false)); }, []);
+  useEffect(() => {
+    if (sub !== "git" || gitData !== null) return;
+    setGitLoading(true);
+    api.getGitRepos().then(setGitData).catch(() => setGitData({ configured: false, repositories: [] })).finally(() => setGitLoading(false));
+  }, [sub, gitData]);
   const subTabs = [["git", "Git Repositories"], ["repositories", "Repositories"], ["builds", "Builds"], ["bundles", "Release Bundles"], ["packages", "Packages"]];
   let repos = (data?.repositories || []);
   if (q) repos = repos.filter((r) => r.name.toLowerCase().includes(q.toLowerCase()) || (r.format || "").toLowerCase().includes(q.toLowerCase()));
@@ -1408,7 +1415,38 @@ function ScansRepos({ onOpen }) {
           </tbody></table>
         </div>
       )}
-      {!loading && data?.configured && sub !== "repositories" && (
+      {!loading && sub === "git" && gitLoading && <div style={s.kevEmpty}>Loading git repositories…</div>}
+      {!loading && sub === "git" && !gitLoading && gitData && !gitData.configured && (
+        <Card title="Git Repositories" desc=""><div style={{ padding: 22, color: C.sub, fontSize: 12.5, lineHeight: 1.6 }}>
+          GitHub not connected (<code style={s.code}>GITHUB_OWNER</code> unset, or set <code style={s.code}>EVOLUTION_REPO</code>). Set <code style={s.code}>GITHUB_OWNER</code> to your org or user to list repositories here.
+        </div></Card>
+      )}
+      {!loading && sub === "git" && !gitLoading && gitData?.configured && (
+        <div style={s.card}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "16px 20px", borderBottom: `1px solid ${C.lineSoft}` }}>
+            <div style={{ fontSize: 16, fontWeight: 600 }}>Git Repositories ({gitData.count ?? 0})</div>
+          </div>
+          <table style={s.table}><thead><tr>
+            {["Repository", "Visibility", "Language", "Default Branch", "Last Pushed"].map((l) => (
+              <th key={l} style={s.th}>{l}</th>
+            ))}
+          </tr></thead><tbody>
+            {(gitData.repositories || []).length === 0 && <tr><td style={s.td} colSpan={5}>No repositories found.</td></tr>}
+            {(gitData.repositories || []).map((r) => (
+              <tr key={r.fullName} style={s.tr}>
+                <td style={{ ...s.td, fontWeight: 600 }}>
+                  <a href={r.url} target="_blank" rel="noopener noreferrer" style={{ color: C.accentDim, textDecoration: "none" }}>{r.fullName}</a>
+                </td>
+                <td style={{ ...s.td, color: C.sub, fontSize: 12.5 }}>{r.visibility}</td>
+                <td style={{ ...s.td, color: C.sub, fontSize: 12.5 }}>{r.language || "—"}</td>
+                <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11.5 }}>{r.defaultBranch}</td>
+                <td style={{ ...s.td, color: C.sub, fontSize: 11.5, whiteSpace: "nowrap" }}>{r.lastPushed ? new Date(r.lastPushed).toLocaleDateString() : "—"}</td>
+              </tr>
+            ))}
+          </tbody></table>
+        </div>
+      )}
+      {!loading && data?.configured && sub !== "repositories" && sub !== "git" && (
         <Card title={subTabs.find(([k]) => k === sub)?.[1]} desc=""><div style={{ padding: 22, color: C.sub, fontSize: 12.5 }}>Populates as artifacts of this kind are indexed from Nexus.</div></Card>
       )}
     </>
