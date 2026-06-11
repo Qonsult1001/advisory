@@ -1108,9 +1108,8 @@ public class AiCatalogController : ControllerBase
 public class EvolutionController : ControllerBase
 {
     private readonly PkgFirewall.Api.Evolution.EvolutionService _svc;
-    private readonly PkgFirewall.Api.Evolution.EvolutionRunner _runner;
-    public EvolutionController(PkgFirewall.Api.Evolution.EvolutionService svc, PkgFirewall.Api.Evolution.EvolutionRunner runner)
-    { _svc = svc; _runner = runner; }
+    public EvolutionController(PkgFirewall.Api.Evolution.EvolutionService svc)
+    { _svc = svc; }
 
     [HttpGet("status")]
     public ActionResult Status() => Ok(_svc.Status());
@@ -1133,7 +1132,8 @@ public class EvolutionController : ControllerBase
 
     public record EvolveReq(int Ticket);
 
-    /// <summary>Trigger an evolution run for a ticket (admin). Opens a PR for review — never merges.</summary>
+    /// <summary>Trigger evolution for a ticket (admin) by DISPATCHING THE GITHUB WORKFLOW — the exact
+    /// same `evolve.yml` that an `evolve`-labelled issue fires. Opens a PR for review; never merges.</summary>
     [HttpPost("evolve")]
     [Authorize(Policy = Policies.CanAdmin)]
     public async Task<ActionResult> Evolve([FromBody] EvolveReq req, CancellationToken ct)
@@ -1143,9 +1143,17 @@ public class EvolutionController : ControllerBase
         var tickets = await _svc.TicketsAsync(ct);
         var t = tickets.FirstOrDefault(x => x.Number == req.Ticket);
         if (t is null) return NotFound(new { error = $"ticket #{req.Ticket} not found or not labelled '{_svc.Label}'" });
+
+        // Same GitHub event as labelling an issue: dispatch the evolve.yml workflow.
+        var (ok, detail) = await _svc.DispatchWorkflowAsync(req.Ticket, ct);
         var run = _svc.NewRun(t);
-        await _runner.StartAsync(run, t);   // fire-and-forget; poll /runs for progress
-        return Accepted(new { runId = run.Id, ticket = t.Number, status = run.Status });
+        run.Status = ok ? "running" : "failed";
+        run.Stage = ok ? "workflow-dispatched" : "dispatch-failed";
+        run.Append(ok ? $"[dispatch] {detail} — watch GitHub Actions / Pull requests for the PR." : $"[error] {detail}");
+        if (ok) run.PrUrl = $"https://github.com/{_svc.Repo}/actions";
+        return ok
+            ? Accepted(new { runId = run.Id, ticket = t.Number, status = run.Status, detail })
+            : BadRequest(new { error = detail });
     }
 }
 

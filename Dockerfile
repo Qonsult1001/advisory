@@ -13,8 +13,14 @@ RUN npm install --omit=dev
 COPY tools/reachability/ ./
 
 FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
-# Node runtime for the contextual-analysis (reachability) helper.
-RUN apt-get update && apt-get install -y --no-install-recommends nodejs \
+# Node runtime for the contextual-analysis (reachability) helper, plus git + the GitHub CLI (gh)
+# so the Evolution dashboard can read tickets and dispatch the evolution workflow.
+RUN apt-get update && apt-get install -y --no-install-recommends nodejs git curl ca-certificates \
+    && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+       | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+       > /etc/apt/sources.list.d/github-cli.list \
+    && apt-get update && apt-get install -y --no-install-recommends gh \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=build /app ./

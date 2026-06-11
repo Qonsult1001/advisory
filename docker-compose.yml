@@ -52,6 +52,11 @@ services:
       - GROQ_MODEL=${PKGFW_GROQ_MODEL:-openai/gpt-oss-120b}
       # --- On-prem PII redaction (OpenAI Privacy Filter sidecar). Unset => Groq+regex fallback. ---
       - PRIVACY_FILTER_URL=http://privacy-filter:8071
+      # --- Self-evolution (PR-only). Dashboard reads tickets + dispatches the evolve.yml workflow.
+      #     gh in the container authenticates from GH_TOKEN. Off by default. ---
+      - EVOLUTION_ENABLED=${EVOLUTION_ENABLED:-false}
+      - EVOLUTION_REPO=${EVOLUTION_REPO:-}
+      - GH_TOKEN=${PKGFW_GH_TOKEN:-}
       # - ITSM_WEBHOOK_URL=          # ServiceNow/Jira ticket event
     volumes: ["fw-data:/data"]
 

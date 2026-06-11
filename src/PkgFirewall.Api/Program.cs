@@ -71,7 +71,6 @@ builder.Services.AddSingleton<IGroqClient, GroqClient>();
 builder.Services.AddSingleton<PkgFirewall.Api.Scan.OnDemandScanService>();
 builder.Services.AddSingleton<PkgFirewall.Api.Catalog.ConsumedModelStore>();
 builder.Services.AddSingleton<PkgFirewall.Api.Evolution.EvolutionService>();
-builder.Services.AddSingleton<PkgFirewall.Api.Evolution.EvolutionRunner>();
 builder.Services.AddSingleton<PkgFirewall.Api.Catalog.AiCatalogService>();
 builder.Services.AddSingleton<PkgFirewall.Api.Catalog.WeightVerifier>();
 builder.Services.AddSingleton<PkgFirewall.Api.Catalog.VerificationJobService>();

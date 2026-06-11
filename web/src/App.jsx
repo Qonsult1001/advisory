@@ -3248,8 +3248,10 @@ function Evolution() {
           <div style={{ display: "flex", alignItems: "center", gap: 9, fontSize: 18, fontWeight: 700 }}>
             <Icon name="brain" size={20} color={C.accent} /> Self-Evolution</div>
           <p style={{ color: C.sub, fontSize: 12.5, marginTop: 4, maxWidth: 720 }}>
-            GitHub tickets and tester comments drive automated code changes via the EVOLVE engine
-            (compiled Rust). Every change is a <b>pull request for human review</b> — nothing auto-merges.</p>
+            GitHub tickets and tester comments drive automated code changes via the <b>/evolve</b> cycle
+            (Claude Code + scripts). Triggering here dispatches the <b>same GitHub Actions workflow</b> an
+            <code style={s.code}>evolve</code>-labelled issue fires. Every change is a <b>pull request for
+            human review</b> — nothing auto-merges.</p>
         </div>
         {status && <div style={{ textAlign: "right" }}>
           <Tag tone={status.enabled ? C.allow : C.sub}>{status.enabled ? "Enabled" : "Disabled"}</Tag>
@@ -3260,16 +3262,17 @@ function Evolution() {
       {/* status strip */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 14, marginBottom: 16 }}>
         <MiniStat label="Target repo" value={status?.repo || "—"} mono />
-        <MiniStat label="Engine" value={status?.engineConfigured ? "ready" : "not configured"} tone={status?.engineConfigured ? C.accentDim : C.warn} />
+        <MiniStat label="Trigger" value={status?.engineConfigured ? "workflow ready" : "not configured"} tone={status?.engineConfigured ? C.accentDim : C.warn} />
         <MiniStat label="Open tickets" value={tickets?.tickets?.length ?? "—"} />
         <MiniStat label="Active runs" value={status?.activeRuns ?? 0} tone={status?.activeRuns ? C.info : C.ink} />
       </div>
 
       {status && !status.enabled && (
         <Callout>Evolution is <b>disabled</b>. Set <code style={s.code}>EVOLUTION_ENABLED=true</code> and
-          <code style={s.code}>EVOLUTION_REPO=owner/sandbox-repo</code> on the API, ensure <code style={s.code}>gh</code> is
-          authenticated and <code style={s.code}>ANTHROPIC_API_KEY</code> is set, then build the engine with
-          <code style={s.code}>evolution/build-engine.sh</code>. It only ever opens PRs against the sandbox repo.</Callout>
+          <code style={s.code}>EVOLUTION_REPO=owner/repo</code> on the API, and make sure <code style={s.code}>gh</code> is
+          authenticated in the API container. The actual evolution runs via the repo's
+          <code style={s.code}>.github/workflows/evolve.yml</code> (Claude Code) — this dashboard just lists tickets
+          and dispatches that workflow. PR-only.</Callout>
       )}
 
       {status?.enabled && (<>

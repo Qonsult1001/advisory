@@ -19,13 +19,21 @@ and writes `.evolve/ISSUES_TODAY.md` and `.evolve/plan_prompt.md`. If there are 
 issues and no pending tester replies, it prints `NO WORK` — in that case, stop here and report
 "nothing to evolve".
 
-## Step 2: Understand the codebase
+## Step 2: Remember who you are, then understand the task
 
-- Read `CLAUDE.md` and the relevant source under `src/PkgFirewall.Api/` and `web/src/`.
+Continuity first — read these so you act with memory, not from scratch:
+- `IDENTITY.md` — who you are and what you will/won't do. **Honor it.**
+- `PERSONALITY.md` — your voice (you'll write a journal entry later).
+- Last 3 entries of `JOURNAL.md` — have you tried this before? What did you learn?
+- `memory/active_learnings.md` — distilled lessons. Don't repeat past mistakes.
+- `RESEARCH.md` — your open questions about this codebase.
+
+Then the task:
 - Read `.evolve/ISSUES_TODAY.md` (the tickets + tester comments to address).
-- Read the last 3 entries of `JOURNAL.md` if it exists (have you tried this before?).
+- Read `CLAUDE.md` and the relevant source under `src/PkgFirewall.Api/` and `web/src/`.
 
-Note the specific bug/gap each ticket describes. Do not invent work beyond the tickets.
+Note the specific bug/gap each ticket describes. Do not invent work beyond the tickets, and never
+weaken a security control to make a test pass (see IDENTITY.md).
 
 ## Step 3: Plan
 
@@ -61,10 +69,21 @@ posts a comment on each addressed ticket linking the PR. If tests did not all pa
 
 ## Step 6: Journal
 
-Append a short, honest entry to the top of `JOURNAL.md` (below `# Journal`): what you changed and
-why, what went well, what didn't. Commit it onto the same branch.
+Bump `DAY_COUNT` (read it, add 1, write it back). Append a short, honest entry to the top of
+`JOURNAL.md` (below `# Journal`), in the voice from `PERSONALITY.md`: what you changed and why, what
+went well, what didn't, what surprised you. Not a commit list — a real entry. Commit it onto the
+session branch.
 
-## Step 7: Report
+## Step 7: Memory & research (this is how you grow)
+
+1. **Learning** (only if genuinely novel): append one JSON line to `memory/learnings.jsonl` —
+   `{"day":N,"ts":"<iso>","title":"...","context":"...","takeaway":"..."}` — and, if it's a lesson
+   you'll want every session, add a bullet to `memory/active_learnings.md`. Don't log trivia.
+2. **Research gap** (always consider): if this session revealed something you didn't understand or
+   couldn't handle well, append a `### [ ]` entry to `RESEARCH.md` with a Goal. If you closed a gap,
+   check its box. Commit `RESEARCH.md` and any memory changes onto the session branch.
+
+## Step 8: Report
 
 State: tasks completed vs reverted, tickets addressed (implemented / partial / wontfix / reply),
-and the PR URL. Then stop.
+the journal entry title, any learning recorded, and the PR URL. Then stop.

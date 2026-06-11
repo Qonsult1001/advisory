@@ -43,11 +43,14 @@ public class EvolutionService
 
     // ---- config (PR-only is NOT configurable; sandbox repo is) ----
     public bool Enabled => _cfg.GetValue("EVOLUTION_ENABLED", false);
-    public string? Repo => _cfg["EVOLUTION_REPO"];                 // e.g. "you/pkgfw-sandbox"
+    public string? Repo => _cfg["EVOLUTION_REPO"];                 // e.g. "Qonsult1001/advisory"
     public string Label => _cfg["EVOLUTION_LABEL"] ?? "evolve";
-    public string EngineBin => _cfg["EVOLVE_BIN"] ?? "/app/evolution/bin/yoyo";
+    public string Workflow => _cfg["EVOLUTION_WORKFLOW"] ?? "evolve.yml";
     public string Model => _cfg["EVOLUTION_MODEL"] ?? "claude-opus-4-8";
-    public bool EngineConfigured => File.Exists(EngineBin) && !string.IsNullOrWhiteSpace(_cfg["ANTHROPIC_API_KEY"]);
+    // The mechanism is the GitHub Actions workflow + scripts (no Rust binary, no API key here).
+    // "Configured" = gh CLI present + a target repo set; the dashboard triggers the same workflow
+    // an `evolve`-labelled issue triggers.
+    public bool EngineConfigured => GhAvailable() && !string.IsNullOrWhiteSpace(Repo);
 
     public IReadOnlyList<EvoRun> Runs(int limit = 50) =>
         _runs.Values.OrderByDescending(r => r.StartedAt).Take(limit).ToList();
@@ -60,11 +63,23 @@ public class EvolutionService
         label = Label,
         prOnly = true,                       // hard guarantee
         engineConfigured = EngineConfigured,
-        engineBin = EngineBin,
+        mechanism = "GitHub Actions workflow + scripts/evolve-*.sh (Claude Code)",
+        workflow = Workflow,
         ghAvailable = GhAvailable(),
         model = Model,
         activeRuns = _runs.Values.Count(r => r.Status is "running" or "tests" or "queued"),
     };
+
+    /// <summary>Trigger the evolution workflow for a ticket — the SAME workflow an `evolve`-labelled
+    /// issue fires. This is how the dashboard's "Evolve" button reaches the GitHub event.</summary>
+    public async Task<(bool ok, string detail)> DispatchWorkflowAsync(int ticket, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(Repo)) return (false, "no EVOLUTION_REPO set");
+        // Ensure the ticket carries the label, then dispatch the workflow.
+        await GhAsync(new[] { "issue", "edit", ticket.ToString(), "--repo", Repo!, "--add-label", Label }, null, ct);
+        var (ok, _, err) = await GhAsync(new[] { "workflow", "run", Workflow, "--repo", Repo! }, null, ct);
+        return ok ? (true, $"dispatched {Workflow} for #{ticket}") : (false, err);
+    }
 
     // ---- GitHub reads (gh CLI; it's already authenticated in the environment) ----
 
