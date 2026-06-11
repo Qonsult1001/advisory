@@ -40,6 +40,17 @@ public class DlpInspectorTests
         => $$"""{"model":"gpt-4o","messages":[{"role":"user","content":{{System.Text.Json.JsonSerializer.Serialize(content)}}}]}""";
 
     [Fact]
+    public async System.Threading.Tasks.Task Luhn_invalid_card_with_context_is_blocked_and_redacted()
+    {
+        // Regression: a Luhn-INVALID number labelled "credit card number" + "cvv" must still block.
+        var prompt = "his credit card number: 4548281440526987 cvv 999";
+        var r = await new DlpInspector(new OfflineGroq(), new OfflinePf()).InspectAsync(Body(prompt), All(true));
+        Assert.Contains(r.Findings, f => f.Category == DlpInspector.CARD);
+        Assert.True(r.Block);                                  // cards block by default
+        Assert.DoesNotContain("4548281440526987", r.RedactedPreview);
+    }
+
+    [Fact]
     public async System.Threading.Tasks.Task Detects_valid_credit_card_and_redacts_it()
     {
         var r = await new DlpInspector(new OfflineGroq(), new OfflinePf()).InspectAsync(Body("charge card 4111 1111 1111 1111 now"), All(true));

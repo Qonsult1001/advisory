@@ -233,11 +233,14 @@ public class LlmGatewayController : ControllerBase
         return ("openai", model);   // OpenAI is the spec default
     }
 
-    /// <summary>Translate the OpenAI-spec path to the provider's native path (Anthropic differs).</summary>
+    /// <summary>Translate the OpenAI-spec path to the provider's native path. OpenAI uses /v1/…;
+    /// Anthropic uses /v1/messages; Groq's OpenAI-compatible API is served under /openai/v1/….</summary>
     private static string MapPath(string provider, string path)
     {
         if (provider == "anthropic" && path.EndsWith("chat/completions", StringComparison.OrdinalIgnoreCase))
-            return "v1/messages";   // Anthropic's native chat endpoint
+            return "v1/messages";                       // Anthropic's native chat endpoint
+        if (provider == "groq" && path.StartsWith("v1/", StringComparison.OrdinalIgnoreCase))
+            return "openai/" + path;                    // Groq: /openai/v1/chat/completions
         return path;
     }
 

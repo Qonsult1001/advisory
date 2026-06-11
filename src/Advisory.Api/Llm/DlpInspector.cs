@@ -47,6 +47,11 @@ public class DlpInspector
         ("Secret", "BEARER", new(@"(?i)bearer\s+[A-Za-z0-9_\-\.=]{20,}", RegexOptions.Compiled), "Medium"),
     };
 
+    // Payment-card context: words that make nearby digits cardholder data even if Luhn fails.
+    private static readonly Regex CardContext = new(
+        @"(?i)\b(credit[\s\-]?card|debit[\s\-]?card|card[\s\-]?(number|no|num|#)|pan\b|cvv|cvc|cvv2|card[\s\-]?verification|expiry|exp[\s\-]?date)\b", RegexOptions.Compiled);
+    private static readonly Regex Cvv = new(@"(?i)\b(cvv|cvc|cvv2|cvc2|security code)\b\s*[:#]?\s*\d{3,4}\b", RegexOptions.Compiled);
+
     // Proprietary source-code signals: licence/confidentiality headers, or a dense run of code tokens.
     private static readonly Regex ConfidentialHeader = new(
         @"(?i)(confidential|proprietary|all rights reserved|internal use only|copyright\s+\(c\))", RegexOptions.Compiled);
@@ -58,15 +63,32 @@ public class DlpInspector
         var text = ExtractText(body);
         var findings = new List<DlpFinding>();
 
-        // Payment cards FIRST: candidate digit groups validated by Luhn (kills false positives like
-        // order ids). Done before the noisy PHONE pattern so card digits aren't mis-tagged as phones.
+        // Payment cards FIRST (before the noisy PHONE pattern, so card digits aren't mis-tagged).
+        // Two detection paths:
+        //   • Luhn-valid 13-19 digit group → a real card number, regardless of context.
+        //   • CONTEXT: the prompt mentions "credit card"/"card number"/"cvv"/"cvc" AND contains a
+        //     13-19 digit group → treat as a card even if Luhn fails. People paste test/fat-fingered
+        //     numbers next to the words "credit card" and "cvv"; a compliance gate must still block
+        //     that. This closes the gap where a Luhn-invalid number labelled a credit card slipped through.
         var cardSet = new HashSet<string>();
         if (cfg.CategoryEnabled(CARD))
         {
-            var cards = CardCandidates(text).Where(LuhnValid).ToList();
+            var candidates = CardCandidates(text).ToList();
+            var luhnCards = candidates.Where(LuhnValid).ToList();
+            var cardContext = CardContext.IsMatch(text);
+            // When context says "card/cvv", every candidate digit-run is suspect; else only Luhn-valid ones.
+            var cards = cardContext ? candidates : luhnCards;
             foreach (var c in cards) cardSet.Add(c);
             if (cards.Count > 0)
-                findings.Add(new DlpFinding(CARD, "CREDIT_CARD", "High", cards.Count, Mask(cards[0]), "luhn"));
+            {
+                var method = luhnCards.Count > 0 ? "luhn" : "context";
+                var detail = luhnCards.Count > 0 ? Mask(luhnCards[0])
+                    : Mask(cards[0]) + " (near 'card'/'cvv' — Luhn-invalid but contextually a card)";
+                findings.Add(new DlpFinding(CARD, "CREDIT_CARD", "High", cards.Count, detail, method));
+            }
+            // A bare CVV/CVC mention is itself cardholder data (PCI-DSS) — flag it.
+            if (cardContext && Cvv.IsMatch(text))
+                findings.Add(new DlpFinding(CARD, "CVV", "High", 1, "card security code present", "context"));
         }
 
         foreach (var (cat, rule, re, sev) in Patterns)
@@ -250,10 +272,17 @@ public class DlpInspector
     private static string Redact(string text, List<DlpFinding> findings)
     {
         var preview = text.Length > 2000 ? text[..2000] + "…" : text;
-        // Cards first (before PHONE eats the digits), matching raw and spaced/dashed forms.
+        // Cards first (before PHONE eats the digits), matching raw and spaced/dashed forms. When the
+        // text has card context, redact every 13-19 digit run (Luhn-invalid included); otherwise only
+        // Luhn-valid ones — mirroring the detection logic so context-flagged cards never leak.
         if (findings.Any(f => f.Category == CARD))
+        {
+            var ctx = CardContext.IsMatch(preview);
             preview = Regex.Replace(preview, @"(?<!\d)(?:\d[ \-]?){13,19}(?!\d)",
-                m => LuhnValid(m.Value) ? "[CREDIT_CARD:REDACTED]" : m.Value);
+                m => (ctx || LuhnValid(m.Value)) ? "[CREDIT_CARD:REDACTED]" : m.Value);
+            // Also redact the CVV digits when present.
+            preview = Cvv.Replace(preview, m => Regex.Replace(m.Value, @"\d", "•"));
+        }
         foreach (var (cat, rule, re, _) in Patterns)
             if (findings.Any(f => f.Rule == rule) && rule != "PHONE")
                 preview = re.Replace(preview, _ => $"[{rule}:REDACTED]");
