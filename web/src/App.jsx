@@ -3560,6 +3560,13 @@ function AdminCenter() {
                   </Field>
                 : <div />}
             </div>
+            <div style={{ marginTop: 14 }}>
+              <Field label="Persona — system prompt injected when this agent runs (personality + strict instructions)">
+                <textarea value={a.persona || ""} onChange={(e) => setAgent(i, { persona: e.target.value })}
+                  placeholder="e.g. You are a meticulous .NET security reviewer. Map every change to a control, write a test first, never weaken a guard, keep changes minimal and PR-only."
+                  rows={3} style={{ ...s.inputText, width: "100%", resize: "vertical", lineHeight: 1.5, fontFamily: C.sans }} />
+              </Field>
+            </div>
           </div>
         ))}
         <div style={{ padding: "14px 20px" }}><button style={s.add} onClick={addAgent}>+ Add agent</button></div>

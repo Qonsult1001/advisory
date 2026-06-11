@@ -1497,8 +1497,8 @@ public class AdminController : ControllerBase
 
     static object MaskAgent(Advisory.Api.Policy.AiAgent a) => new
     {
-        a.Id, a.Name, a.Standard, a.Model, a.Endpoint, a.CursorUser, a.Enabled,
-        hasKey = !string.IsNullOrWhiteSpace(a.ApiKey),   // never expose the key itself
+        a.Id, a.Name, a.Standard, a.Model, a.Endpoint, a.CursorUser, a.Persona, a.Enabled,
+        hasKey = !string.IsNullOrWhiteSpace(a.ApiKey),   // persona is not secret; key never exposed
     };
 
     /// <summary>Current admin settings (keys masked). Powers the Administration view.</summary>
@@ -1571,7 +1571,7 @@ public class AdminController : ControllerBase
         {
             if (string.IsNullOrWhiteSpace(id)) return null;
             var a = ad.Agents.FirstOrDefault(x => x.Id == id && x.Enabled);
-            return a is null ? null : new { a.Id, a.Name, a.Standard, a.Model, a.Endpoint, a.CursorUser, hasKey = !string.IsNullOrWhiteSpace(a.ApiKey) };
+            return a is null ? null : new { a.Id, a.Name, a.Standard, a.Model, a.Endpoint, a.CursorUser, a.Persona, hasKey = !string.IsNullOrWhiteSpace(a.ApiKey) };
         }
         return Ok(new
         {

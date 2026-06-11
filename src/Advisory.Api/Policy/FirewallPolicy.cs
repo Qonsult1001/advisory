@@ -245,6 +245,9 @@ public class AiAgent
     public string? Endpoint { get; set; }                 // base URL for openai-standard providers
     public string? ApiKey { get; set; }                   // masked on read; blank => use env
     public string? CursorUser { get; set; }               // cursor-cli: the Cursor account/user detail
+    // A persona / system prompt injected whenever this agent runs — its personality + strict
+    // instructions (e.g. "You are a meticulous .NET security reviewer; never weaken a control…").
+    public string? Persona { get; set; }
     public bool Enabled { get; set; } = true;
 }
 
