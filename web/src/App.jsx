@@ -20,6 +20,7 @@ const api = {
   enqueue: (pkg) => fetch(`${API}/queue/enqueue`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(pkg) }).then((r) => r.json()),
   getQueueDepth: () => fetch(`${API}/queue/depth`).then((r) => r.json()),
   getScans: () => fetch(`${API}/scans/repositories`).then((r) => r.json()),
+  getGitRepos: () => fetch(`${API}/scans/git-repositories`).then((r) => r.json()),
   getRepoArtifacts: (repo) => fetch(`${API}/scans/repository/${encodeURIComponent(repo)}/artifacts`).then((r) => r.json()),
   getArtifactScan: (repo, eco, name, version, rescan) => fetch(`${API}/scans/artifact?repo=${encodeURIComponent(repo)}&ecosystem=${eco}&name=${encodeURIComponent(name)}&version=${encodeURIComponent(version)}${rescan ? "&rescan=true" : ""}`).then((r) => r.json()),
   getQuarantine: () => fetch(`${API}/quarantine`).then((r) => r.json()),

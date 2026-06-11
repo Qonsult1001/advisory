@@ -63,23 +63,41 @@ drain_queue() {   # returns 0 if a request was found (work to do), 1 if none
 }
 
 run_cycle() {
-  # Report milestones around the phases the script controls. Claude does plan→test→fix internally;
-  # we mark the coarse, real boundaries so the bar reflects genuine progress, not a fake timer.
   progress "setup" "running" "" "worker picked up the ticket"
   echo "[$(date '+%F %T')] /mutate cycle start (run=${CUR_RUN:-?})"
 
-  progress "plan" "running" "" "planning + implementing the fix (Claude)"
-  # Claude Code executes the /mutate command (see .claude/commands/mutate.md): plan, write a failing
-  # test, implement, build, test, open PR. This is the long step.
-  if claude -p --dangerously-skip-permissions --verbose "/mutate" 2>&1; then
-    # Try to discover the PR the cycle just opened for this run's branch.
-    local pr=""
-    pr="$(gh pr list --state open --json url,headRefName --jq '.[0].url' 2>/dev/null || true)"
-    progress "pr" "pr-open" "$pr" "cycle complete — PR opened for review"
-    echo "[$(date '+%F %T')] /mutate cycle complete → ${pr:-(see GitHub PRs)}"
+  # PRs that already existed before this run — so we only claim a PR the cycle actually created.
+  local before; before="$(gh pr list --state open --json number --jq '[.[].number]|join(",")' 2>/dev/null || true)"
+
+  progress "plan" "running" "" "evolve: planning + implementing the fix"
+  # The evolve engine (Claude Code) runs the /mutate skill: plan, write a failing test, implement,
+  # build, test, open PR. Capture its output so we can tell real success from a no-op.
+  local out rc
+  out="$(claude -p --dangerously-skip-permissions --verbose "/mutate" 2>&1)"; rc=$?
+  echo "$out" | tail -40
+
+  # HONEST outcome detection — do NOT claim success just because claude exited 0.
+  if [ $rc -ne 0 ] || printf '%s' "$out" | grep -qiE "unknown skill|not logged in|please run /login|no such (command|skill)"; then
+    local why="cycle failed"
+    printf '%s' "$out" | grep -qi "unknown skill" && why="the /mutate skill was not found (.claude/skills/mutate)"
+    printf '%s' "$out" | grep -qiE "not logged in|/login" && why="Claude is not logged in for the worker shell"
+    progress "fix" "failed" "" "$why — see worker log"
+    echo "[$(date '+%F %T')] /mutate cycle FAILED — $why"; CUR_RUN=""; return 0
+  fi
+
+  # Require an actual NEW open PR before claiming pr-open.
+  local after newpr=""; after="$(gh pr list --state open --json number,url --jq '.[]|"\(.number) \(.url)"' 2>/dev/null || true)"
+  while read -r num url; do
+    [ -n "$num" ] || continue
+    case ",$before," in *",$num,"*) : ;; *) newpr="$url" ;; esac
+  done <<< "$after"
+
+  if [ -n "$newpr" ]; then
+    progress "pr" "pr-open" "$newpr" "cycle complete — PR opened for review"
+    echo "[$(date '+%F %T')] /mutate cycle complete → $newpr"
   else
-    progress "fix" "failed" "" "cycle failed — see worker log"
-    echo "[$(date '+%F %T')] /mutate cycle FAILED"
+    progress "pr" "skipped" "" "cycle ran but opened no PR (no change / no work)"
+    echo "[$(date '+%F %T')] /mutate cycle complete — no PR opened (no change)"
   fi
   CUR_RUN=""
 }
