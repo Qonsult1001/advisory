@@ -76,6 +76,43 @@ progress() {   # progress <stage> [status] [prUrl] [logline]
     "$(printf '{"stage":"%s","status":"%s","prUrl":"%s","log":"%s"}' "$stage" "$status" "$pr" "$log")"
 }
 
+# Translate claude's stream-json (stdin) into readable activity lines POSTed to the run log live, so
+# the dashboard shows WHAT the engine is doing (reading/editing files, running commands) — not just a %.
+# Echoes raw output too (worker window still shows everything). Falls back to passthrough if no python.
+stream_activity() {
+  python - "$API" "$CUR_RUN" <<'PY' 2>/dev/null || cat
+import sys, json, urllib.request
+api, run = sys.argv[1], sys.argv[2]
+def post(text):
+    if not run: return
+    try:
+        body=json.dumps({"log":text[:200]}).encode()
+        urllib.request.urlopen(urllib.request.Request(api+"/evolution/run/"+run+"/progress",
+            data=body, headers={"Content-Type":"application/json"}), timeout=5)
+    except Exception: pass
+for line in sys.stdin:
+    sys.stdout.write(line); sys.stdout.flush()
+    line=line.strip()
+    if not line.startswith("{"): continue
+    try: ev=json.loads(line)
+    except Exception: continue
+    if ev.get("type")=="assistant":
+        for c in ev.get("message",{}).get("content",[]):
+            if c.get("type")=="text" and c.get("text","").strip():
+                post("· "+c["text"].strip().split("\n")[0][:160])
+            elif c.get("type")=="tool_use":
+                n=c.get("name",""); i=c.get("input",{})
+                if n in ("Edit","Write"):  post("editing "+str(i.get("file_path","")))
+                elif n=="Read":            post("reading "+str(i.get("file_path","")))
+                elif n=="Bash":            post("$ "+str(i.get("command",""))[:140])
+                elif n in ("Grep","Glob"): post("searching "+str(i.get("pattern","")))
+                elif n=="TodoWrite":       post("planning tasks…")
+                else:                      post(n+"…")
+    elif ev.get("type")=="result":
+        post(("✔ " if not ev.get("is_error") else "✖ ")+str(ev.get("result",""))[:160])
+PY
+}
+
 # Pull the next queued run id from the API (so we report against the dashboard's run row).
 next_run_id() { curl -s -m 5 "$API/evolution/next" 2>/dev/null | grep -oE '"id":"[a-z0-9]+"' | head -1 | cut -d'"' -f4; }
 
@@ -131,9 +168,12 @@ run_cycle() {
   progress "plan" "running" "" "evolve: planning + implementing the fix"
   # The evolve engine (Claude Code) runs the /mutate skill: plan, write a failing test, implement,
   # build, test, open PR. Capture its output so we can tell real success from a no-op.
-  local out rc
-  out="$(claude -p --dangerously-skip-permissions --verbose "/mutate" 2>&1)"; rc=$?
-  echo "$out" | tail -40
+  # STREAM stream-json through stream_activity so the dashboard shows live what it's doing.
+  # Capture full output too (out) for honest success/failure detection.
+  local out rc tmp; tmp="$(mktemp 2>/dev/null || echo /tmp/mutate-out.$$)"
+  claude -p --dangerously-skip-permissions --verbose --output-format stream-json "/mutate" 2>&1 \
+    | stream_activity | tee "$tmp"; rc=${PIPESTATUS[0]}
+  out="$(cat "$tmp" 2>/dev/null)"; rm -f "$tmp" 2>/dev/null
 
   # HONEST outcome detection — do NOT claim success just because claude exited 0.
   if [ $rc -ne 0 ] || printf '%s' "$out" | grep -qiE "unknown skill|not logged in|please run /login|no such (command|skill)"; then
@@ -145,15 +185,28 @@ run_cycle() {
   fi
 
   # Require an actual NEW open PR before claiming pr-open.
-  local after newpr=""; after="$(gh pr list --state open --json number,url --jq '.[]|"\(.number) \(.url)"' 2>/dev/null || true)"
+  local after newpr="" newnum=""; after="$(gh pr list --state open --json number,url --jq '.[]|"\(.number) \(.url)"' 2>/dev/null || true)"
   while read -r num url; do
     [ -n "$num" ] || continue
-    case ",$before," in *",$num,"*) : ;; *) newpr="$url" ;; esac
+    case ",$before," in *",$num,"*) : ;; *) newpr="$url"; newnum="$num" ;; esac
   done <<< "$after"
 
   if [ -n "$newpr" ]; then
-    progress "pr" "pr-open" "$newpr" "cycle complete — PR opened for review"
+    progress "pr" "pr-open" "$newpr" "cycle complete — PR opened"
     echo "[$(date '+%F %T')] /mutate cycle complete → $newpr"
+    # AUTO_RELEASE: hands-free end-to-end — merge the PR, pull latest, recompile + redeploy Docker.
+    # Off by default (review-first). start-worker.cmd can set AUTO_RELEASE=true.
+    if [ "${AUTO_RELEASE:-}" = "true" ] && [ -n "$newnum" ]; then
+      progress "pr" "running" "$newpr" "AUTO: merging #$newnum + recompiling Docker…"
+      echo "[$(date '+%F %T')] AUTO_RELEASE: releasing #$newnum"
+      if REPO="$REPO" bash scripts/mutate-ide.sh release "$newnum" 2>&1 | tee -a /tmp/release.$$ ; then
+        progress "pr" "pr-open" "$newpr" "AUTO: merged #$newnum, pulled main, recompiled + redeployed ✔"
+        echo "[$(date '+%F %T')] AUTO_RELEASE done for #$newnum"
+      else
+        progress "pr" "pr-open" "$newpr" "AUTO release failed — PR #$newnum is open, release manually"
+      fi
+      rm -f /tmp/release.$$ 2>/dev/null
+    fi
   else
     progress "pr" "skipped" "" "cycle ran but opened no PR (no change / no work)"
     echo "[$(date '+%F %T')] /mutate cycle complete — no PR opened (no change)"

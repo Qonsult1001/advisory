@@ -3276,10 +3276,25 @@ function elapsed(since) {
   const s = Math.max(0, Math.floor((Date.now() - new Date(since)) / 1000));
   return `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s`;
 }
-function etaText(sec) {
-  if (sec == null) return "";
-  if (sec <= 0) return "done";
-  return sec >= 60 ? `~${Math.round(sec / 60)}m` : `~${sec}s`;
+// Honest LIVE countdown — counts down against real elapsed time (not a frozen server number), and
+// says so plainly once a run overruns instead of sitting on a stale estimate.
+function liveEta(run) {
+  if (!run || run.etaSeconds == null) return "";
+  const since = run.pickedUpAt || run.startedAt;
+  if (!since) return "";
+  const elapsedSec = Math.max(0, Math.floor((Date.now() - new Date(since)) / 1000));
+  const remaining = run.etaSeconds;
+  if (elapsedSec > 600) return "taking longer than usual";
+  if (remaining <= 0) return "finishing…";
+  return remaining >= 60 ? `~${Math.round(remaining / 60)}m left` : `~${remaining}s left`;
+}
+// The most recent meaningful activity line from a run's log — what the engine is doing right now.
+function lastActivity(log) {
+  if (!log) return "";
+  const lines = log.split("\n").map((l) => l.trim()).filter(Boolean)
+    .filter((l) => !l.startsWith("[queue]") && l !== "worker picked up the ticket"
+      && !l.startsWith("evolve: planning"));
+  return lines.length ? lines[lines.length - 1].slice(0, 80) : "";
 }
 // Thin inline progress bar (no chart lib).
 function ProgressBar({ pct, done, failed }) {
@@ -3409,8 +3424,12 @@ function Evolution() {
                       {waiting && !status?.workerAlive
                         ? <span style={{ color: C.warn }}>waiting for worker — start it to run</span>
                         : <>{r.stage || st.t}{r.pct ? ` · ${r.pct}%` : ""}
-                          {active && !waiting && r.etaSeconds != null ? <span style={{ color: C.dim }}> · {etaText(r.etaSeconds)} left</span> : ""}</>}
+                          {active && !waiting && liveEta(r) ? <span style={{ color: C.dim }}> · {liveEta(r)}</span> : ""}</>}
                     </div>
+                    {active && !waiting && lastActivity(r.log) && (
+                      <div style={{ fontSize: 11, color: C.ink, marginTop: 3, fontFamily: C.mono, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 320 }}
+                        title="latest engine activity">▸ {lastActivity(r.log)}</div>
+                    )}
                   </td>
                   <td style={s.td}>{done || failed
                     ? (r.testsPassed ? <span style={{ color: C.accentDim }}>✅</span> : <span style={{ color: C.warn }}>⚠</span>) : "—"}</td>
