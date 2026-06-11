@@ -1,0 +1,106 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PkgFirewall — Dark control-room</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#0a0e14; --bg2:#0e131c; --panel:#121823; --panel2:#161d2a; --line:#222c3a; --lineSoft:#1a2230;
+  --ink:#e8edf5; --sub:#8a97ab; --dim:#5b6779;
+  --accent:#3dd6a3; --accentDim:#1c6e54; --block:#ff5d6c; --warn:#f5b740; --allow:#3dd6a3; --info:#5aa7ff;
+  --mono:'Geist Mono',ui-monospace,monospace; --sans:'Geist',-apple-system,Segoe UI,sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:
+  radial-gradient(1200px 500px at 85% -10%, rgba(61,214,163,.08), transparent 60%),
+  radial-gradient(900px 600px at 0% 100%, rgba(90,167,255,.06), transparent 55%),
+  var(--bg);
+  color:var(--ink);font-family:var(--sans);font-size:13px;min-height:100vh;-webkit-font-smoothing:antialiased}
+.top{display:flex;justify-content:space-between;align-items:center;padding:0 26px;height:60px;
+  border-bottom:1px solid var(--line);background:rgba(14,19,28,.7);backdrop-filter:blur(8px);position:sticky;top:0;z-index:5}
+.brand{display:flex;align-items:center;gap:13px}
+.logo{width:34px;height:34px;border-radius:9px;background:linear-gradient(135deg,var(--accent),var(--accentDim));
+  display:grid;place-items:center;color:#06140f;font-weight:700;font-size:17px;box-shadow:0 0 24px rgba(61,214,163,.35)}
+.bname{font-weight:600;font-size:15px;letter-spacing:.2px}
+.benv{font-size:11px;color:var(--sub);margin-top:1px}
+.tright{display:flex;align-items:center;gap:20px}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--accent);box-shadow:0 0 10px var(--accent);display:inline-block;margin-right:7px;animation:pulse 2.4s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+.conn{font-size:12px;color:var(--accent)}
+.pol{text-align:right}.polv{font-family:var(--mono);font-size:12px}.sig{font-family:var(--mono);font-size:10px;color:var(--dim)}
+.layout{display:grid;grid-template-columns:230px 1fr;min-height:calc(100vh - 60px)}
+.nav{border-right:1px solid var(--line);padding:18px 14px;display:flex;flex-direction:column;gap:3px;background:var(--bg2)}
+.nav button{display:flex;align-items:center;gap:10px;text-align:left;background:none;border:0;border-radius:8px;
+  padding:10px 12px;color:var(--sub);font-family:var(--sans);font-size:13px;cursor:pointer;transition:.12s}
+.nav button:hover{background:var(--lineSoft);color:var(--ink)}
+.nav button.on{background:linear-gradient(90deg,rgba(61,214,163,.14),transparent);color:var(--ink);font-weight:600;box-shadow:inset 2px 0 0 var(--accent)}
+.nav .ico{width:7px;height:7px;border-radius:2px;background:currentColor;opacity:.6}
+.main{padding:26px 30px;overflow:auto}
+.kpis{display:grid;grid-template-columns:repeat(5,1fr);gap:14px;margin-bottom:26px}
+.kpi{background:linear-gradient(180deg,var(--panel),var(--bg2));border:1px solid var(--line);border-radius:14px;padding:18px 20px;position:relative;overflow:hidden}
+.kpi::after{content:"";position:absolute;inset:0 0 auto 0;height:2px;background:var(--c,var(--accent));opacity:.7}
+.kpi .v{font-family:var(--mono);font-size:30px;font-weight:600;letter-spacing:-1px;color:var(--c,var(--ink))}
+.kpi .l{font-size:11px;color:var(--sub);text-transform:uppercase;letter-spacing:.7px;margin-top:5px}
+.kpi .spark{position:absolute;right:14px;bottom:12px;opacity:.5}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:16px;overflow:hidden;margin-bottom:20px;box-shadow:0 8px 30px rgba(0,0,0,.25)}
+.phead{padding:18px 22px;border-bottom:1px solid var(--lineSoft)}
+.phead h2{font-size:16px;font-weight:600}.phead p{color:var(--sub);font-size:12px;margin-top:5px;max-width:640px;line-height:1.5}
+table{width:100%;border-collapse:collapse}
+th{text-align:left;padding:11px 22px;font-size:10.5px;color:var(--sub);text-transform:uppercase;letter-spacing:.7px;
+  border-bottom:1px solid var(--line);background:var(--bg2);font-weight:600}
+td{padding:13px 22px;border-bottom:1px solid var(--lineSoft);font-size:12.5px}
+tr:hover td{background:var(--panel2)}
+.mono{font-family:var(--mono)}
+.pill{font-family:var(--mono);font-size:10px;padding:3px 9px;border-radius:20px;border:1px solid}
+.sev-crit{color:var(--block);border-color:var(--block);background:rgba(255,93,108,.1)}
+.sev-high{color:var(--block);border-color:rgba(255,93,108,.5)}
+.sev-med{color:var(--warn);border-color:rgba(245,183,64,.5)}
+.tag{font-family:var(--mono);font-size:10px;padding:2px 8px;border-radius:5px;border:1px solid var(--info);color:var(--info)}
+.dec-block{color:var(--block);font-weight:700;font-family:var(--mono);font-size:11px;letter-spacing:.5px}
+.dec-allow{color:var(--allow);font-weight:700;font-family:var(--mono);font-size:11px;letter-spacing:.5px}
+.health{display:inline-flex;align-items:center;gap:6px}
+.hdot{width:7px;height:7px;border-radius:50%}
+</style></head>
+<body>
+<div class="top">
+  <div class="brand"><div class="logo">◧</div><div><div class="bname">PkgFirewall</div><div class="benv">Software Supply-Chain Control · R&D Zone</div></div></div>
+  <div class="tright"><div class="conn"><span class="dot"></span>Connected</div>
+    <div class="pol"><div class="polv">Policy v3</div><div class="sig">SHA-256 02C8BF74775E37E2</div></div></div>
+</div>
+<div class="layout">
+  <nav class="nav">
+    <button class="on"><span class="ico"></span>Dashboard</button>
+    <button><span class="ico"></span>Policy controls</button>
+    <button><span class="ico"></span>Watches &amp; policies</button>
+    <button><span class="ico"></span>Intelligence sources</button>
+    <button><span class="ico"></span>Known-exploited (KEV)</button>
+    <button><span class="ico"></span>Violations</button>
+    <button><span class="ico"></span>Decision ledger</button>
+  </nav>
+  <main class="main">
+    <div class="kpis">
+      <div class="kpi"><div class="v">128</div><div class="l">Evaluations</div></div>
+      <div class="kpi" style="--c:var(--block)"><div class="v">12</div><div class="l">Blocked</div></div>
+      <div class="kpi" style="--c:var(--allow)"><div class="v">94</div><div class="l">Allowed</div></div>
+      <div class="kpi" style="--c:var(--warn)"><div class="v">22</div><div class="l">Quarantined</div></div>
+      <div class="kpi"><div class="v">1,614</div><div class="l">KEV catalogue</div></div>
+    </div>
+    <div class="panel">
+      <div class="phead"><h2>Intelligence sources</h2><p>Live health probe — real reachability + latency per feed. Included feeds carry no licence cost.</p></div>
+      <table><thead><tr><th>Source</th><th>Coverage</th><th>Tier</th><th>Status</th><th>Latency</th></tr></thead><tbody>
+        <tr><td><b>OSV.dev</b></td><td style="color:var(--sub)">Multi-ecosystem CVE</td><td><span class="tag" style="border-color:var(--allow);color:var(--allow)">Included</span></td><td><span class="health"><span class="hdot" style="background:var(--allow)"></span>Ok</span></td><td class="mono" style="color:var(--sub)">1837 ms</td></tr>
+        <tr><td><b>OpenSSF Malicious</b></td><td style="color:var(--sub)">Typosquat / malware</td><td><span class="tag" style="border-color:var(--allow);color:var(--allow)">Included</span></td><td><span class="health"><span class="hdot" style="background:var(--allow)"></span>Empty</span></td><td class="mono" style="color:var(--sub)">1998 ms</td></tr>
+        <tr><td><b>CISA KEV</b></td><td style="color:var(--sub)">Known-exploited</td><td><span class="tag" style="border-color:var(--allow);color:var(--allow)">Included</span></td><td><span class="health"><span class="hdot" style="background:var(--allow)"></span>Ok</span></td><td class="mono" style="color:var(--sub)">0 ms</td></tr>
+        <tr><td><b>VulnCheck</b></td><td style="color:var(--sub)">Pre-NVD / zero-day</td><td><span class="tag" style="border-color:var(--warn);color:var(--warn)">Licensed</span></td><td><span class="health"><span class="hdot" style="background:var(--dim)"></span>NotConfigured</span></td><td class="mono" style="color:var(--dim)">—</td></tr>
+      </tbody></table>
+    </div>
+    <div class="panel">
+      <div class="phead"><h2>Violations</h2><p>Every Block / Quarantine projected as a structured policy violation, attributed to a watch.</p></div>
+      <table><thead><tr><th>Resource</th><th>Severity</th><th>Decision</th><th>Watch</th><th>Status</th></tr></thead><tbody>
+        <tr><td class="mono">npm:express@4.18.2</td><td><span class="pill sev-crit">CRITICAL</span></td><td><span class="dec-block">BLOCK</span></td><td class="mono" style="color:var(--sub)">PROD-watch</td><td style="color:var(--block);font-weight:600">Open</td></tr>
+        <tr><td class="mono">HuggingFace:vendor/model@main</td><td><span class="pill sev-high">HIGH</span></td><td><span class="dec-block">BLOCK</span></td><td class="mono" style="color:var(--sub)">PROD-watch</td><td style="color:var(--block);font-weight:600">Open</td></tr>
+        <tr><td class="mono">npm:lodash@4.17.15</td><td><span class="pill sev-med">MEDIUM</span></td><td><span class="dec-allow">ALLOW</span></td><td class="mono" style="color:var(--sub)">Security-watch</td><td style="color:var(--sub)">Waived (SEC-9001)</td></tr>
+      </tbody></table>
+    </div>
+  </main>
+</div>
+</body></html>

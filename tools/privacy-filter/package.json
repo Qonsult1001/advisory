@@ -1,0 +1,21 @@
+{
+  "name": "pkgfw-privacy-filter",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "description": "On-prem PII redaction sidecar — runs openai/privacy-filter ONNX directly via onnxruntime-node",
+  "main": "server.mjs",
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "3.7.5",
+    "onnxruntime-node": "1.26.0"
+  },
+  "overrides": {
+    "onnxruntime-node": "1.26.0"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
+}

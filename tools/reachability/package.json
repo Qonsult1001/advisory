@@ -1,0 +1,8 @@
+{
+  "name": "pkgfw-reachability",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "npm contextual-analysis (reachability) helper for PkgFirewall",
+  "dependencies": { "acorn": "^8.12.0" }
+}
