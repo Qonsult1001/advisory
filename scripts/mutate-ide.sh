@@ -100,7 +100,11 @@ EOF
     git push -u origin "$BRANCH" || die "push failed (auth?)"
 
     TICKETS="$(grep -oE '#[0-9]+' "$EVO/ISSUES_TODAY.md" | sort -u | tr '\n' ' ')"
+    # "Closes #N" lines so merging the PR auto-closes each addressed ticket on GitHub.
+    CLOSES="$(grep -oE '#[0-9]+' "$EVO/ISSUES_TODAY.md" | tr -d '#' | sort -u | sed 's/^/Closes #/' | tr '\n' ' ')"
     BODY="🤖 Automated evolution session $DATE.
+
+$CLOSES
 
 Addresses: $TICKETS
 Tests: $([ "$TESTS" = pass ] && echo '✅ passing' || echo '⚠️ not passing — draft for review')
