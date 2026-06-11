@@ -22,7 +22,7 @@
 set -uo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
-QUEUE_DIR="${EVOLUTION_QUEUE_DIR:-./.evolution-queue}"
+QUEUE_DIR="${EVOLUTION_QUEUE_DIR:-./data/evolution-queue}"
 API="${ADVISORY_API:-http://localhost:5000/api}"
 CUR_RUN=""    # run id we are currently reporting progress for
 

@@ -21,7 +21,7 @@ where %BASH% >nul 2>nul || set BASH=C:\Program Files\Git\bin\bash.exe
 
 echo Starting Advisory mutation worker...
 echo   API     : %ADVISORY_API%
-echo   Queue   : .evolution-queue (bind-mounted from the API container)
+echo   Queue   : data\evolution-queue (in your dev root, shared with the API container)
 echo   Cadence : every 1 minute (heartbeat + drain)
 echo.
 echo Leave this window open. Press Ctrl+C to stop the worker.
