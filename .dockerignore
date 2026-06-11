@@ -1,0 +1,13 @@
+# Keep the Docker build context lean and avoid host-only artifacts that break the build.
+# (web is built INSIDE the image via web/Dockerfile; host node_modules must not be sent.)
+**/node_modules
+web/node_modules
+**/bin
+**/obj
+.git
+data/
+.evolution-queue/
+# WSL/cmd HOME-path accidents — never send a literal Windows home tree into the build context.
+C:*
+**/C:*
+.env
