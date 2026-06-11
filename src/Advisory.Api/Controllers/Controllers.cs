@@ -1557,4 +1557,30 @@ public class AdminController : ControllerBase
         await _policy.UpdateAsync(next, _user.Name);
         return Ok(new { saved = true, agents = ad.Agents.Count });
     }
+
+    /// <summary>Resolved per-phase routing for the worker to consume: for a given cycle
+    /// ("mutation"|"evolution") return each phase → the full agent spec (standard/model/endpoint/
+    /// cursorUser; key still masked) plus the run mode (sequential|parallel). The local worker reads
+    /// this to dispatch research/planning/execution/documentation to the right agent.</summary>
+    [HttpGet("routing/{cycle}")]
+    public ActionResult Routing(string cycle)
+    {
+        var ad = _policy.Current.Admin;
+        var r = cycle?.ToLowerInvariant() == "evolution" ? ad.EvolutionRouting : ad.MutationRouting;
+        object? Resolve(string? id)
+        {
+            if (string.IsNullOrWhiteSpace(id)) return null;
+            var a = ad.Agents.FirstOrDefault(x => x.Id == id && x.Enabled);
+            return a is null ? null : new { a.Id, a.Name, a.Standard, a.Model, a.Endpoint, a.CursorUser, hasKey = !string.IsNullOrWhiteSpace(a.ApiKey) };
+        }
+        return Ok(new
+        {
+            cycle = cycle?.ToLowerInvariant() ?? "mutation",
+            mode = string.IsNullOrWhiteSpace(r.Mode) ? "sequential" : r.Mode,
+            research = Resolve(r.Research),
+            planning = Resolve(r.Planning),
+            execution = Resolve(r.Execution),
+            documentation = Resolve(r.Documentation),
+        });
+    }
 }

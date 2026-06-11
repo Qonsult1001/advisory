@@ -46,6 +46,18 @@ Then the task:
 Note the specific bug/gap each ticket describes. Do not invent work beyond the tickets, and never
 weaken a security control to make a test pass (see IDENTITY.md).
 
+## Step 2b: Agent routing (if configured)
+
+If `.evolve/routing.json` exists, the operator has assigned specific AI agents to phases
+(research / planning / execution / documentation) and a run **mode** (`sequential` or `parallel`):
+- For each phase, if an agent is named, **delegate that phase to it** using the Task tool (spawn a
+  subagent whose prompt states the phase, the agent's model/standard, and the ticket). When the mode
+  is `parallel`, dispatch the independent phases (research + planning) **concurrently** in a single
+  message with multiple Task calls; when `sequential`, run them one after another.
+- A phase with no agent (or no routing file) runs inline as normal.
+This is how "different tasks to different agents, sometimes parallel" works. Keep the PR-only,
+test-first discipline regardless of which agent did the work.
+
 ## Step 3: Plan
 
 Read `.evolve/plan_prompt.md`. Follow an Impact×Urgency framework. Write

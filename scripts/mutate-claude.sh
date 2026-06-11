@@ -179,6 +179,17 @@ run_cycle() {
   # PRs that already existed before this run — so we only claim a PR the cycle actually created.
   local before; before="$(gh pr list --state open --json number --jq '[.[].number]|join(",")' 2>/dev/null || true)"
 
+  # EPIC C — per-task agent routing. Fetch the operator's routing (which agent runs research /
+  # planning / execution / documentation, and whether sequentially or in parallel) and drop it where
+  # the /mutate skill reads it, so each phase dispatches to its assigned agent.
+  local routing; routing="$(curl -s -m 5 "$API/admin/routing/mutation" 2>/dev/null || echo '{}')"
+  printf '%s\n' "$routing" > .evolve/routing.json 2>/dev/null || true
+  if printf '%s' "$routing" | grep -q '"name"'; then
+    local mode; mode="$(printf '%s' "$routing" | grep -oE '"mode":"[a-z]+"' | head -1 | cut -d'"' -f4)"
+    progress "plan" "running" "" "routing loaded (${mode:-sequential}) — see .evolve/routing.json"
+    echo "[$(date '+%F %T')] task routing: ${routing}"
+  fi
+
   progress "plan" "running" "" "evolve: planning + implementing the fix"
   # The evolve engine (Claude Code) runs the /mutate skill: plan, write a failing test, implement,
   # build, test, open PR. Capture its output so we can tell real success from a no-op.

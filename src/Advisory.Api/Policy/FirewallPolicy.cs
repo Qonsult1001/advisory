@@ -256,6 +256,10 @@ public class TaskRouting
     public string? Planning { get; set; }     // plan the fix
     public string? Execution { get; set; }    // implement (e.g. groq gpt-oss-120b)
     public string? Documentation { get; set; }// PR text, journal, close-out (e.g. gpt-oss-20b)
+    // How the phases run: agents can work one-after-another or fan out. "sequential" runs each phase
+    // in order; "parallel" lets independent phases (e.g. research + planning) run concurrently, then
+    // converge before execution. The worker honours this when dispatching to the routed agents.
+    public string Mode { get; set; } = "sequential";   // sequential | parallel
 }
 
 /// <summary>Global platform settings surfaced in the Administration view.</summary>

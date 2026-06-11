@@ -916,9 +916,20 @@ function SubHead({ children }) { return <div style={s.subhead}>{children}</div>;
 function Field({ label, children }) {
   return (
     <div>
-      <div style={{ fontSize: 10.5, color: C.sub, textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 3 }}>{label}</div>
+      <div style={{ fontSize: 10.5, color: C.sub, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 5, fontWeight: 600 }}>{label}</div>
       {children}
     </div>
+  );
+}
+// Polished text input with a green focus ring (matches the platform accent). Left-aligned sans.
+function TextInput({ value, onChange, placeholder, type = "text", mono }) {
+  const [f, setF] = useState(false);
+  return (
+    <input type={type} value={value} placeholder={placeholder}
+      onChange={onChange} onFocus={() => setF(true)} onBlur={() => setF(false)}
+      style={{ ...s.inputText, width: "100%", fontFamily: mono ? C.mono : C.sans,
+        borderColor: f ? C.accent : C.line, boxShadow: f ? `0 0 0 3px rgba(64,190,70,.12)` : "none",
+        transition: "border-color .12s, box-shadow .12s" }} />
   );
 }
 function Switch({ on, onChange, disabled }) {
@@ -3470,15 +3481,29 @@ function AdminCenter() {
 
   const Routing = ({ label, routing, onChange }) => (
     <div style={{ marginBottom: 14 }}>
-      <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 6 }}>{label}</div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+        <div style={{ fontWeight: 700, fontSize: 13 }}>{label}</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ fontSize: 10.5, color: C.sub, textTransform: "uppercase", letterSpacing: 0.5, fontWeight: 600 }}>Run mode</span>
+          <div style={{ display: "flex", border: `1px solid ${C.line}`, borderRadius: 7, overflow: "hidden" }}>
+            {["sequential", "parallel"].map((m) => (
+              <button key={m} onClick={() => onChange({ ...routing, mode: m })}
+                style={{ fontSize: 11.5, padding: "5px 12px", border: "none", cursor: "pointer",
+                  background: (routing?.mode || "sequential") === m ? C.brand : C.surface,
+                  color: (routing?.mode || "sequential") === m ? "#fff" : C.sub, fontWeight: 600 }}>
+                {m === "sequential" ? "→ one after another" : "⇉ parallel"}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12 }}>
         {(d.taskKinds || []).map((k) => (
-          <div key={k}>
-            <div style={{ fontSize: 10.5, color: C.sub, textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 3 }}>{k}</div>
+          <Field key={k} label={k}>
             <select value={routing?.[k] || ""} onChange={(e) => onChange({ ...routing, [k]: e.target.value || null })} style={{ ...s.select, width: "100%" }}>
               {agentOptions.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
             </select>
-          </div>
+          </Field>
         ))}
       </div>
     </div>
@@ -3496,39 +3521,62 @@ function AdminCenter() {
       {msg && <Callout>{msg}</Callout>}
 
       <SubHead>AI agents</SubHead>
-      <div style={s.card}>
-        {d.agents.length === 0 && <div style={{ padding: "20px", color: C.sub, fontSize: 12.5 }}>No agents yet. Add one — e.g. Claude (Cursor CLI) for research, Groq gpt-oss-120b for execution.</div>}
+      <div style={{ ...s.card, padding: d.agents.length === 0 ? 0 : "8px 0" }}>
+        {d.agents.length === 0 && <div style={{ padding: "28px 22px", color: C.sub, fontSize: 12.5, textAlign: "center" }}>
+          No agents configured yet. Add one — e.g. <b>Claude (Cursor CLI)</b> for research/planning, <b>Groq gpt-oss-120b</b> for execution.</div>}
         {d.agents.map((a, i) => (
-          <div key={i} style={{ padding: "14px 16px", borderBottom: `1px solid ${C.line}`, display: "grid", gridTemplateColumns: "1.2fr 1fr 1.2fr 1.4fr 1fr auto", gap: 10, alignItems: "end" }}>
-            <Field label="Name"><input value={a.name} onChange={(e) => setAgent(i, { name: e.target.value })} style={{ ...s.input, width: "100%" }} /></Field>
-            <Field label="Standard">
-              <select value={a.standard} onChange={(e) => setAgent(i, { standard: e.target.value })} style={{ ...s.select, width: "100%" }}>
-                {(d.standards || []).map((x) => <option key={x} value={x}>{x}</option>)}
-              </select>
-            </Field>
-            <Field label="Model"><input value={a.model} placeholder="claude-opus-4-6 / gpt-oss-120b" onChange={(e) => setAgent(i, { model: e.target.value })} style={{ ...s.input, width: "100%" }} /></Field>
-            {a.standard === "cursor-cli"
-              ? <Field label="Cursor user"><input value={a.cursorUser || ""} placeholder="cursor account" onChange={(e) => setAgent(i, { cursorUser: e.target.value })} style={{ ...s.input, width: "100%" }} /></Field>
-              : <Field label="Endpoint"><input value={a.endpoint || ""} placeholder="https://api…/v1" onChange={(e) => setAgent(i, { endpoint: e.target.value })} style={{ ...s.input, width: "100%" }} /></Field>}
-            <Field label={a.hasKey ? "API key (set ✓)" : "API key"}>
-              <input type="password" value={a.apiKey || ""} placeholder={a.hasKey ? "•••••• (unchanged)" : "paste key"} onChange={(e) => setAgent(i, { apiKey: e.target.value })} style={{ ...s.input, width: "100%" }} />
-            </Field>
-            <button onClick={() => removeAgent(i)} title="Remove agent" style={{ background: "transparent", border: "none", color: C.sub, cursor: "pointer", fontSize: 15, padding: "6px" }}>✕</button>
+          <div key={i} style={{ padding: "16px 20px", borderBottom: i < d.agents.length - 1 ? `1px solid ${C.lineSoft}` : "none" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <span style={{ fontSize: 13, fontWeight: 700, color: C.ink }}>{a.name || "Untitled agent"}</span>
+                <Tag tone={a.enabled ? C.accentDim : C.sub}>{a.standard}</Tag>
+                {a.hasKey && <Tag tone={C.info}>key set</Tag>}
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+                <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5, color: C.sub, cursor: "pointer" }}>
+                  <Switch on={a.enabled} onChange={(v) => setAgent(i, { enabled: v })} /> enabled
+                </label>
+                <button onClick={() => removeAgent(i)} title="Remove agent" style={{ background: "transparent", border: `1px solid ${C.line}`, borderRadius: 6, color: C.sub, cursor: "pointer", fontSize: 12, padding: "4px 10px" }}>Remove</button>
+              </div>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr 1.4fr", gap: 16, marginBottom: 14 }}>
+              <Field label="Name"><TextInput value={a.name} onChange={(e) => setAgent(i, { name: e.target.value })} /></Field>
+              <Field label="Standard">
+                <select value={a.standard} onChange={(e) => setAgent(i, { standard: e.target.value })} style={{ ...s.select, width: "100%" }}>
+                  {(d.standards || []).map((x) => <option key={x} value={x}>{x}</option>)}
+                </select>
+              </Field>
+              <Field label="Model"><TextInput value={a.model} placeholder="e.g. claude-opus-4-6 · openai/gpt-oss-120b" onChange={(e) => setAgent(i, { model: e.target.value })} mono /></Field>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr", gap: 16 }}>
+              {a.standard === "cursor-cli"
+                ? <Field label="Cursor user — uses your Cursor login, no API key"><TextInput value={a.cursorUser || ""} placeholder="cursor account / email" onChange={(e) => setAgent(i, { cursorUser: e.target.value })} /></Field>
+                : a.standard === "claude-cli"
+                ? <Field label="Auth"><div style={{ ...s.inputText, width: "100%", color: C.sub, background: C.bg2 }}>Local Claude Code CLI — uses your existing login</div></Field>
+                : <Field label="Endpoint"><TextInput value={a.endpoint || ""} placeholder="https://api.groq.com/openai/v1" onChange={(e) => setAgent(i, { endpoint: e.target.value })} mono /></Field>}
+              {(a.standard === "openai" || a.standard === "anthropic")
+                ? <Field label={a.hasKey ? "API key — stored ✓ (blank keeps it)" : "API key"}>
+                    <TextInput type="password" value={a.apiKey || ""} placeholder={a.hasKey ? "•••••••• unchanged" : "paste key"} onChange={(e) => setAgent(i, { apiKey: e.target.value })} />
+                  </Field>
+                : <div />}
+            </div>
           </div>
         ))}
-        <div style={{ padding: "12px 16px" }}><button style={s.add} onClick={addAgent}>+ Add agent</button></div>
+        <div style={{ padding: "14px 20px" }}><button style={s.add} onClick={addAgent}>+ Add agent</button></div>
       </div>
 
-      <SubHead>Task routing — assign agents to each phase</SubHead>
-      <div style={{ ...s.card, padding: "16px 18px" }}>
-        <Routing label="Mutation (bug-fix cycle)" routing={d.mutationRouting} onChange={(r) => update({ mutationRouting: r })} />
-        <Routing label="Evolution (research cycle)" routing={d.evolutionRouting} onChange={(r) => update({ evolutionRouting: r })} />
-        <div style={{ fontSize: 11.5, color: C.dim }}>Leave a phase on “default engine” to use the worker’s built-in Claude. Example: research → Claude (Cursor) Opus, execution → Groq gpt-oss-120b, documentation → gpt-oss-20b.</div>
+      <SubHead>Task routing — assign an agent to each phase</SubHead>
+      <div style={{ ...s.card, padding: "20px 22px" }}>
+        <Routing label="Mutation — bug-fix cycle" routing={d.mutationRouting} onChange={(r) => update({ mutationRouting: r })} />
+        <div style={{ height: 1, background: C.lineSoft, margin: "6px 0 18px" }} />
+        <Routing label="Evolution — research cycle" routing={d.evolutionRouting} onChange={(r) => update({ evolutionRouting: r })} />
+        <div style={{ fontSize: 11.5, color: C.dim, marginTop: 6, lineHeight: 1.5 }}>
+          Leave a phase on <b>default engine</b> to use the worker’s built-in Claude. Example: research → Claude (Cursor) Opus, execution → Groq gpt-oss-120b, documentation → gpt-oss-20b.</div>
       </div>
 
       <SubHead>Platform</SubHead>
-      <div style={{ ...s.card, padding: "16px 18px", display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 16 }}>
-        <Field label="Memory budget (MB, 0 = default)"><input type="number" value={d.memoryMb} onChange={(e) => update({ memoryMb: e.target.value })} style={{ ...s.input, width: 120 }} /></Field>
+      <div style={{ ...s.card, padding: "20px 22px", display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 20 }}>
+        <Field label="Memory budget (MB · 0 = default)"><TextInput type="number" value={d.memoryMb} onChange={(e) => update({ memoryMb: e.target.value })} mono /></Field>
         <Field label="Runtime">
           <select value={d.runtime} onChange={(e) => update({ runtime: e.target.value })} style={{ ...s.select, width: "100%" }}>
             {(d.runtimes || []).map((x) => <option key={x} value={x}>{x}</option>)}
@@ -3541,8 +3589,9 @@ function AdminCenter() {
         </Field>
       </div>
 
-      <div style={{ marginTop: 16 }}>
+      <div style={{ marginTop: 20, display: "flex", gap: 10, alignItems: "center" }}>
         <button style={{ ...s.add, opacity: busy ? 0.6 : 1 }} disabled={busy} onClick={save}>{busy ? "Saving…" : "Save Administration settings"}</button>
+        <span style={{ fontSize: 11.5, color: C.dim }}>Saved to the signed policy. Keys are stored server-side and never shown again.</span>
       </div>
     </div>
   );
@@ -5156,6 +5205,9 @@ const s = {
   radioOn: { borderColor: C.accent, background: C.accent, boxShadow: `inset 0 0 0 2px ${C.surface}` },
   select: { border: `1px solid ${C.line}`, borderRadius: 7, padding: "7px 10px", fontFamily: C.sans,
     fontSize: 12, background: C.bg2, color: C.ink },
+  // Clean left-aligned sans text input for forms (s.input is the tiny right-aligned numeric one).
+  inputText: { border: `1px solid ${C.line}`, borderRadius: 7, padding: "7px 10px", fontFamily: C.sans,
+    fontSize: 12.5, background: C.surface, color: C.ink, textAlign: "left", outline: "none", boxSizing: "border-box" },
   btnGhost: { background: C.surface2, border: `1px solid ${C.line}`, borderRadius: 8, padding: "8px 16px",
     fontSize: 12.5, cursor: "pointer", color: C.ink, fontFamily: C.sans },
   btnPrimary: { background: C.brand, color: "#fff", border: "none", borderRadius: 8, padding: "8px 18px",
