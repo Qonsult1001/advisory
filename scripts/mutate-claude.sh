@@ -11,6 +11,13 @@
 #     ticks actually connect to GitHub and do work — off-schedule ticks print SKIPPED and cost nothing.
 #   • PR-only: every change becomes a pull request for human review.
 #
+# DASHBOARD BUTTON: the web "Mutate" button labels the ticket and drops a request file in the
+#   queue dir. This loop drains it each tick. To see those exact request files, point the loop at
+#   the same dir the API writes to (the fw-data volume), e.g.:
+#     EVOLUTION_QUEUE_DIR="$(docker volume inspect advisory_fw-data -f '{{.Mountpoint}}')/evolution-queue" \
+#       ./scripts/mutate-claude.sh --loop 5m
+#   Even without that, /mutate acts on whatever tickets carry the `mutation` label, so the button works.
+#
 # Usage:
 #   ./scripts/mutate-claude.sh            # run one cycle now (subject to the hour gate)
 #   ./scripts/mutate-claude.sh --loop 30m # tick every 30 min; acts only during MUTATE_HOURS
@@ -18,9 +25,23 @@
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
+# Dashboard "Mutate" button queues ticket requests here; we drain them on each run.
+QUEUE_DIR="${EVOLUTION_QUEUE_DIR:-./.evolve-queue}"
+
+drain_queue() {
+  [ -d "$QUEUE_DIR" ] || return 0
+  for req in "$QUEUE_DIR"/ticket-*.request; do
+    [ -e "$req" ] || continue
+    echo "[$(date '+%F %T')] dashboard request: $(basename "$req")"
+    rm -f "$req"            # consume the request (the labelled ticket is what the cycle acts on)
+  done
+}
+
 run_once() {
+  drain_queue            # honor any dashboard-queued requests (they just ensure a labelled ticket exists)
   echo "[$(date '+%F %T')] /mutate cycle start"
-  # Claude Code executes the /mutate command (see .claude/commands/mutate.md).
+  # Claude Code executes the /mutate command (see .claude/commands/mutate.md). FORCE_RUN bypasses
+  # the EVOLVE_HOURS gate so a manual/queued run acts immediately.
   claude -p --dangerously-skip-permissions --verbose "/mutate" 2>&1
   echo "[$(date '+%F %T')] /mutate cycle complete"
 }

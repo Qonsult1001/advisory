@@ -56,6 +56,10 @@ public class EvolutionService
         _runs.Values.OrderByDescending(r => r.StartedAt).Take(limit).ToList();
     public EvoRun? Run(string id) => _runs.TryGetValue(id, out var r) ? r : null;
 
+    // The mutation cycle runs LOCALLY (your machine is logged into Claude; the container is not).
+    // The dashboard button queues a ticket here; a local `scripts/mutate-claude.sh --loop` drains it.
+    private string QueueDir => _cfg["EVOLUTION_QUEUE_DIR"] ?? (Directory.Exists("/data") ? "/data/evolution-queue" : Path.Combine(Path.GetTempPath(), "advisory-evolution-queue"));
+
     public object Status() => new
     {
         enabled = Enabled,
@@ -63,22 +67,30 @@ public class EvolutionService
         label = Label,
         prOnly = true,                       // hard guarantee
         engineConfigured = EngineConfigured,
-        mechanism = "GitHub Actions workflow + scripts/mutate-*.sh",
-        workflow = Workflow,
+        mechanism = "local /mutate cycle (scripts/mutate-claude.sh) — uses your Claude login",
+        runMode = "local-queue",
+        queueDir = QueueDir,
         ghAvailable = GhAvailable(),
         model = Model,
         activeRuns = _runs.Values.Count(r => r.Status is "running" or "tests" or "queued"),
     };
 
-    /// <summary>Trigger the evolution workflow for a ticket — the SAME workflow an `evolve`-labelled
-    /// issue fires. This is how the dashboard's "Evolve" button reaches the GitHub event.</summary>
+    /// <summary>Queue a ticket for the LOCAL mutation loop to pick up. We don't dispatch CI because
+    /// CI has no Claude login; the local loop (scripts/mutate-claude.sh --loop) drains this queue and
+    /// runs the /mutate cycle with your Claude session, PR-only.</summary>
     public async Task<(bool ok, string detail)> DispatchWorkflowAsync(int ticket, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(Repo)) return (false, "no EVOLUTION_REPO set");
-        // Ensure the ticket carries the label, then dispatch the workflow.
+        // Make sure the ticket is labelled so the loop's setup step finds it.
         await GhAsync(new[] { "issue", "edit", ticket.ToString(), "--repo", Repo!, "--add-label", Label }, null, ct);
-        var (ok, _, err) = await GhAsync(new[] { "workflow", "run", Workflow, "--repo", Repo! }, null, ct);
-        return ok ? (true, $"dispatched {Workflow} for #{ticket}") : (false, err);
+        try
+        {
+            Directory.CreateDirectory(QueueDir);
+            await File.WriteAllTextAsync(Path.Combine(QueueDir, $"ticket-{ticket}.request"),
+                $"{ticket}\n{DateTimeOffset.UtcNow:o}\n", ct);
+            return (true, $"queued #{ticket} for the local mutation loop — run scripts/mutate-claude.sh (or --loop) to process it");
+        }
+        catch (Exception ex) { return (false, $"could not queue: {ex.Message}"); }
     }
 
     // ---- GitHub reads (gh CLI; it's already authenticated in the environment) ----

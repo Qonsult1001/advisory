@@ -1132,8 +1132,8 @@ public class EvolutionController : ControllerBase
 
     public record EvolveReq(int Ticket);
 
-    /// <summary>Trigger evolution for a ticket (admin) by DISPATCHING THE GITHUB WORKFLOW — the exact
-    /// same `evolve.yml` that an `evolve`-labelled issue fires. Opens a PR for review; never merges.</summary>
+    /// <summary>Trigger mutation for a ticket (admin): label it and QUEUE IT FOR THE LOCAL /mutate loop
+    /// (scripts/mutate-claude.sh, which uses your Claude login). Opens a PR for review; never merges.</summary>
     [HttpPost("evolve")]
     [Authorize(Policy = Policies.CanAdmin)]
     public async Task<ActionResult> Evolve([FromBody] EvolveReq req, CancellationToken ct)
@@ -1144,13 +1144,13 @@ public class EvolutionController : ControllerBase
         var t = tickets.FirstOrDefault(x => x.Number == req.Ticket);
         if (t is null) return NotFound(new { error = $"ticket #{req.Ticket} not found or not labelled '{_svc.Label}'" });
 
-        // Same GitHub event as labelling an issue: dispatch the evolve.yml workflow.
+        // Label the ticket and drop a request file for the local mutation loop to drain.
         var (ok, detail) = await _svc.DispatchWorkflowAsync(req.Ticket, ct);
         var run = _svc.NewRun(t);
-        run.Status = ok ? "running" : "failed";
-        run.Stage = ok ? "workflow-dispatched" : "dispatch-failed";
-        run.Append(ok ? $"[dispatch] {detail} — watch GitHub Actions / Pull requests for the PR." : $"[error] {detail}");
-        if (ok) run.PrUrl = $"https://github.com/{_svc.Repo}/actions";
+        run.Status = ok ? "queued" : "failed";
+        run.Stage = ok ? "queued-local" : "queue-failed";
+        run.Append(ok ? $"[queue] {detail} — the local loop will open a PR; watch GitHub Pull requests." : $"[error] {detail}");
+        if (ok) run.PrUrl = $"https://github.com/{_svc.Repo}/pulls";
         return ok
             ? Accepted(new { runId = run.Id, ticket = t.Number, status = run.Status, detail })
             : BadRequest(new { error = detail });
