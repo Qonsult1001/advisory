@@ -41,7 +41,11 @@ REM IMPORTANT: do NOT set HOME to a Windows path. The cycle's `claude -p` runs i
 REM HOME='C:\Users\...' is a RELATIVE path — npm/claude then write their caches INTO the repo as a
 REM literal "C:\Users\Carter" tree, which the cycle commits (huge junk PRs). Let each shell use its
 REM native HOME; auth comes from CLAUDE_CODE_OAUTH_TOKEN in .env (sourced by the worker), not ~/.claude.
+REM AUTO_RELEASE=true makes the whole pipeline hands-free: when the cycle opens a PR it is
+REM automatically merged, main pulled, and Docker recompiled + redeployed — no manual review/release.
+REM Set to false if you want to review each PR before it merges.
 set FORCE_RUN=true
-"%BASH%" -c "export ADVISORY_API='%ADVISORY_API%'; export FORCE_RUN=true; ./scripts/mutate-claude.sh --loop 10s"
+set AUTO_RELEASE=true
+"%BASH%" -c "export ADVISORY_API='%ADVISORY_API%'; export FORCE_RUN=true; export AUTO_RELEASE='%AUTO_RELEASE%'; ./scripts/mutate-claude.sh --loop 10s"
 
 endlocal
