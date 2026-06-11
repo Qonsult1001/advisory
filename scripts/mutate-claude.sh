@@ -68,6 +68,50 @@ progress() {   # progress <stage> [status] [prUrl] [logline]
   api_post "evolution/run/$CUR_RUN/progress" \
     "$(printf '{"stage":"%s","status":"%s","prUrl":"%s","log":"%s"}' "$stage" "$status" "$pr" "$log")"
 }
+# Append a single live-activity line to the run log (no stage change) so the dashboard shows what
+# the engine is actually DOING — which file it reads/edits, which command it runs.
+activity() {   # activity <text>
+  [ -n "$CUR_RUN" ] || return 0
+  local msg; msg="$(printf '%s' "$1" | tr -d '\r' | sed 's/"/\\"/g' | cut -c1-200)"
+  api_post "evolution/run/$CUR_RUN/progress" "$(printf '{"log":"%s"}' "$msg")"
+}
+
+# Read claude's stream-json on stdin and translate each tool action into a human-readable activity
+# line POSTed to the dashboard. Echoes raw output too (so the worker window still shows everything).
+stream_activity() {
+  python - "$API" "$CUR_RUN" <<'PY' 2>/dev/null || cat   # fallback: just passthrough if python missing
+import sys, json, urllib.request
+api, run = sys.argv[1], sys.argv[2]
+def post(text):
+    if not run: return
+    try:
+        body=json.dumps({"log":text[:200]}).encode()
+        urllib.request.urlopen(urllib.request.Request(f"{api}/evolution/run/{run}/progress",
+            data=body, headers={"Content-Type":"application/json"}), timeout=5)
+    except Exception: pass
+for line in sys.stdin:
+    sys.stdout.write(line); sys.stdout.flush()
+    line=line.strip()
+    if not line.startswith("{"): continue
+    try: ev=json.loads(line)
+    except Exception: continue
+    t=ev.get("type")
+    if t=="assistant":
+        for c in ev.get("message",{}).get("content",[]):
+            if c.get("type")=="text" and c.get("text","").strip():
+                post("· "+c["text"].strip().split("\n")[0][:160])
+            elif c.get("type")=="tool_use":
+                name=c.get("name",""); inp=c.get("input",{})
+                if name in ("Edit","Write"):   post(f"✎ editing {inp.get('file_path','')}")
+                elif name=="Read":             post(f"reading {inp.get('file_path','')}")
+                elif name=="Bash":             post(f"$ {str(inp.get('command',''))[:140]}")
+                elif name in ("Grep","Glob"):  post(f"searching {inp.get('pattern','')}")
+                elif name=="TodoWrite":        post("planning tasks…")
+                else:                          post(f"{name}…")
+    elif t=="result":
+        post(("✔ " if not ev.get("is_error") else "✖ ")+str(ev.get("result",""))[:160])
+PY
+}
 
 # Pull the next queued run id from the API (so we report against the dashboard's run row).
 next_run_id() { curl -s -m 5 "$API/evolution/next" 2>/dev/null | grep -oE '"id":"[a-z0-9]+"' | head -1 | cut -d'"' -f4; }
@@ -123,10 +167,13 @@ run_cycle() {
 
   progress "plan" "running" "" "evolve: planning + implementing the fix"
   # The evolve engine (Claude Code) runs the /mutate skill: plan, write a failing test, implement,
-  # build, test, open PR. Capture its output so we can tell real success from a no-op.
-  local out rc
-  out="$(claude -p --dangerously-skip-permissions --verbose "/mutate" 2>&1)"; rc=$?
-  echo "$out" | tail -40
+  # build, test, open PR. STREAM its stream-json output through stream_activity so the dashboard
+  # shows live what it's doing (reading/editing files, running commands) — not just a percentage.
+  # Capture the full text too (out) so we can still tell real success from a no-op.
+  local out rc tmp; tmp="$(mktemp 2>/dev/null || echo /tmp/mutate-out.$$)"
+  claude -p --dangerously-skip-permissions --verbose --output-format stream-json "/mutate" 2>&1 \
+    | stream_activity | tee "$tmp"; rc=${PIPESTATUS[0]}
+  out="$(cat "$tmp" 2>/dev/null)"; rm -f "$tmp" 2>/dev/null
 
   # HONEST outcome detection — do NOT claim success just because claude exited 0.
   if [ $rc -ne 0 ] || printf '%s' "$out" | grep -qiE "unknown skill|not logged in|please run /login|no such (command|skill)"; then

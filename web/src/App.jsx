@@ -3243,6 +3243,15 @@ function etaText(sec) {
   if (sec <= 0) return "done";
   return sec >= 60 ? `~${Math.round(sec / 60)}m` : `~${sec}s`;
 }
+// The most recent meaningful activity line from a run's log (what the engine is doing right now):
+// reading/editing a file, running a command, etc. Skips the boilerplate queue/pickup lines.
+function lastActivity(log) {
+  if (!log) return "";
+  const lines = log.split("\n").map((l) => l.trim()).filter(Boolean)
+    .filter((l) => !l.startsWith("[queue]") && l !== "worker picked up the ticket"
+      && !l.startsWith("evolve: planning"));
+  return lines.length ? lines[lines.length - 1].slice(0, 80) : "";
+}
 // Thin inline progress bar (no chart lib).
 function ProgressBar({ pct, done, failed }) {
   const col = failed ? "#d63649" : done ? "#40be46" : "#1f7fd1";
@@ -3365,7 +3374,7 @@ function Evolution() {
                   <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11 }}>{r.id}</td>
                   <td style={s.td}>#{r.ticket} <span style={{ color: C.sub }}>{r.ticketTitle?.slice(0, 36)}</span></td>
                   <td style={s.td}><span style={{ color: st.c, fontWeight: 700, fontSize: 12 }}>● {st.t}</span></td>
-                  <td style={{ ...s.td, minWidth: 200 }}>
+                  <td style={{ ...s.td, minWidth: 240 }}>
                     <ProgressBar pct={r.pct} done={done} failed={failed} />
                     <div style={{ fontSize: 11, color: C.sub, marginTop: 4 }}>
                       {waiting && !status?.workerAlive
@@ -3373,6 +3382,10 @@ function Evolution() {
                         : <>{r.stage || st.t}{r.pct ? ` · ${r.pct}%` : ""}
                           {active && !waiting && r.etaSeconds != null ? <span style={{ color: C.dim }}> · {etaText(r.etaSeconds)} left</span> : ""}</>}
                     </div>
+                    {active && !waiting && lastActivity(r.log) && (
+                      <div style={{ fontSize: 11, color: C.ink, marginTop: 3, fontFamily: C.mono, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 320 }}
+                        title="latest engine activity">▸ {lastActivity(r.log)}</div>
+                    )}
                   </td>
                   <td style={s.td}>{done || failed
                     ? (r.testsPassed ? <span style={{ color: C.accentDim }}>✅</span> : <span style={{ color: C.warn }}>⚠</span>) : "—"}</td>
