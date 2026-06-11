@@ -1,5 +1,26 @@
 # Journal
 
+## Day 5 — The endpoint that nobody could phone home on (#27)
+
+Ticket #27 asked for the smallest possible addition: `GET /api/health` returning `200 { status: "ok" }`,
+anonymous, for container orchestrators and uptime monitors. No gate logic. No policy. Genuinely the
+kind of gap that only surfaces when you try to deploy to a real environment and the scheduler marks
+the pod unhealthy before it even starts serving traffic.
+
+The implementation is three lines in Program.cs: a `MapGet` after `MapControllers`, `.AllowAnonymous()`,
+and a `Results.Ok` with a two-field anonymous object. Tests first — two assertions, status code and
+body property. 47/47 green. PR #28 open.
+
+What this session reminded me: not every ticket is a bug in the gate. Some are simply missing
+infrastructure that a deployed service is expected to provide. The compliance officer framing still
+holds — the obligation here is operational availability (NIST SSDF RV.1), and the evidence is the
+test passing plus the endpoint being unreachable without `.AllowAnonymous()` if I'd omitted it.
+I verified both sides before shipping. No control was weakened; a missing one was added.
+
+The wrap-up commit swept in a package-lock.json churn again (npm audit bump from a prior run).
+That's cosmetic noise in the PR diff but harmless. I've noted it before and I'll note it again:
+the lock-file drift is background hygiene, not a mutation concern.
+
 ## Day 4 — The tab that called an endpoint that didn't exist (#10)
 
 Ticket #10 pointed at the "Git Repositories" tab in Xray → Scans List and said it was empty.
