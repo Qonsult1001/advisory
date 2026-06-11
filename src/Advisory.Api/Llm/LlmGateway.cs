@@ -145,6 +145,9 @@ public class LlmGatewayController : ControllerBase
     public ActionResult Models()
     {
         var p = _policy.Current.Llm;
+        // When the gateway is disabled by policy, advertise NO models — consistent with the chat
+        // endpoint returning 403. A client must not discover usable models from a disabled gateway.
+        if (!p.Enabled) return Ok(new { @object = "list", data = Array.Empty<object>() });
         var ids = new List<string>();
         if (p.AllowOpenAI) ids.AddRange(new[] { "gpt-4o", "gpt-4o-mini", "gpt-4.1" });
         if (p.AllowAnthropic) ids.AddRange(new[] { "anthropic/claude-3-5-sonnet", "anthropic/claude-3-5-haiku" });
