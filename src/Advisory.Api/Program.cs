@@ -133,6 +133,8 @@ app.UseCors();
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
+app.MapGet("/api/health", () => Results.Ok(new { status = "ok", service = "Advisory.Api" }))
+   .AllowAnonymous();
 app.Run();
 
 public partial class Program { }
