@@ -2,17 +2,21 @@
 REM ============================================================================
 REM  Advisory mutation WORKER — run this ONCE to make the dashboard "Mutate"
 REM  button actually execute. It drains the queue and runs the /mutate cycle on
-REM  YOUR machine using your Claude login (the container can't — it has no login).
+REM  YOUR machine, headless.
 REM
 REM  Leave this window open. Click "Mutate" in the dashboard and watch the run
 REM  go Queued -> Running -> Tests -> PR with a live progress bar.
 REM
-REM  NOTE on "Not logged in": Claude Code allows a limited number of concurrent
-REM  sessions per login. If your IDE / other Claude windows are busy, the worker
-REM  may transiently see "Not logged in". This worker now RETRIES with backoff to
-REM  wait for a free slot. For the smoothest run, close idle Claude sessions first.
+REM  ONE-TIME AUTH SETUP (required — a background worker can't use the interactive
+REM  login; that needs a TTY and races other Claude sessions -> "Not logged in"):
+REM    1) In a normal terminal run:  claude setup-token
+REM       (prints a 1-year token; requires a Claude subscription)
+REM    2) Add it to the repo's .env (gitignored):
+REM          CLAUDE_CODE_OAUTH_TOKEN=<the token>
+REM       (or instead:  ANTHROPIC_API_KEY=sk-ant-...)
+REM  The worker sources .env automatically. This is the SAID-ECHO pattern.
 REM
-REM  Requirements (already true on this machine): git bash, claude CLI, gh CLI.
+REM  Requirements: git bash, claude CLI, gh CLI, and a key in .env (above).
 REM ============================================================================
 setlocal
 cd /d "%~dp0"

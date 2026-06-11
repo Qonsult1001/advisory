@@ -22,9 +22,27 @@
 set -uo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
+# ---- Headless auth (the key lesson) ----
+# A background `claude -p` worker must NOT rely on the interactive OAuth login — that needs a TTY
+# and races with other Claude sessions, giving "Not logged in". Like SAID-ECHO's evolve-claude.sh,
+# the worker uses an EXPLICIT credential from the environment / .env:
+#   • CLAUDE_CODE_OAUTH_TOKEN — from `claude setup-token` (1-year token, subscription plans), or
+#   • ANTHROPIC_API_KEY       — a standard API key.
+# Source .env (gitignored) so the key set there flows through to the claude CLI.
+if [ -f .env ]; then set -a; . ./.env 2>/dev/null || true; set +a; fi
+
 QUEUE_DIR="${EVOLUTION_QUEUE_DIR:-./data/evolution-queue}"
 API="${ADVISORY_API:-http://localhost:5000/api}"
 CUR_RUN=""    # run id we are currently reporting progress for
+
+# Fail fast with a clear message if there is no headless credential.
+if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+  echo "⚠ No headless Claude credential. A background worker can't use the interactive login."
+  echo "  Fix (one of):"
+  echo "   • Run 'claude setup-token' (interactive), then add to .env:  CLAUDE_CODE_OAUTH_TOKEN=..."
+  echo "   • Or add to .env:  ANTHROPIC_API_KEY=sk-ant-..."
+  echo "  Then re-run start-worker.cmd. (Heartbeat-only mode until then.)"
+fi
 
 # ---- progress reporting to the dashboard (best-effort; never fails the cycle) ----
 api_post() { curl -s -m 5 -X POST "$API/$1" -H "Content-Type: application/json" -d "$2" >/dev/null 2>&1 || true; }
@@ -62,32 +80,27 @@ drain_queue() {   # returns 0 if a request was found (work to do), 1 if none
   return $found
 }
 
-# Claude Code allows a limited number of concurrent sessions per login. When other Claude/IDE
-# sessions are busy, a fresh `claude -p` can transiently report "Not logged in". Probe first and
-# retry with backoff so a momentary contention doesn't kill the run.
+# Preflight auth probe. With an explicit credential (CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_API_KEY)
+# this succeeds immediately. "Not logged in" here means the credential is MISSING or INVALID —
+# not a transient slot race — so we report it clearly rather than spin.
 claude_ready() {
-  local tries="${1:-6}" n=1 probe
-  while [ $n -le "$tries" ]; do
-    probe="$(claude -p --dangerously-skip-permissions "reply with exactly: READY" 2>&1)"
-    printf '%s' "$probe" | grep -qx "READY" && return 0
-    if printf '%s' "$probe" | grep -qiE "not logged in|please run /login"; then
-      echo "[$(date '+%F %T')] auth busy (attempt $n/$tries) — retrying in $((n*10))s. Close idle Claude sessions to free a slot."
-      progress "setup" "running" "" "waiting for a free Claude session slot (attempt $n/$tries)"
-      sleep $((n*10)); n=$((n+1)); continue
-    fi
-    return 0   # some other output — not an auth problem; let the real cycle run and report
-  done
-  return 1
+  local probe
+  probe="$(claude -p --dangerously-skip-permissions "reply with exactly: READY" 2>&1)"
+  printf '%s' "$probe" | grep -qx "READY" && return 0
+  if printf '%s' "$probe" | grep -qiE "not logged in|please run /login|invalid|unauthor"; then
+    return 1   # missing/invalid headless credential
+  fi
+  return 0       # some other output — not an auth problem; let the real cycle run and report
 }
 
 run_cycle() {
   progress "setup" "running" "" "worker picked up the ticket"
   echo "[$(date '+%F %T')] /mutate cycle start (run=${CUR_RUN:-?})"
 
-  # Preflight auth with retry (handles transient "Not logged in" under concurrent sessions).
-  if ! claude_ready 6; then
-    progress "fix" "failed" "" "Claude login unavailable after retries — close other Claude sessions and click Mutate again"
-    echo "[$(date '+%F %T')] /mutate cycle FAILED — login unavailable after retries"; CUR_RUN=""; return 0
+  # Preflight: confirm the worker has a working headless credential before the heavy cycle.
+  if ! claude_ready; then
+    progress "fix" "failed" "" "no headless Claude credential — set CLAUDE_CODE_OAUTH_TOKEN (claude setup-token) or ANTHROPIC_API_KEY in .env, then click Mutate again"
+    echo "[$(date '+%F %T')] /mutate cycle FAILED — missing/invalid headless credential (see .env note above)"; CUR_RUN=""; return 0
   fi
 
   # PRs that already existed before this run — so we only claim a PR the cycle actually created.
