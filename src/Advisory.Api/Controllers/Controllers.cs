@@ -1240,6 +1240,27 @@ public class EvolutionController : ControllerBase
         => _svc.UpdateProgress(id, req.Stage, req.Status, req.PrUrl, req.Log) is { } r
             ? Ok(r) : NotFound(new { error = "run not found" });
 
+    // ---- Interactive run control (EPIC A) ----
+    public record PlanReq(string Plan);
+    public record DecisionReq(string Decision, string? SubIssue);   // decision: approve | reject | refine
+
+    /// <summary>Worker submits its proposed plan; the run parks 'awaiting-approval'.</summary>
+    [HttpPost("run/{id}/plan")]
+    [Authorize(Policy = Policies.CanAdmin)]
+    public ActionResult SubmitPlan(string id, [FromBody] PlanReq req)
+        => _svc.SubmitPlan(id, req.Plan ?? "") is { } r ? Ok(r) : NotFound(new { error = "run not found" });
+
+    /// <summary>Operator approves / rejects / refines a parked plan (from the dashboard).</summary>
+    [HttpPost("run/{id}/decision")]
+    [Authorize(Policy = Policies.CanApprove)]
+    public ActionResult Decide(string id, [FromBody] DecisionReq req)
+        => _svc.Decide(id, req.Decision ?? "approve", req.SubIssue) is { } r ? Ok(r) : NotFound(new { error = "run not found" });
+
+    /// <summary>Worker polls the operator's decision on a parked plan.</summary>
+    [HttpGet("run/{id}/decision")]
+    public ActionResult Decision(string id)
+        => _svc.Decision(id) is { } x ? Ok(x) : NotFound(new { error = "run not found" });
+
     public record EvolveReq(int Ticket);
 
     /// <summary>Trigger mutation for a ticket (admin): label it and QUEUE IT FOR THE LOCAL /mutate loop

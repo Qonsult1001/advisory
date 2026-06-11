@@ -15,10 +15,14 @@ public class EvoRun
     public string Id { get; set; } = Guid.NewGuid().ToString("n")[..10];
     public int Ticket { get; set; }
     public string TicketTitle { get; set; } = "";
-    public string Status { get; set; } = "queued";   // queued | running | tests | pr-open | failed | skipped
+    public string Status { get; set; } = "queued";   // queued | running | awaiting-approval | tests | pr-open | failed | skipped | rejected
     public string Stage { get; set; } = "";
     public int Pct { get; set; }                      // 0-100 progress for the bar
     public int? EtaSeconds { get; set; }              // calibrated estimate to finish (null = unknown)
+    // ---- Interactive run control (EPIC A) ----
+    public string? Plan { get; set; }                 // the proposed plan, posted before implementing
+    public string Approval { get; set; } = "none";    // none | pending | approved | rejected
+    public string? SubIssue { get; set; }             // operator's correction when rejecting/refining the plan
     public string? Branch { get; set; }
     public string? PrUrl { get; set; }
     public int? PrNumber { get; set; }
@@ -130,9 +134,37 @@ public class EvolutionService
         if (!string.IsNullOrWhiteSpace(status)) r.Status = status!;
         if (!string.IsNullOrWhiteSpace(prUrl)) r.PrUrl = prUrl;
         if (!string.IsNullOrWhiteSpace(logLine)) r.Append(logLine!);
-        if (status is "pr-open" or "failed" or "skipped") { r.FinishedAt = DateTimeOffset.UtcNow; r.Pct = status == "pr-open" ? 100 : r.Pct; r.EtaSeconds = 0; }
+        if (status is "pr-open" or "failed" or "skipped" or "rejected") { r.FinishedAt = DateTimeOffset.UtcNow; r.Pct = status == "pr-open" ? 100 : r.Pct; r.EtaSeconds = 0; }
         return r;
     }
+
+    // ---- Interactive run control (EPIC A): the worker posts its plan and waits for the operator. ----
+
+    /// <summary>Worker submits the proposed plan and parks the run for approval.</summary>
+    public EvoRun? SubmitPlan(string id, string plan)
+    {
+        if (!_runs.TryGetValue(id, out var r)) return null;
+        WorkerHeartbeat();
+        r.Plan = plan; r.Approval = "pending"; r.Status = "awaiting-approval";
+        r.Stage = "awaiting your approval of the plan"; r.Pct = 25; r.EtaSeconds = null;
+        r.Append("[plan] proposed — awaiting Approve / Reject / sub-issue.");
+        return r;
+    }
+
+    /// <summary>Operator decides on a parked plan: approve | reject | refine (with a sub-issue note).</summary>
+    public EvoRun? Decide(string id, string decision, string? subIssue)
+    {
+        if (!_runs.TryGetValue(id, out var r)) return null;
+        if (!string.IsNullOrWhiteSpace(subIssue)) r.SubIssue = subIssue;
+        if (decision == "approve") { r.Approval = "approved"; r.Status = "running"; r.Stage = "approved — implementing"; r.Append("[plan] APPROVED by operator."); }
+        else if (decision == "reject") { r.Approval = "rejected"; r.Status = "rejected"; r.FinishedAt = DateTimeOffset.UtcNow; r.EtaSeconds = 0; r.Append("[plan] REJECTED by operator." + (string.IsNullOrWhiteSpace(subIssue) ? "" : " Note: " + subIssue)); }
+        else if (decision == "refine") { r.Approval = "approved"; r.Status = "running"; r.Stage = "refined — implementing with your note"; r.Append("[plan] refined with sub-issue: " + (subIssue ?? "")); }
+        return r;
+    }
+
+    /// <summary>Worker polls this for the operator's decision on a parked plan.</summary>
+    public object? Decision(string id)
+        => _runs.TryGetValue(id, out var r) ? new { approval = r.Approval, subIssue = r.SubIssue } : null;
 
     /// <summary>The most recent run still waiting/working — what the worker should pick up next.</summary>
     public EvoRun? NextQueued() => _runs.Values

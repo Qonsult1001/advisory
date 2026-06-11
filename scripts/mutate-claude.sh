@@ -229,6 +229,9 @@ run_cycle() {
   # build, test, open PR. Capture its output so we can tell real success from a no-op.
   # STREAM stream-json through stream_activity so the dashboard shows live what it's doing.
   # Capture full output too (out) for honest success/failure detection.
+  # Export run context so the /mutate skill can post its plan and poll for approval (EPIC A).
+  # ADVISORY_APPROVAL=required makes the skill park for Approve/Reject before implementing.
+  export ADVISORY_RUN="$CUR_RUN" ADVISORY_API="$API" ADVISORY_APPROVAL="${ADVISORY_APPROVAL:-required}"
   local out rc tmp; tmp="$(mktemp 2>/dev/null || echo /tmp/mutate-out.$$)"
   claude -p --dangerously-skip-permissions --verbose --output-format stream-json "/mutate" 2>&1 \
     | stream_activity | tee "$tmp"; rc=${PIPESTATUS[0]}
