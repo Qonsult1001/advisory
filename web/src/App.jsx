@@ -3238,10 +3238,22 @@ function elapsed(since) {
   const s = Math.max(0, Math.floor((Date.now() - new Date(since)) / 1000));
   return `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s`;
 }
-function etaText(sec) {
-  if (sec == null) return "";
-  if (sec <= 0) return "done";
-  return sec >= 60 ? `~${Math.round(sec / 60)}m` : `~${sec}s`;
+// Honest, LIVE countdown: estimate total from the run's etaSeconds-at-start, then count down against
+// real elapsed time. Never a static number. Once we pass the estimate, say so plainly instead of
+// freezing at "~4m". (etaSeconds is the remaining-at-current-stage the server last reported; we add
+// it to elapsed-so-far to get a total, then subtract live elapsed.)
+function liveEta(run) {
+  if (!run || run.etaSeconds == null) return "";
+  const since = run.pickedUpAt || run.startedAt;
+  if (!since) return "";
+  const elapsedSec = Math.max(0, Math.floor((Date.now() - new Date(since)) / 1000));
+  // Total estimate = what's elapsed + what the server said remained when it last updated the stage.
+  const total = elapsedSec + run.etaSeconds;            // re-anchored each poll as the stage advances
+  const remaining = total - elapsedSec;                 // == etaSeconds, but we render vs live clock
+  if (remaining <= 0) return "finishing…";
+  // If we've already blown well past a normal cycle, stop pretending we know.
+  if (elapsedSec > 600) return "taking longer than usual";
+  return remaining >= 60 ? `~${Math.round(remaining / 60)}m left` : `~${remaining}s left`;
 }
 // Thin inline progress bar (no chart lib).
 function ProgressBar({ pct, done, failed }) {
@@ -3371,7 +3383,7 @@ function Evolution() {
                       {waiting && !status?.workerAlive
                         ? <span style={{ color: C.warn }}>waiting for worker — start it to run</span>
                         : <>{r.stage || st.t}{r.pct ? ` · ${r.pct}%` : ""}
-                          {active && !waiting && r.etaSeconds != null ? <span style={{ color: C.dim }}> · {etaText(r.etaSeconds)} left</span> : ""}</>}
+                          {active && !waiting && liveEta(r) ? <span style={{ color: C.dim }}> · {liveEta(r)}</span> : ""}</>}
                     </div>
                   </td>
                   <td style={s.td}>{done || failed
