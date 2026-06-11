@@ -25,6 +25,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends nodejs git curl
 WORKDIR /app
 COPY --from=build /app ./
 COPY --from=reach /reach /app/reachability
+# Research backlog read by the Evolution tab (parsed into section-tagged findings). Baked from the
+# repo at build time; refreshed when `release` rebuilds the image after a research PR merges to main.
+COPY RESEARCH.md /app/RESEARCH.md
 ENV ASPNETCORE_URLS=http://+:5000
 EXPOSE 5000
 ENTRYPOINT ["dotnet", "Advisory.Api.dll"]

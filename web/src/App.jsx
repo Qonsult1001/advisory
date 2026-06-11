@@ -46,6 +46,10 @@ const api = {
   evoRuns: () => fetch(`${API}/evolution/runs`).then((r) => r.json()),
   evoRun: (id) => fetch(`${API}/evolution/run/${id}`).then((r) => r.json()),
   evolve: (ticket) => fetch(`${API}/evolution/evolve`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ticket }) }).then((r) => r.json()),
+  researchStatus: () => fetch(`${API}/research/status`).then((r) => r.json()),
+  researchFindings: () => fetch(`${API}/research/findings`).then((r) => r.json()),
+  researchRun: (topic) => fetch(`${API}/research/run`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ topic }) }).then((r) => r.json()),
+  researchApprove: (gapId) => fetch(`${API}/research/approve`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ gapId }) }).then((r) => r.json()),
   llmRecords: () => fetch(`${API}/llm/records?limit=200`).then((r) => r.json()),
   llmEngine: () => fetch(`${API}/llm/engine`).then((r) => r.json()),
   llmExportUrl: () => `${API}/llm/export`,
@@ -293,6 +297,7 @@ export default function App() {
           {tab === "catalog" && <Catalog />}
 
           {tab === "evolution" && <Evolution />}
+          {tab === "research" && <Research />}
 
           {tab === "aiml" && <AimlOverview setTab={setTab} />}
           {tab === "airegistry" && <AiCatalog initialTab="registry" setTab={setTab} />}
@@ -640,6 +645,7 @@ const NAV = [
     ["exceptions", "Approved exceptions"], ["audit", "Decision ledger"],
   ]},
   { type: "item", key: "evolution", label: "Mutation", icon: "brain" },
+  { type: "item", key: "research", label: "Evolution", icon: "✦" },
 ];
 const NAV_PARENT = (() => { const m = {}; NAV.forEach(g => g.children?.forEach(([k]) => m[k] = g.key)); return m; })();
 
@@ -3338,6 +3344,111 @@ function Evolution() {
       </div>
       <Callout><b>Safety:</b> PR-only — the engine writes to a branch and opens a pull request; a human reviews and merges.
         If tests don't pass, it opens a <b>draft</b> PR flagged for review. It never pushes to the default branch and never auto-merges.</Callout>
+    </div>
+  );
+}
+
+// ── Evolution (research) — landscape research backlog by product section ─────────
+// The forward-looking loop: studies arXiv / NIST SSDF / SLSA / competitor controls and files
+// enhancement candidates per section. NEVER edits code — approve a finding → it files a mutation
+// ticket the bug-fix loop implements. Runs weekly (+ "Run research now").
+const SECTION_META = {
+  "AppTrust": { icon: "◈", c: "#7c5cff" }, "Xray": { icon: "◉", c: "#2f80ed" },
+  "Curation": { icon: "⊜", c: "#0ea5a4" }, "Catalog": { icon: "▦", c: "#d97706" },
+  "AI/ML": { icon: "✦", c: "#db2777" }, "Pipeline": { icon: "⇄", c: "#16a34a" },
+};
+function fmtETA(iso) {
+  if (!iso) return "—";
+  const ms = new Date(iso) - new Date();
+  if (ms <= 0) return "due now";
+  const d = Math.floor(ms / 864e5), h = Math.floor((ms % 864e5) / 36e5), m = Math.floor((ms % 36e5) / 6e4);
+  return d > 0 ? `in ${d}d ${h}h` : h > 0 ? `in ${h}h ${m}m` : `in ${m}m`;
+}
+function Research() {
+  const [status, setStatus] = useState(null);
+  const [data, setData] = useState(null);
+  const [busy, setBusy] = useState(null);
+  const [msg, setMsg] = useState(null);
+  const load = () => { api.researchStatus().then(setStatus).catch(() => {}); api.researchFindings().then(setData).catch(() => {}); };
+  useEffect(() => { load(); const t = setInterval(load, 15000); return () => clearInterval(t); }, []);
+
+  const runNow = async () => { setBusy("run"); const r = await api.researchRun(null).catch(() => ({ error: "failed" })); setMsg(r.detail || r.error); setBusy(null); load(); };
+  const approve = async (gapId) => {
+    setBusy(gapId);
+    const r = await api.researchApprove(gapId).catch(() => ({ error: "failed" }));
+    setMsg(r.url ? `Filed mutation ticket → ${r.url}` : (r.detail || r.error));
+    setBusy(null); load();
+  };
+
+  return (
+    <div>
+      <Crumb trail={[{ label: "All Projects" }, { label: "Evolution" }]} />
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14 }}>
+        <div>
+          <div style={{ display: "flex", alignItems: "center", gap: 9, fontSize: 18, fontWeight: 700 }}>
+            <span style={{ color: C.accent }}>✦</span> Evolution <span style={{ color: C.sub, fontWeight: 500, fontSize: 13 }}>· research</span></div>
+          <p style={{ color: C.sub, fontSize: 12.5, marginTop: 4, maxWidth: 760 }}>
+            The forward-looking loop. It studies the supply-chain security landscape — <b>arXiv (cs.CR)</b>,
+            NIST SSDF, SLSA, and what JFrog / Nessus / Snyk enforce — and files <b>enhancement candidates</b>
+            by product section. It <b>never edits product code</b>: approving a finding files a
+            <b> mutation ticket</b> the bug-fix loop implements (PR-only).
+          </p>
+        </div>
+        <button style={{ ...s.add, opacity: busy === "run" ? .6 : 1 }} disabled={busy === "run"} onClick={runNow}>
+          {busy === "run" ? "Queuing…" : "✦ Run research now"}</button>
+      </div>
+
+      {msg && <Callout>{msg}</Callout>}
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 14, marginBottom: 16 }}>
+        <MiniStat label="Schedule" value={status?.schedule || "—"} />
+        <MiniStat label="Next run" value={fmtETA(status?.nextRun)} tone={C.info} />
+        <MiniStat label="Last run" value={status?.lastRun ? new Date(status.lastRun).toLocaleDateString() : "—"} />
+        <MiniStat label="Backlog" value={data ? `${data.closed}/${data.total} closed` : "—"} tone={C.accentDim} />
+      </div>
+
+      {status && !status.enabled && (
+        <Callout>Evolution is <b>disabled</b>. Set <code style={s.code}>EVOLUTION_ENABLED=true</code> and
+          <code style={s.code}>EVOLUTION_REPO=owner/repo</code>. Research runs locally via
+          <code style={s.code}>scripts/evolve-claude.sh</code> (your Claude login); findings go to a
+          <code style={s.code}>RESEARCH.md</code> PR. Approving a finding files a mutation ticket.</Callout>
+      )}
+
+      {(data?.sections || []).map((sec) => {
+        const meta = SECTION_META[sec.section] || { icon: "•", c: C.sub };
+        const items = [...sec.open, ...sec.closed];
+        if (items.length === 0) return null;
+        return (
+          <div key={sec.section} style={{ marginBottom: 18 }}>
+            <SubHead><span style={{ color: meta.c }}>{meta.icon}</span> {sec.section.toUpperCase()}
+              <span style={{ color: C.sub, fontWeight: 500, fontSize: 12 }}> · {sec.open.length} open</span></SubHead>
+            <div style={s.card}>
+              {items.map((g) => (
+                <div key={g.id} style={{ padding: "12px 16px", borderBottom: `1px solid ${C.line}`, display: "flex", justifyContent: "space-between", gap: 14, alignItems: "flex-start" }}>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontWeight: 600, fontSize: 13.5, marginBottom: 3, display: "flex", alignItems: "center", gap: 8 }}>
+                      {g.closed ? <Tag tone={C.accentDim}>researched</Tag> : <Tag tone={C.info}>candidate</Tag>}
+                      {g.title}</div>
+                    <div style={{ color: C.sub, fontSize: 12, lineHeight: 1.5 }}>{g.goal}</div>
+                    {g.source && <div style={{ color: C.dim, fontSize: 11, marginTop: 3 }}>Source: {g.source}</div>}
+                  </div>
+                  {!g.closed && (
+                    <button style={{ ...s.add, opacity: busy === g.id ? .6 : 1 }} disabled={busy === g.id || !status?.enabled}
+                      onClick={() => approve(g.id)} title="Approve → file a mutation ticket for implementation">
+                      {busy === g.id ? "Filing…" : "Approve → ticket"}</button>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })}
+      {data && data.total === 0 && <div style={{ ...s.card, padding: "36px 20px", textAlign: "center", color: C.sub }}>
+        No research findings yet. Click <b>Run research now</b> to study the landscape and populate the backlog.</div>}
+
+      <Callout><b>Separation of duties:</b> Evolution only writes <code style={s.code}>RESEARCH.md</code> and
+        <code style={s.code}>memory/</code> — never <code style={s.code}>src/</code> or <code style={s.code}>web/</code>.
+        Implementation happens exclusively through the <b>Mutation</b> loop's PR-only path after you approve a finding.</Callout>
     </div>
   );
 }
