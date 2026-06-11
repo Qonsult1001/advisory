@@ -1,6 +1,6 @@
-# Package Firewall — self-built Xray / Sonatype-Firewall equivalent
+# Advisory — self-built Xray / Sonatype-Firewall equivalent
 
-Quarantine-gate package firewall for a locked-down banking dev environment.
+Quarantine-gate supply-chain security gate for a locked-down banking production environment.
 C# (ASP.NET Core) API + React policy console, fronting **Nexus Repository OSS** (free proxy/cache).
 Decides allow / block per a **signed policy you own**, across the full transitive dependency tree.
 
@@ -49,7 +49,7 @@ Without this, developers can route around the gate.
 
 ## Honest residual risk (lead with this to SecOps)
 Included feeds (OSV/KEV/EPSS) lag proprietary research and miss some zero-days —
-acceptable for R&D risk-tiering, not production supply-chain. The gap closes by enabling
+acceptable for production risk-tiering, not production supply-chain. The gap closes by enabling
 a licensed feed. You hand security an auditable gate where they set every threshold and
 read every line — stronger than trusting a black box. Licensing cost to start: $0.
 
@@ -145,7 +145,7 @@ bank SSO/OIDC for production — this is the floor.
 - **Socket** behavioural — real issues API call inside `MalwareSource`, merges High/Critical behavioural risks. Activates on `SOCKET_API_KEY`.
 
 ## Integration tests (added)
-`tests/PkgFirewall.Tests` runs the whole app in-process (WebApplicationFactory) with a real
+`tests/Advisory.Tests` runs the whole app in-process (WebApplicationFactory) with a real
 HTTP client. Run: `dotnet test`. 7 tests — policy signing, source listing, weights gate
 (block pickle / allow safetensors), the enforce 403 path, plus live OSV/registry evaluations
 (lodash known-vuln, requests tree resolution). Network tests skip automatically with

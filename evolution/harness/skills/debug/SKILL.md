@@ -1,6 +1,6 @@
-> **Stack note (PkgFirewall):** this is a .NET 10 + React repo, not Rust. Map the cargo examples below to:
-> `cargo build` → `dotnet build src/PkgFirewall.Api/PkgFirewall.Api.csproj -c Release --nologo`;
-> `cargo test` → `dotnet test tests/PkgFirewall.Tests/PkgFirewall.Tests.csproj --nologo`;
+> **Stack note (Advisory):** this is a .NET 10 + React repo, not Rust. Map the cargo examples below to:
+> `cargo build` → `dotnet build src/Advisory.Api/Advisory.Api.csproj -c Release --nologo`;
+> `cargo test` → `dotnet test tests/Advisory.Tests/Advisory.Tests.csproj --nologo`;
 > `cargo clippy` → (n/a); web build → `npm --prefix web run build`. The principles still apply.
 
 ---

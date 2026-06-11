@@ -1,7 +1,7 @@
-# PkgFirewall — Capability Parity & PCI Readiness (one-page summary)
+# Advisory — Capability Parity & PCI Readiness (one-page summary)
 
 ## Verdict
-On **detection and audit capability** PkgFirewall reaches parity with Sonatype, JFrog Xray
+On **detection and audit capability** Advisory reaches parity with Sonatype, JFrog Xray
 and Snyk, and exceeds them in three areas. It would **fail a PCI DSS 4.0 audit today** on
 three operational items — all closeable, none architectural.
 
@@ -17,7 +17,7 @@ three operational items — all closeable, none architectural.
   egress. Vendors only lead on pre-NVD/zero-day *timing* and proprietary reachability/behavioural
   analysis (closed on demand via pluggable VulnCheck/Socket), plus support/SLA/cert and production
   hardening. An on-prem mirror is in fact a resilience + data-residency advantage for a bank.
-- **Cost:** Sonatype $60–150k/yr · JFrog $50–130k/yr · Snyk $35–80k/yr · **PkgFirewall ~$0**.
+- **Cost:** Sonatype $60–150k/yr · JFrog $50–130k/yr · Snyk $35–80k/yr · **Advisory ~$0**.
   (JFrog Xray can't be bought standalone — it forces the whole Artifactory platform.)
 
 ## PCI DSS 4.0 — where we stand
@@ -33,8 +33,8 @@ three operational items — all closeable, none architectural.
   3. **Formal RBAC roles** (PCI 7.2) — map existing write/read split to named roles on SSO identities.
 
 ## Recommendation
-Pilot in the R&D zone now; fund the three gap items as the costed path to a production,
+Pilot in the production environment now; fund the three gap items as the costed path to a production,
 PCI-assessable deployment. Sign-off claim: *"Functional parity on detection and audit, at zero
 licensing, ready to pilot, with a three-item path to PCI compliance."*
 
-Full detail, color-coded matrix and control-by-control mapping: **PkgFirewall_Assessment.docx**.
+Full detail, color-coded matrix and control-by-control mapping: **Advisory_Assessment.docx**.

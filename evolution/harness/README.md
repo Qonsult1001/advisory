@@ -1,8 +1,8 @@
-# PkgFirewall Evolution Harness
+# Advisory Evolution Harness
 
-A **ticket-driven, PR-only** self-evolution loop for the PkgFirewall codebase, adapted from
-[yoyo-evolve](https://github.com/yologdev/yoyo-evolve) (MIT). When a tester files a GitHub issue
-labelled **`evolve`** (or comments on one), the loop runs the `/evolve` cycle through **Claude Code**
+A **ticket-driven, PR-only** self-evolution loop for the Advisory codebase, adapted from
+an MIT-licensed evolution harness (see NOTICE). When a tester files a GitHub issue
+labelled **`evolve`** (or comments on one), the loop runs the `/evolve` cycle through the Claude Code CLI
 — it plans, implements a focused change, writes a test, builds + tests, and **opens a pull request
 for human review**. It never pushes to `main` and never merges.
 
@@ -65,12 +65,12 @@ built-in `GITHUB_TOKEN` — no extra secret. The local timer above needs **no se
 
 ## Watching it
 
-PkgFirewall's **Evolution** dashboard (sidebar) reads this repo's tickets, runs, and PRs. Point it
+Advisory's **Evolution** dashboard (sidebar) reads this repo's tickets, runs, and PRs. Point it
 at the repo via `EVOLUTION_REPO=owner/name` and `EVOLUTION_ENABLED=true` on the API.
 
 ## Attribution
 
-Adapted from **yoyo-evolve** by yologdev — https://github.com/yologdev/yoyo-evolve — under the MIT
+Based on an MIT-licensed evolution harness under the MIT
 License (see `NOTICE`). The `/evolve` pipeline shape and the `plan`/`debug`/`test`/`self-assess`
 skills derive from that project; the build/test steps and PR-only safety model are re-authored for
 this .NET+React repository.

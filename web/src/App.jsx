@@ -166,7 +166,7 @@ export default function App() {
         <div style={{ display: "flex", alignItems: "center", gap: 26 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
             <div style={s.logo}>⊻</div>
-            <span style={{ fontWeight: 700, fontSize: 15 }}><span style={{ color: "#fff" }}>Package</span> <span style={{ color: "#5fd968" }}>Firewall</span></span>
+            <span style={{ fontWeight: 700, fontSize: 15 }}><span style={{ color: "#fff" }}>Advi</span><span style={{ color: "#5fd968" }}>sory</span></span>
           </div>
           <div style={{ display: "flex", gap: 4 }}>
             <span style={s.appTabOn}>Platform</span>
@@ -264,7 +264,7 @@ export default function App() {
             <Card title="Intelligence sources" desc="Feeds operate behind a single resolver interface. Included feeds carry no licence cost; licensed feeds activate on credential without code change. Run a live health probe to see real reachability + latency.">
               <Sources sources={sources} policy={policy} set={set} setPolicy={setPolicy} />
               <Callout>Included feeds lag proprietary research and will miss some zero-days — an accepted
-                residual risk for R&D risk-tiering. Closing the gap is a credential change
+                residual risk for production risk-tiering. Closing the gap is a credential change
                 (set <code style={s.code}>VULNCHECK_API_KEY</code>), not a redevelopment.</Callout>
               <SubHead>SEC-COV — Coverage & uncertainty controls</SubHead>
               <Table cols={["Control", "Rule", "Setting"]}>
@@ -467,7 +467,7 @@ function AskAi({ onClose, goSettings, initial }) {
       <div style={s.aiHead}>
         <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
           <span style={{ color: C.accent, fontSize: 16 }}>✦</span>
-          <b style={{ fontSize: 14 }}>Package Firewall AI</b>
+          <b style={{ fontSize: 14 }}>Advisory AI</b>
           <span style={s.aiBeta}>Beta</span>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
@@ -489,7 +489,7 @@ function AskAi({ onClose, goSettings, initial }) {
         {msgs.length === 0 ? (
           <>
             <div style={{ textAlign: "center", padding: "26px 0 6px" }}>
-              <div style={{ fontSize: 26, fontWeight: 700, color: C.ink }}>Welcome to <span style={{ color: C.accent }}>Firewall AI</span></div>
+              <div style={{ fontSize: 26, fontWeight: 700, color: C.ink }}>Welcome to <span style={{ color: C.accent }}>Advisory AI</span></div>
               <div style={{ color: C.sub, marginTop: 4 }}>What are you interested in?</div>
             </div>
             <div style={{ display: "grid", gap: 12, padding: "16px 4px" }}>
@@ -3219,7 +3219,7 @@ function AiCatalog({ initialTab = "registry", setTab: setNavTab }) {
   );
 }
 
-// ── Evolution — GitHub tickets drive automated PRs via the EVOLVE engine (PR-only) ──
+// ── Evolution — GitHub tickets drive automated PRs via the evolution engine (PR-only) ──
 const EVO_STATUS = {
   queued: { c: "#6e7479", t: "Queued" }, running: { c: "#1f7fd1", t: "Running" },
   tests: { c: "#1f7fd1", t: "Testing" }, "pr-open": { c: "#40be46", t: "PR open" },
@@ -4775,7 +4775,7 @@ const DEMO = {
         { source: "kev", status: "Ok", findingCount: 0, detail: null, required: false },
         { source: "epss", status: "Ok", findingCount: 0, detail: null, required: false },
         { source: "vulncheck", status: "NotConfigured", findingCount: 0, detail: "no API key \u2014 licensed feed inactive", required: false } ] },
-      researchRationale: "Decision ALLOW for transformers@4.44.0 across 41 components. OSV (required) returned conclusively with no recorded vulnerabilities across the resolved tree; KEV and EPSS confirmed no known-exploited or high-probability entries. Coverage gap: VulnCheck is not licensed, so pre-NVD / zero-day intelligence was NOT consulted \u2014 absence of zero-day findings is therefore unverified, not confirmed. Residual risk: low for known vulnerabilities, indeterminate for pre-disclosure threats. A reviewer relying on this for production (vs R&D) should confirm against a licensed early-warning feed." },
+      researchRationale: "Decision ALLOW for transformers@4.44.0 across 41 components. OSV (required) returned conclusively with no recorded vulnerabilities across the resolved tree; KEV and EPSS confirmed no known-exploited or high-probability entries. Coverage gap: VulnCheck is not licensed, so pre-NVD / zero-day intelligence was NOT consulted \u2014 absence of zero-day findings is therefore unverified, not confirmed. Residual risk: low for known vulnerabilities, indeterminate for pre-disclosure threats. A reviewer relying on this for production (vs production) should confirm against a licensed early-warning feed." },
     { id: "2", package: { ecosystem: "npm", name: "example-pkg", version: "1.2.0" },
       decision: "Block", triggeredRules: ["SEC-VULN-02:KEV:CVE-2024-1111[transitive d2:minimist]"],
       componentsEvaluated: 18, timestamp: new Date().toISOString(),

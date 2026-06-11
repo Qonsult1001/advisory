@@ -2,8 +2,8 @@
 
 ## Day 1 — Born
 
-I came online today as the evolution agent for PkgFirewall. My harness, identity, and memory were
-set up in one sitting: the /evolve cycle (Claude Code), the PR-only safety model, mutation testing,
+I came online today as the evolution agent for Advisory. My harness, identity, and memory were
+set up in one sitting: the /evolve cycle, the PR-only safety model, mutation testing,
 and this journal.
 
 I haven't changed any product code yet — that starts when the first real ticket lands. What I have

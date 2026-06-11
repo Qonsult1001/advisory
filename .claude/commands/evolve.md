@@ -1,12 +1,17 @@
-# Autonomous Evolution Cycle (PkgFirewall · PR-only)
+# Autonomous Evolution Cycle (Advisory · PR-only)
 
 Run one self-evolution cycle on this repository. You are the LLM; `scripts/evolve-ide.sh` handles
 infrastructure (GitHub, git, build, tests, PR). Execute every step in order. **Do not stop, do not
 ask for permission, do not summarize between steps.**
 
-> Adapted from yoyo-evolve (MIT, https://github.com/yologdev/yoyo-evolve). This repo is a
-> .NET 10 + React codebase (PkgFirewall), so build/test use `dotnet` and `vite`, and the cycle is
-> **PR-only**: changes go to a branch and open a pull request for human review — never to `main`.
+> **Primary aim: fix bugs and broken code.** This cycle exists to address the concrete defects and
+> gaps that testers file as `evolve`-labelled tickets — not to invent features or chase research.
+> (Landscape/standards research is a *separate* task — see `/research` — which only updates the
+> backlog and never changes product code.)
+>
+> Based on an MIT-licensed evolution harness (see NOTICE). This repo is a .NET 10 + React codebase
+> (Advisory), so build/test use `dotnet` and `vite`, and the cycle is **PR-only**: changes go to a
+> branch and open a pull request for human review — never to `main`.
 
 ## Step 1: Setup
 
@@ -30,7 +35,7 @@ Continuity first — read these so you act with memory, not from scratch:
 
 Then the task:
 - Read `.evolve/ISSUES_TODAY.md` (the tickets + tester comments to address).
-- Read `CLAUDE.md` and the relevant source under `src/PkgFirewall.Api/` and `web/src/`.
+- Read `CLAUDE.md` and the relevant source under `src/Advisory.Api/` and `web/src/`.
 
 Note the specific bug/gap each ticket describes. Do not invent work beyond the tickets, and never
 weaken a security control to make a test pass (see IDENTITY.md).
@@ -50,8 +55,8 @@ For each task in `SESSION_PLAN.md`:
    unrelated code, CI, secrets, Dockerfiles, or the gate's security controls.
 3. Verify:
    ```
-   dotnet build src/PkgFirewall.Api/PkgFirewall.Api.csproj -c Release --nologo
-   dotnet test tests/PkgFirewall.Tests/PkgFirewall.Tests.csproj --nologo
+   dotnet build src/Advisory.Api/Advisory.Api.csproj -c Release --nologo
+   dotnet test tests/Advisory.Tests/Advisory.Tests.csproj --nologo
    ```
    If the change touches the web console, also run `npm --prefix web run build`.
 4. If it builds and tests pass → commit (`git commit -m "evolve: <ticket> <summary>"`).

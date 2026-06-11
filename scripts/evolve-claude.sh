@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # evolve-claude.sh — the evolution timer. Runs /evolve via the Claude Code CLI on a loop.
 #
-# Adapted from yoyo-evolve (MIT, https://github.com/yologdev/yoyo-evolve).
+# Based on an MIT-licensed evolution harness (see NOTICE).
 #
 # HOW IT WORKS (no API key, no GitHub secret):
 #   • `claude -p "/evolve"` uses your EXISTING Claude Code login (Pro/Max). You're already

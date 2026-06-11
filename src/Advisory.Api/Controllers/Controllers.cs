@@ -1,0 +1,1311 @@
+using System.Net.Http.Json;
+using System.Text.Json;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Authorization;
+using Advisory.Api.Auth;
+using Advisory.Api.Audit;
+using Advisory.Api.Gate;
+using Advisory.Api.Models;
+using Advisory.Api.Policy;
+using Advisory.Api.VulnSources;
+using Advisory.Api.Nexus;
+using Advisory.Api.Queue;
+using Advisory.Api.Research;
+
+namespace Advisory.Api.Controllers;
+
+[ApiController]
+[Route("api/gate")]
+[Authorize(Policy = Policies.CanViewer)]
+public class GateController : ControllerBase
+{
+    private readonly IGateEngine _gate;
+    public GateController(IGateEngine gate) => _gate = gate;
+
+    /// <summary>The proxy calls this before promoting a quarantined package.</summary>
+    [HttpPost("evaluate")]
+    public async Task<ActionResult<GateResult>> Evaluate([FromBody] PackageRef pkg, CancellationToken ct)
+        => Ok(await _gate.EvaluateAsync(pkg, ct));
+}
+
+[ApiController]
+[Route("api/policy")]
+[Authorize(Policy = Policies.CanViewer)]
+public class PolicyController : ControllerBase
+{
+    private readonly IPolicyStore _store;
+    private readonly ICurrentUser _user;
+    public PolicyController(IPolicyStore store, ICurrentUser user) { _store = store; _user = user; }
+
+    [HttpGet]
+    public ActionResult Get() => Ok(new { policy = _store.Current, signature = _store.CurrentSignature });
+
+    [HttpPut]
+    [Authorize(Policy = Policies.CanAdmin)]
+    public async Task<ActionResult> Update([FromBody] FirewallPolicy policy)
+    {
+        var saved = await _store.UpdateAsync(policy, _user.Name);
+        return Ok(new { policy = saved, signature = _store.CurrentSignature });
+    }
+}
+
+[ApiController]
+[Route("api/audit")]
+[Authorize(Policy = Policies.CanViewer)]
+public class AuditController : ControllerBase
+{
+    private readonly IAuditLog _audit;
+    public AuditController(IAuditLog audit) => _audit = audit;
+
+    [HttpGet]
+    public ActionResult Get([FromQuery] GateDecision? decision, [FromQuery] int limit = 200)
+        => Ok(_audit.Query(decision, limit));
+}
+
+/// <summary>
+/// OSS package catalog — a JFrog-Catalog-style overview for any package, aggregated from free
+/// public sources (npm registry + downloads, PyPI JSON, OSV vulns, CISA KEV, OpenSSF Scorecard).
+/// npm + PyPI are live; other ecosystems return a "supported soon" overview.
+/// </summary>
+[ApiController]
+[Route("api/catalog")]
+[Authorize(Policy = Policies.CanViewer)]
+public class CatalogController : ControllerBase
+{
+    private readonly Advisory.Api.Catalog.CatalogService _catalog;
+    public CatalogController(Advisory.Api.Catalog.CatalogService catalog) => _catalog = catalog;
+
+    /// <summary>The supported ecosystems and which are live today.</summary>
+    [HttpGet("ecosystems")]
+    public ActionResult Ecosystems() => Ok(
+        Enum.GetValues<Ecosystem>().Select(e => new { ecosystem = e.ToString(), live = _catalog.IsLiveEcosystem(e) }));
+
+    /// <summary>Search packages by name. ?ecosystem=npm&amp;q=express[&amp;limit=30]</summary>
+    [HttpGet("search")]
+    public async Task<ActionResult> Search([FromQuery] string ecosystem, [FromQuery] string q,
+        [FromQuery] int limit = 30, CancellationToken ct = default)
+    {
+        if (!Enum.TryParse<Ecosystem>(ecosystem, true, out var eco)) eco = Ecosystem.npm;
+        var hits = await _catalog.SearchAsync(eco, q?.Trim() ?? "", Math.Clamp(limit, 1, 50), ct);
+        return Ok(new { query = q, ecosystem = eco.ToString(), count = hits.Count, results = hits });
+    }
+
+    /// <summary>Full package overview. ?ecosystem=npm&amp;name=express[&amp;version=4.18.2]</summary>
+    [HttpGet("package")]
+    public async Task<ActionResult> Package([FromQuery] string ecosystem, [FromQuery] string name,
+        [FromQuery] string? version, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return BadRequest(new { error = "name is required" });
+        if (!Enum.TryParse<Ecosystem>(ecosystem, true, out var eco)) eco = Ecosystem.npm;
+        return Ok(await _catalog.OverviewAsync(eco, name.Trim(), string.IsNullOrWhiteSpace(version) ? null : version.Trim(), ct));
+    }
+}
+
+/// <summary>
+/// Browse the live CISA Known-Exploited Vulnerabilities (KEV) catalogue — the actual list behind
+/// the "known-exploited" gate rule. Loads on demand (24h cached) and supports a text query.
+/// </summary>
+[ApiController]
+[Route("api/kev")]
+[Authorize(Policy = Policies.CanViewer)]
+public class KevController : ControllerBase
+{
+    private readonly KevSource _kev;
+    public KevController(KevSource kev) => _kev = kev;
+
+    [HttpGet]
+    public async Task<ActionResult> Get([FromQuery] string? q, [FromQuery] int limit = 100, CancellationToken ct = default)
+    {
+        var status = await _kev.EnsureLoaded(ct);
+        return Ok(new
+        {
+            status = status.ToString(),
+            total = _kev.Count,
+            loadedAt = _kev.LoadedAt,
+            entries = _kev.Browse(q, limit)
+        });
+    }
+}
+
+/// <summary>
+/// Watches — named bindings of a rule-set to a resource scope (JFrog-style governance view).
+/// Read for any viewer; edited as part of the signed policy (Admin) via PUT /api/policy.
+/// </summary>
+[ApiController]
+[Route("api/watches")]
+[Authorize(Policy = Policies.CanViewer)]
+public class WatchesController : ControllerBase
+{
+    private readonly IPolicyStore _policy;
+    public WatchesController(IPolicyStore policy) => _policy = policy;
+
+    [HttpGet]
+    public ActionResult Get() => Ok(_policy.Current.Watches);
+}
+
+/// <summary>
+/// Structured policy violations — every non-Allow decision projected into a "what broke policy"
+/// record (resource, worst severity, rules, status). A violation is Waived when a matching,
+/// unexpired exception exists; otherwise Open. Derived from the audit ledger + current policy,
+/// so it stays in lockstep with decisions without a second source of truth.
+/// </summary>
+[ApiController]
+[Route("api/violations")]
+[Authorize(Policy = Policies.CanViewer)]
+public class ViolationsController : ControllerBase
+{
+    private readonly IAuditLog _audit;
+    private readonly IPolicyStore _policy;
+    public ViolationsController(IAuditLog audit, IPolicyStore policy) { _audit = audit; _policy = policy; }
+
+    [HttpGet]
+    public ActionResult Get([FromQuery] string? status, [FromQuery] int limit = 200)
+    {
+        var p = _policy.Current;
+        // Both non-Allow decisions are violations.
+        var entries = _audit.Query(GateDecision.Block, limit)
+            .Concat(_audit.Query(GateDecision.Quarantine, limit))
+            .OrderByDescending(e => e.Timestamp);
+
+        var violations = entries.Select(e =>
+        {
+            var ex = p.Exceptions.FirstOrDefault(x => x.Matches(e.Package));
+            var sev = WorstSeverity(e);
+            return new Violation(
+                e.Id,
+                $"{e.Package.Ecosystem}:{e.Package.Name}@{e.Package.Version}",
+                e.Package.Ecosystem,
+                e.Decision,
+                sev,
+                e.TriggeredRules,
+                ex is not null ? "Waived" : "Open",
+                ex?.Ticket,
+                e.Timestamp,
+                MatchingWatch(p, e));
+        });
+
+        if (!string.IsNullOrWhiteSpace(status))
+            violations = violations.Where(v => v.Status.Equals(status, StringComparison.OrdinalIgnoreCase));
+
+        return Ok(violations.Take(limit).ToList());
+    }
+
+    private static Severity WorstSeverity(AuditEntry e)
+    {
+        var fromFindings = e.Findings.Count > 0 ? e.Findings.Max(f => f.Severity) : Severity.None;
+        // A Block with no scored findings (e.g. malware/pickle/secret) is still High by intent.
+        return fromFindings == Severity.None && e.Decision == GateDecision.Block ? Severity.High : fromFindings;
+    }
+
+    // Policy names for watches persisted before Watch.PolicyName existed (matches UI fallback).
+    private static readonly Dictionary<string, string> PolicyNameFallback = new()
+    {
+        ["PROD-watch"] = "Block-Promotion-On-High-Vulnerability",
+        ["Security-watch"] = "Security_policy_1",
+        ["License-watch"] = "license-policy",
+    };
+
+    /// <summary>
+    /// Per-finding violation rows (JFrog watch-violations drill-down): one row per vulnerability /
+    /// license / malicious finding inside each violating decision, attributed to a watch. Filter
+    /// with ?watch=NAME. Columns mirror Xray: id, severity, type, component, impacted artifact,
+    /// updated, policy.
+    /// </summary>
+    [HttpGet("detailed")]
+    public ActionResult Detailed([FromQuery] string? watch, [FromQuery] int limit = 500)
+    {
+        var p = _policy.Current;
+        var entries = _audit.Query(GateDecision.Block, limit)
+            .Concat(_audit.Query(GateDecision.Quarantine, limit))
+            .OrderByDescending(e => e.Timestamp);
+
+        string PolicyLabel(Watch w) => !string.IsNullOrWhiteSpace(w.PolicyName) ? w.PolicyName
+            : PolicyNameFallback.TryGetValue(w.Name, out var fb) ? fb : $"{w.Name}-policy";
+
+        var rows = new List<object>();
+        foreach (var e in entries)
+        {
+            var artifact = $"{e.Package.Ecosystem}:{e.Package.Name}@{e.Package.Version}";
+            var isLicense = e.TriggeredRules.Any(r => r.Contains("LIC", StringComparison.OrdinalIgnoreCase));
+            var scoped = p.Watches.Where(w => w.Enabled
+                && (w.Ecosystems.Count == 0 || w.Ecosystems.Contains(e.Package.Ecosystem))).ToList();
+
+            if (e.Findings.Count > 0)
+                foreach (var f in e.Findings)
+                {
+                    // JFrog semantics: the finding appears under EVERY watch whose rules match it
+                    // (severity threshold / KEV-only / malicious), not just the blocking one.
+                    var matches = scoped.Where(w => w.Rules.Any(r => RuleMatchesFinding(r, f))).ToList();
+                    foreach (var w in matches)
+                    {
+                        if (!string.IsNullOrWhiteSpace(watch) && !string.Equals(w.Name, watch, StringComparison.OrdinalIgnoreCase)) continue;
+                        rows.Add(new
+                        {
+                            id = f.Id,
+                            severity = f.Severity.ToString(),
+                            type = "Security",
+                            component = $"{e.Package.Name} : {e.Package.Version}",
+                            impactedArtifact = artifact,
+                            watch = w.Name,
+                            policy = PolicyLabel(w),
+                            knownExploited = f.KnownExploited,
+                            cvss = f.CvssScore,
+                            fixedVersion = f.FixedVersion,
+                            updated = e.Timestamp,
+                            decision = e.Decision.ToString(),
+                        });
+                    }
+                }
+            else
+            {
+                // No scored findings (license / secret / pickle block): attribute to watches
+                // carrying the matching rule kind.
+                var kind = isLicense ? "License"
+                    : e.TriggeredRules.Any(r => r.Contains("MAL", StringComparison.OrdinalIgnoreCase)) ? "Malicious" : null;
+                var matches = scoped.Where(w => kind is null
+                    ? w.Rules.Any(r => r.Type == "CVEs")
+                    : w.Rules.Any(r => r.Type == kind)).ToList();
+                foreach (var w in matches)
+                {
+                    if (!string.IsNullOrWhiteSpace(watch) && !string.Equals(w.Name, watch, StringComparison.OrdinalIgnoreCase)) continue;
+                    rows.Add(new
+                    {
+                        id = e.TriggeredRules.FirstOrDefault()?.Split(':')[0] ?? "POLICY",
+                        severity = WorstSeverity(e).ToString(),
+                        type = isLicense ? "License" : "Security",
+                        component = $"{e.Package.Name} : {e.Package.Version}",
+                        impactedArtifact = artifact,
+                        watch = w.Name,
+                        policy = PolicyLabel(w),
+                        knownExploited = false,
+                        cvss = (double?)null,
+                        fixedVersion = (string?)null,
+                        updated = e.Timestamp,
+                        decision = e.Decision.ToString(),
+                    });
+                }
+            }
+        }
+        return Ok(new { count = rows.Count, rows = rows.Take(limit) });
+    }
+
+    /// <summary>Does one watch rule match one finding? Mirrors JFrog rule semantics.</summary>
+    private static bool RuleMatchesFinding(WatchRule r, Finding f) => r.Type switch
+    {
+        "CVEs" => r.KnownExploitedOnly
+            ? f.KnownExploited
+            : f.Severity >= ParseSeverity(r.MinSeverity),
+        "Malicious" => f.Id.StartsWith("MAL-", StringComparison.OrdinalIgnoreCase),
+        _ => false, // License rules match license violations, handled on the no-findings path
+    };
+
+    private static Severity ParseSeverity(string s) =>
+        Enum.TryParse<Severity>(s, true, out var sev) ? sev : Severity.High;
+
+    /// <summary>
+    /// Attribute a violation to the most relevant enabled watch: one whose ecosystem scope covers
+    /// this package and whose rule type matches what was triggered (license / malicious / CVE).
+    /// Prefers a blocking watch. Best-effort labelling for the governance view.
+    /// </summary>
+    private static string? MatchingWatch(FirewallPolicy p, AuditEntry e)
+    {
+        var rules = string.Join(" ", e.TriggeredRules);
+        var kind = rules.Contains("LIC", StringComparison.OrdinalIgnoreCase) ? "License"
+            : rules.Contains("MAL", StringComparison.OrdinalIgnoreCase) ? "Malicious"
+            : "CVEs";
+        var candidates = p.Watches.Where(w => w.Enabled
+            && (w.Ecosystems.Count == 0 || w.Ecosystems.Contains(e.Package.Ecosystem))
+            && w.Rules.Any(r => r.Type == kind));
+        // Prefer a watch that actually blocks this kind.
+        return (candidates.FirstOrDefault(w => w.Rules.Any(r => r.Type == kind && r.Block))
+                ?? candidates.FirstOrDefault())?.Name;
+    }
+}
+
+[ApiController]
+[Route("api/sources")]
+[Authorize(Policy = Policies.CanViewer)]
+public class SourcesController : ControllerBase
+{
+    private readonly IEnumerable<IVulnSource> _sources;
+    private readonly IPolicyStore _policy;
+    private readonly IHttpClientFactory _http;
+    public SourcesController(IEnumerable<IVulnSource> sources, IPolicyStore policy, IHttpClientFactory http)
+    { _sources = sources; _policy = policy; _http = http; }
+
+    // Built-in source catalogue (the known integration types) — the admin "registry".
+    // DefaultEndpoint = the hard-coded upstream URL each source uses out of the box; an admin can
+    // override it (e.g. point at an on-prem mirror) via SourceConfig.Endpoint in the signed policy.
+    private static readonly (string Key, string Label, string Scope, string Tier, bool NeedsCredential, string? CredEnv, string? DefaultEndpoint)[] Catalogue =
+    {
+        ("osv", "OSV.dev", "Multi-ecosystem CVE", "Included", false, null, "https://api.osv.dev/v1/query"),
+        ("malware", "OpenSSF Malicious Packages", "Typosquat / malicious-package", "Included", false, null, "https://github.com/ossf/malicious-packages"),
+        ("kev", "CISA KEV", "Known-exploited catalog", "Included", false, null, "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"),
+        ("epss", "EPSS (FIRST.org)", "Exploit probability", "Included", false, null, "https://api.first.org/data/v1/epss"),
+        ("artifactory", "JFrog Artifactory scan API", "Cross-referenced CVE scan", "Included", true, "ARTIFACTORY_TOKEN", null),
+        ("vulncheck", "VulnCheck", "Pre-NVD / zero-day intel", "Licensed", true, "VULNCHECK_API_KEY", "https://api.vulncheck.com/v3"),
+        ("socket", "Socket (behavioural)", "Install-script / runtime behaviour", "Licensed", true, "SOCKET_API_KEY", "https://api.socket.dev/v0"),
+    };
+
+    [HttpGet]
+    public ActionResult Get() => Ok(_sources.Select(s => new { s.Key, s.IsAvailable }));
+
+    /// <summary>
+    /// Admin source list: every known source type + admin-added custom feeds, joined to their
+    /// policy config (enabled, has-credential, endpoint). Powers the JFrog-style sources admin.
+    /// </summary>
+    [HttpGet("admin")]
+    public ActionResult Admin()
+    {
+        var p = _policy.Current;
+        var live = _sources.ToDictionary(s => s.Key, s => s.IsAvailable, StringComparer.OrdinalIgnoreCase);
+        var builtins = Catalogue.Select(c =>
+        {
+            var cfg = p.SourceConfigs.FirstOrDefault(x => x.Key.Equals(c.Key, StringComparison.OrdinalIgnoreCase));
+            var hasCred = !c.NeedsCredential || !string.IsNullOrWhiteSpace(cfg?.Credential)
+                          || (c.CredEnv is not null && !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(c.CredEnv)));
+            return new {
+                c.Key, c.Label, c.Scope, c.Tier, c.NeedsCredential,
+                custom = false,
+                enabled = p.EnabledSources.Contains(c.Key),
+                required = p.RequiredSources.Contains(c.Key),
+                endpoint = cfg?.Endpoint,              // admin override (null = using built-in default)
+                defaultEndpoint = c.DefaultEndpoint,   // the hard-coded upstream URL
+                hasCredential = hasCred,
+                available = live.TryGetValue(c.Key, out var a) && a,
+            };
+        });
+        var customs = p.CustomSources.Select(cs => new {
+            Key = cs.Id, cs.Label, Scope = "Custom OSV-format feed", Tier = "Custom", NeedsCredential = false,
+            custom = true, cs.Enabled, cs.Required, Endpoint = cs.OsvQueryUrl,
+            hasCredential = !string.IsNullOrWhiteSpace(cs.Credential), available = cs.Enabled,
+        });
+        return Ok(new { builtins, customs });
+    }
+
+    /// <summary>Test one built-in source against a benign package (admin "Test connection").</summary>
+    [HttpPost("test/{key}")]
+    public async Task<ActionResult> TestOne(string key, CancellationToken ct)
+    {
+        var src = _sources.FirstOrDefault(s => s.Key.Equals(key, StringComparison.OrdinalIgnoreCase));
+        if (src is null) return NotFound(new { error = $"unknown source '{key}'" });
+        if (!src.IsAvailable) return Ok(new { key, ok = false, status = "NotConfigured", detail = "credential/endpoint not set" });
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        try
+        {
+            var r = await src.QueryAsync(new PackageRef(Ecosystem.npm, "lodash", "4.17.21"), ct);
+            return Ok(new { key, ok = r.Status is SourceStatus.Ok or SourceStatus.Empty, status = r.Status.ToString(), elapsedMs = sw.ElapsedMilliseconds, detail = r.Detail });
+        }
+        catch (Exception ex) { return Ok(new { key, ok = false, status = "Errored", detail = ex.Message }); }
+    }
+
+    /// <summary>Test an arbitrary OSV-format feed URL before saving it as a custom source.</summary>
+    [HttpPost("test-custom")]
+    [Authorize(Policy = Policies.CanAdmin)]
+    public async Task<ActionResult> TestCustom([FromBody] CustomSourceTest req, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(req.Url)) return BadRequest(new { error = "url required" });
+        var client = _http.CreateClient("catalog");
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        try
+        {
+            var body = new { version = "4.17.21", package = new { name = "lodash", ecosystem = "npm" } };
+            using var msg = new HttpRequestMessage(HttpMethod.Post, req.Url) { Content = JsonContent.Create(body) };
+            if (!string.IsNullOrWhiteSpace(req.Credential)) msg.Headers.Add("Authorization", $"Bearer {req.Credential}");
+            using var resp = await client.SendAsync(msg, ct);
+            var ok = resp.IsSuccessStatusCode;
+            var hasVulns = false;
+            if (ok) { try { using var d = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct)); hasVulns = d.RootElement.TryGetProperty("vulns", out _); } catch { } }
+            return Ok(new { ok, status = ok ? (hasVulns ? "Ok (OSV-format)" : "Reachable, but no 'vulns' field") : $"HTTP {(int)resp.StatusCode}", elapsedMs = sw.ElapsedMilliseconds });
+        }
+        catch (Exception ex) { return Ok(new { ok = false, status = "Errored", detail = ex.Message }); }
+    }
+    public record CustomSourceTest(string Url, string? Credential);
+
+    /// <summary>
+    /// Live health probe: actually query each source against a benign reference package and report
+    /// status + latency. Powers a real "is this feed reachable right now" view, not just config state.
+    /// </summary>
+    [HttpGet("health")]
+    public async Task<ActionResult> Health(CancellationToken ct)
+    {
+        var probe = new PackageRef(Ecosystem.npm, "lodash", "4.17.21");
+        var results = await Task.WhenAll(_sources.Select(async s =>
+        {
+            if (!s.IsAvailable)
+                return new { key = s.Key, status = "NotConfigured", elapsedMs = 0L, detail = "not configured / no credential" };
+            try
+            {
+                var r = await s.QueryAsync(probe, ct);
+                return new { key = s.Key, status = r.Status.ToString(), elapsedMs = r.ElapsedMs, detail = r.Detail ?? "" };
+            }
+            catch (Exception ex)
+            {
+                return new { key = s.Key, status = "Errored", elapsedMs = 0L, detail = ex.Message };
+            }
+        }));
+        return Ok(results);
+    }
+}
+
+/// <summary>
+/// Nexus enforcement hook. Nexus OSS calls this (via pre-download webhook / routing
+/// rule) before serving any proxied artifact. A Block response stops the download —
+/// this is what makes the gate non-bypassable.
+/// </summary>
+[ApiController]
+[Route("api/enforce")]
+[Authorize(Policy = Policies.CanViewer)]
+public class EnforceController : ControllerBase
+{
+    private readonly IGateEngine _gate;
+    public EnforceController(IGateEngine gate) => _gate = gate;
+
+    public record NexusAsset(string Format, string Name, string Version, string? FileName, string? Sha256);
+
+    [HttpPost]
+    public async Task<ActionResult> Enforce([FromBody] NexusAsset a, CancellationToken ct)
+    {
+        var eco = a.Format.ToLowerInvariant() switch
+        {
+            "pypi" => Ecosystem.PyPI, "npm" => Ecosystem.npm, "nuget" => Ecosystem.NuGet,
+            "cargo" => Ecosystem.Cargo, "go" => Ecosystem.Go, _ => Ecosystem.HuggingFace
+        };
+        var result = await _gate.EvaluateAsync(
+            new PackageRef(eco, a.Name, a.Version, a.Sha256, a.FileName), ct);
+
+        // Nexus expects 200=allow serve, 403=block.
+        return result.Decision == GateDecision.Allow
+            ? Ok(new { allow = true })
+            : StatusCode(403, new { allow = false, rules = result.TriggeredRules });
+    }
+}
+
+/// <summary>Generates a CycloneDX SBOM by resolving the package's full tree.</summary>
+[ApiController]
+[Route("api/sbom")]
+[Authorize(Policy = Policies.CanViewer)]
+public class SbomController : ControllerBase
+{
+    private readonly IEnumerable<Advisory.Api.Resolve.IDependencyResolver> _resolvers;
+    public SbomController(IEnumerable<Advisory.Api.Resolve.IDependencyResolver> r) => _resolvers = r;
+
+    [HttpPost]
+    public async Task<ActionResult> Generate([FromBody] PackageRef pkg, CancellationToken ct)
+    {
+        var resolver = _resolvers.FirstOrDefault(r => r.Ecosystem == pkg.Ecosystem);
+        var tree = resolver is not null
+            ? await resolver.ResolveAsync(pkg, 8, ct)
+            : new List<Advisory.Api.Resolve.DepNode> { new(pkg, 0, null) };
+        var sbom = Advisory.Api.Scan.SbomGenerator.CycloneDx(pkg, tree);
+        return Content(sbom, "application/json");
+    }
+}
+
+
+/// <summary>
+/// Xray-style Scans List: the indexed Nexus repositories (name, format, artifact count, latest,
+/// configurations) and a drill-in to a repo's artifacts. Idle/empty until NEXUS_URL is set.
+/// </summary>
+[ApiController]
+[Route("api/scans")]
+[Authorize(Policy = Policies.CanViewer)]
+public class ScansController : ControllerBase
+{
+    private readonly INexusClient _nexus;
+    private readonly Advisory.Api.Scan.ScanStore _scans;
+    public ScansController(INexusClient nexus, Advisory.Api.Scan.ScanStore scans) { _nexus = nexus; _scans = scans; }
+
+    [HttpGet("repositories")]
+    public async Task<ActionResult> Repositories(CancellationToken ct)
+    {
+        if (!_nexus.IsConfigured) return Ok(new { configured = false, repositories = Array.Empty<object>() });
+        var repos = await _nexus.ListRepositoriesAsync(ct);
+        return Ok(new { configured = true, count = repos.Count, repositories = repos });
+    }
+
+    /// <summary>
+    /// Artifacts in a repo, each joined to its STORED scan (counts + last-scan time) where one
+    /// exists — so the table shows real indexed results, not "scan on open".
+    /// </summary>
+    [HttpGet("repository/{repo}/artifacts")]
+    public async Task<ActionResult> Artifacts(string repo, CancellationToken ct)
+    {
+        if (!_nexus.IsConfigured) return Ok(new { configured = false, artifacts = Array.Empty<object>() });
+        var items = await _nexus.ListComponentsAsync(repo, ct);
+        var artifacts = items.Select(a =>
+        {
+            var scan = _scans.Get(repo, a.Name, a.Version);
+            return new
+            {
+                a.Name, a.Version, a.Ecosystem, a.FileName, RepositoryPath = $"{repo}/{a.Name}",
+                Scanned = scan is not null,
+                ScanStatus = scan is null ? "Not scanned" : "Done",
+                LastScan = scan?.ScannedAt,
+                Vulnerabilities = scan?.Vulnerabilities.Count ?? 0,
+                Critical = scan?.Critical ?? 0, High = scan?.High ?? 0,
+                Verdict = scan?.Verdict
+            };
+        }).ToList();
+        return Ok(new { configured = true, repository = repo, count = artifacts.Count, artifacts });
+    }
+
+    /// <summary>The full stored scan for one artifact (runs + indexes it if not already scanned).</summary>
+    [HttpGet("artifact")]
+    public async Task<ActionResult> Artifact([FromQuery] string repo, [FromQuery] string ecosystem,
+        [FromQuery] string name, [FromQuery] string version, [FromQuery] bool rescan = false, CancellationToken ct = default)
+    {
+        if (!Enum.TryParse<Ecosystem>(ecosystem, true, out var eco)) eco = Ecosystem.npm;
+        var pkg = new PackageRef(eco, name, version);
+        var scan = rescan
+            ? await _scans.ScanArtifactAsync(repo, pkg, ct)
+            : await _scans.GetOrScanAsync(repo, pkg, ct);
+        return Ok(scan);
+    }
+}
+
+/// <summary>Inspect what is physically held in the Nexus quarantine repo right now.</summary>
+[ApiController]
+[Route("api/quarantine")]
+[Authorize(Policy = Policies.CanViewer)]
+public class QuarantineController : ControllerBase
+{
+    private readonly INexusClient _nexus;
+    public QuarantineController(INexusClient nexus) => _nexus = nexus;
+
+    [HttpGet]
+    public async Task<ActionResult> Held(CancellationToken ct)
+    {
+        if (!_nexus.IsConfigured) return Ok(new { configured = false, held = Array.Empty<object>() });
+        var items = await _nexus.ListQuarantineAsync(ct);
+        return Ok(new { configured = true, count = items.Count, held = items });
+    }
+}
+
+
+/// <summary>Producer + observability for the durable intake queue.</summary>
+[ApiController]
+[Route("api/queue")]
+[Authorize(Policy = Policies.CanViewer)]
+public class QueueController : ControllerBase
+{
+    private readonly IIntakeQueue _queue;
+    public QueueController(IIntakeQueue queue) => _queue = queue;
+
+    /// <summary>Enqueue a package for async evaluation. Returns immediately — caller never waits.</summary>
+    [HttpPost("enqueue")]
+    public async Task<ActionResult> Enqueue([FromBody] PackageRef pkg, CancellationToken ct)
+    {
+        var id = await _queue.EnqueueAsync(pkg, ct);
+        return Accepted(new { messageId = id, status = "queued" });
+    }
+
+    /// <summary>Queue depth: pending, dead-lettered, processed.</summary>
+    [HttpGet("depth")]
+    public async Task<ActionResult> Depth(CancellationToken ct) => Ok(await _queue.DepthAsync(ct));
+}
+
+
+/// <summary>
+/// Exception management for Approvers (PCI 7.2 separation: grant exceptions without holding
+/// policy-edit rights). Every grant/revoke is attributed to the authenticated user and audited.
+/// </summary>
+[ApiController]
+[Route("api/exceptions")]
+[Authorize(Policy = Policies.CanApprove)]
+public class ExceptionsController : ControllerBase
+{
+    private readonly IPolicyStore _store;
+    private readonly IAuditLog _audit;
+    private readonly ICurrentUser _user;
+    public ExceptionsController(IPolicyStore store, IAuditLog audit, ICurrentUser user)
+    { _store = store; _audit = audit; _user = user; }
+
+    public record GrantRequest(string Package, string Reason, string Ticket, DateTimeOffset Expires);
+
+    [HttpGet]
+    public ActionResult List() => Ok(_store.Current.Exceptions);
+
+    [HttpPost]
+    public async Task<ActionResult> Grant([FromBody] GrantRequest req, CancellationToken ct)
+    {
+        var p = _store.Current;
+        var ex = new PolicyException {
+            Package = req.Package, Reason = req.Reason, Ticket = req.Ticket,
+            Expires = req.Expires, ApprovedBy = _user.Name };
+        var updated = ClonePolicy(p);
+        updated.Exceptions.Add(ex);
+        await _store.UpdateAsync(updated, _user.Name);
+        await _audit.AppendAsync(new AuditEntry(Guid.NewGuid(),
+            new PackageRef(Ecosystem.PyPI, req.Package, "*"), GateDecision.Allow,
+            Array.Empty<Finding>(), new[] { $"SEC-EXC-GRANT:{req.Ticket}" }, req.Ticket,
+            _store.Current.Version, 0, DateTimeOffset.UtcNow, null,
+            $"Exception granted for {req.Package} by {_user.Name}, ticket {req.Ticket}, expires {req.Expires:o}.",
+            _user.Name));
+        return Ok(ex);
+    }
+
+    [HttpDelete("{ticket}")]
+    public async Task<ActionResult> Revoke(string ticket, CancellationToken ct)
+    {
+        var p = _store.Current;
+        var updated = ClonePolicy(p);
+        var removed = updated.Exceptions.RemoveAll(e => e.Ticket == ticket);
+        await _store.UpdateAsync(updated, _user.Name);
+        await _audit.AppendAsync(new AuditEntry(Guid.NewGuid(),
+            new PackageRef(Ecosystem.PyPI, ticket, "*"), GateDecision.Block,
+            Array.Empty<Finding>(), new[] { $"SEC-EXC-REVOKE:{ticket}" }, ticket,
+            _store.Current.Version, 0, DateTimeOffset.UtcNow, null,
+            $"Exception {ticket} revoked by {_user.Name} ({removed} removed).", _user.Name));
+        return Ok(new { revoked = removed });
+    }
+
+    // Full JSON round-trip clone: a field-by-field copy here silently dropped Watches /
+    // EnableContentScan / EnableReachability whenever an exception was granted or revoked.
+    private static FirewallPolicy ClonePolicy(FirewallPolicy p) =>
+        System.Text.Json.JsonSerializer.Deserialize<FirewallPolicy>(
+            System.Text.Json.JsonSerializer.Serialize(p))!;
+}
+
+/// <summary>
+/// Xray-style Reports (docs.jfrog.com/security/docs/xray-reports): Vulnerabilities, Legal
+/// (licenses), Violations, and Operational Risk — aggregated views over the decision ledger,
+/// with JSON or CSV export. Vulnerabilities/Violations come straight from the signed ledger;
+/// Legal/Operational enrich the distinct packages in the ledger with live registry intel.
+/// </summary>
+[ApiController]
+[Route("api/reports")]
+[Authorize(Policy = Policies.CanViewer)]
+public class ReportsController : ControllerBase
+{
+    private readonly IAuditLog _audit;
+    private readonly IPolicyStore _policy;
+    private readonly Advisory.Api.Catalog.OpRiskService _opRisk;
+    public ReportsController(IAuditLog audit, IPolicyStore policy, Advisory.Api.Catalog.OpRiskService opRisk)
+    { _audit = audit; _policy = policy; _opRisk = opRisk; }
+
+    [HttpGet("{type}")]
+    public async Task<ActionResult> Get(string type, [FromQuery] string format = "json",
+        [FromQuery] int limit = 500, CancellationToken ct = default)
+    {
+        var rows = type.ToLowerInvariant() switch
+        {
+            "vulnerabilities" => Vulnerabilities(limit),
+            "violations" => Violations(limit),
+            "licenses" or "legal" => await Legal(limit, ct),
+            "operational" => await Operational(limit, ct),
+            _ => null,
+        };
+        if (rows is null) return BadRequest(new { error = "type must be vulnerabilities | violations | licenses | operational" });
+
+        if (format.Equals("csv", StringComparison.OrdinalIgnoreCase))
+            return File(System.Text.Encoding.UTF8.GetBytes(ToCsv(rows)), "text/csv", $"{type}-report.csv");
+        return Ok(new { report = type, generatedAt = DateTimeOffset.UtcNow, count = rows.Count, rows });
+    }
+
+    private List<Dictionary<string, object?>> Vulnerabilities(int limit)
+    {
+        var rows = new List<Dictionary<string, object?>>();
+        foreach (var e in _audit.Query(null, limit))
+            foreach (var f in e.Findings)
+                rows.Add(new()
+                {
+                    ["package"] = e.Package.Name, ["version"] = e.Package.Version,
+                    ["ecosystem"] = e.Package.Ecosystem.ToString(),
+                    ["vulnerability"] = f.Id, ["severity"] = f.Severity.ToString(),
+                    ["cvss"] = f.CvssScore, ["epss"] = f.EpssScore,
+                    ["knownExploited"] = f.KnownExploited, ["fixedVersion"] = f.FixedVersion,
+                    ["cves"] = f.Aliases is null ? null : string.Join(" ", f.Aliases.Where(a => a.StartsWith("CVE"))),
+                    ["decision"] = e.Decision.ToString(), ["detectedAt"] = e.Timestamp,
+                });
+        return rows;
+    }
+
+    private List<Dictionary<string, object?>> Violations(int limit)
+    {
+        var p = _policy.Current;
+        var rows = new List<Dictionary<string, object?>>();
+        foreach (var e in _audit.Query(GateDecision.Block, limit)
+                     .Concat(_audit.Query(GateDecision.Quarantine, limit))
+                     .OrderByDescending(e => e.Timestamp).Take(limit))
+        {
+            var ex = p.Exceptions.FirstOrDefault(x => x.Matches(e.Package));
+            rows.Add(new()
+            {
+                ["resource"] = $"{e.Package.Ecosystem}:{e.Package.Name}@{e.Package.Version}",
+                ["decision"] = e.Decision.ToString(),
+                ["severity"] = e.Findings.Count > 0 ? e.Findings.Max(f => f.Severity).ToString() : "High",
+                ["policyControls"] = string.Join("; ", e.TriggeredRules),
+                ["status"] = ex is not null ? "Waived" : "Open",
+                ["waivedBy"] = ex?.Ticket, ["actor"] = e.Actor, ["detectedAt"] = e.Timestamp,
+            });
+        }
+        return rows;
+    }
+
+    /// <summary>Distinct root packages seen by the gate, for ledger-derived enrichment reports.</summary>
+    private List<PackageRef> DistinctPackages(int limit) =>
+        _audit.Query(null, limit)
+            .Where(e => e.ComponentsEvaluated > 0)
+            .Select(e => e.Package)
+            .DistinctBy(pk => $"{pk.Ecosystem}:{pk.Name}@{pk.Version}")
+            .Take(40).ToList();
+
+    private async Task<List<Dictionary<string, object?>>> Legal(int limit, CancellationToken ct)
+    {
+        var block = _policy.Current.LicenseBlocklist;
+        var pkgs = DistinctPackages(limit);
+        var risks = await Task.WhenAll(pkgs.Select(pk => _opRisk.AnalyzeAsync(pk.Ecosystem, pk.Name, pk.Version, ct)));
+        return pkgs.Zip(risks).Select(z => new Dictionary<string, object?>
+        {
+            ["package"] = z.First.Name, ["version"] = z.First.Version,
+            ["ecosystem"] = z.First.Ecosystem.ToString(),
+            ["license"] = z.Second?.License ?? "Unknown",
+            ["prohibited"] = z.Second?.License is { Length: > 0 } lic
+                && block.Any(b => lic.Contains(b, StringComparison.OrdinalIgnoreCase)),
+            ["dueDiligence"] = z.Second?.License is null or "" ? "Unknown license — review required" : null,
+        }).ToList();
+    }
+
+    private async Task<List<Dictionary<string, object?>>> Operational(int limit, CancellationToken ct)
+    {
+        var pkgs = DistinctPackages(limit);
+        var risks = await Task.WhenAll(pkgs.Select(pk => _opRisk.AnalyzeAsync(pk.Ecosystem, pk.Name, pk.Version, ct)));
+        return pkgs.Zip(risks).Select(z => new Dictionary<string, object?>
+        {
+            ["package"] = z.First.Name, ["version"] = z.First.Version,
+            ["ecosystem"] = z.First.Ecosystem.ToString(),
+            ["risk"] = z.Second?.Severity ?? "Unknown", ["riskReason"] = z.Second?.RiskReason,
+            ["eol"] = z.Second?.Eol, ["versionAgeMonths"] = z.Second?.VersionAgeMonths,
+            ["newerVersions"] = z.Second?.NewerVersions, ["releasesLastYear"] = z.Second?.ReleasesLastYear,
+            ["released"] = z.Second?.ReleaseDate, ["latestVersion"] = z.Second?.LatestVersion,
+        }).ToList();
+    }
+
+    private static string ToCsv(List<Dictionary<string, object?>> rows)
+    {
+        if (rows.Count == 0) return "";
+        var cols = rows[0].Keys.ToList();
+        string Esc(object? v) { var s = v?.ToString() ?? ""; return s.Contains(',') || s.Contains('"') || s.Contains('\n') ? $"\"{s.Replace("\"", "\"\"")}\"" : s; }
+        var sb = new System.Text.StringBuilder(string.Join(",", cols)).AppendLine();
+        foreach (var r in rows) sb.AppendLine(string.Join(",", cols.Select(c => Esc(r.GetValueOrDefault(c)))));
+        return sb.ToString();
+    }
+}
+
+/// <summary>
+/// AppTrust applications (JFrog AppTrust parity): registered applications and their bound packages.
+/// Each application's post-release CVE posture is computed live from the audit ledger for its
+/// packages, so the Insights view reflects real gate decisions, not a static record.
+/// </summary>
+[ApiController]
+[Route("api/apptrust")]
+[Authorize(Policy = Policies.CanViewer)]
+public class AppTrustController : ControllerBase
+{
+    private readonly IPolicyStore _policy;
+    private readonly IAuditLog _audit;
+    private readonly Advisory.Api.Auth.ICurrentUser _user;
+    public AppTrustController(IPolicyStore policy, IAuditLog audit, Advisory.Api.Auth.ICurrentUser user)
+    { _policy = policy; _audit = audit; _user = user; }
+
+    [HttpGet("applications")]
+    public ActionResult Applications()
+    {
+        var ledger = _audit.Query(null, 1000);
+        var apps = _policy.Current.Applications.Select(a =>
+        {
+            var pkgKeys = a.Packages.ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var entries = ledger.Where(e => pkgKeys.Contains($"{e.Package.Ecosystem}:{e.Package.Name}")).ToList();
+            var crit = entries.SelectMany(e => e.Findings).Count(f => f.Severity == Severity.Critical);
+            var blocks = entries.Count(e => e.Decision != GateDecision.Allow);
+            return new
+            {
+                a.Key, a.Name, a.Project, a.Criticality, a.Type, a.Team, a.Owners, a.Description, a.CreatedAt,
+                packages = a.Packages.Count, evaluated = entries.Count,
+                criticalCves = crit, blockedVersions = blocks,
+                trustedReleases = entries.Count(e => e.Decision == GateDecision.Allow),
+            };
+        });
+        return Ok(new { count = _policy.Current.Applications.Count, applications = apps });
+    }
+
+    [HttpGet("application")]
+    public ActionResult Application([FromQuery] string key)
+    {
+        var a = _policy.Current.Applications.FirstOrDefault(x => x.Key.Equals(key, StringComparison.OrdinalIgnoreCase));
+        if (a is null) return NotFound(new { error = $"application '{key}' not found" });
+        var pkgKeys = a.Packages.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var entries = _audit.Query(null, 1000)
+            .Where(e => pkgKeys.Contains($"{e.Package.Ecosystem}:{e.Package.Name}"))
+            .OrderByDescending(e => e.Timestamp).ToList();
+        var postRelease = entries.SelectMany(e => e.Findings.Select(f => new { e.Package, f }))
+            .Where(x => x.f.Severity == Severity.Critical)
+            .Select(x => new { resource = $"{x.Package.Ecosystem}:{x.Package.Name}@{x.Package.Version}", cve = x.f.Id, x.f.CvssScore, x.f.KnownExploited, fixedVersion = x.f.FixedVersion })
+            .Take(50).ToList();
+        return Ok(new
+        {
+            application = a,
+            insights = new
+            {
+                trustedReleases = entries.Count(e => e.Decision == GateDecision.Allow),
+                blockedVersions = entries.Count(e => e.Decision != GateDecision.Allow),
+                evaluated = entries.Count,
+                newlyDetectedCriticalCves = postRelease,
+            },
+        });
+    }
+
+    public record AppUpsert(string Key, string Name, string? Project, string? Criticality, string? Type,
+        string? Team, string? Owners, string? Description, List<string>? Packages);
+
+    [HttpPost("application")]
+    [Authorize(Policy = Policies.CanAdmin)]
+    public async Task<ActionResult> Upsert([FromBody] AppUpsert r, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(r.Key) || string.IsNullOrWhiteSpace(r.Name))
+            return BadRequest(new { error = "key and name are required" });
+        var next = JsonSerializer.Deserialize<FirewallPolicy>(JsonSerializer.Serialize(_policy.Current))!;
+        next.Applications.RemoveAll(a => a.Key.Equals(r.Key, StringComparison.OrdinalIgnoreCase));
+        next.Applications.Add(new AppRecord
+        {
+            Key = r.Key, Name = r.Name, Project = r.Project ?? "", Criticality = r.Criticality ?? "Medium",
+            Type = r.Type ?? "library", Team = r.Team ?? "", Owners = r.Owners ?? "",
+            Description = r.Description ?? "", Packages = r.Packages ?? new(),
+        });
+        await _policy.UpdateAsync(next, _user.Name);
+        return Ok(new { saved = true, count = next.Applications.Count });
+    }
+
+    [HttpDelete("application")]
+    [Authorize(Policy = Policies.CanAdmin)]
+    public async Task<ActionResult> Delete([FromQuery] string key, CancellationToken ct)
+    {
+        var next = JsonSerializer.Deserialize<FirewallPolicy>(JsonSerializer.Serialize(_policy.Current))!;
+        var n = next.Applications.RemoveAll(a => a.Key.Equals(key, StringComparison.OrdinalIgnoreCase));
+        if (n > 0) await _policy.UpdateAsync(next, _user.Name);
+        return Ok(new { removed = n });
+    }
+}
+
+/// <summary>
+/// AI Catalog (JFrog parity): Registry (approved models, allow-list in the signed policy),
+/// Discovery (live Hugging Face Hub search with risk scoring), Detection (shadow-AI sweep of the
+/// org's repositories). Approving a model is an admin action recorded in the versioned policy.
+/// </summary>
+[ApiController]
+[Route("api/aicatalog")]
+[Authorize(Policy = Policies.CanViewer)]
+public class AiCatalogController : ControllerBase
+{
+    private readonly Advisory.Api.Catalog.AiCatalogService _svc;
+    private readonly Advisory.Api.Catalog.WeightVerifier _verifier;
+    private readonly Advisory.Api.Catalog.VerificationJobService _jobs;
+    private readonly Advisory.Api.Catalog.ConsumedModelStore _consumed;
+    private readonly IPolicyStore _policy;
+    private readonly Advisory.Api.Auth.ICurrentUser _user;
+    public AiCatalogController(Advisory.Api.Catalog.AiCatalogService svc, Advisory.Api.Catalog.WeightVerifier verifier,
+        Advisory.Api.Catalog.VerificationJobService jobs, Advisory.Api.Catalog.ConsumedModelStore consumed,
+        IPolicyStore policy, Advisory.Api.Auth.ICurrentUser user)
+    { _svc = svc; _verifier = verifier; _jobs = jobs; _consumed = consumed; _policy = policy; _user = user; }
+
+    public record ConsumeReq(string Id, string? Repo, string? Version, string? File, string? Format);
+
+    /// <summary>Pull an APPROVED model into a repository for consumption (shows in Detection as Approved).
+    /// Promotes the SAFE weight format the model ships: prefers safetensors → onnx → gguf, and only
+    /// lands a pickle file when the repo has nothing safer. This is the firewall's "promote the safe
+    /// equivalent, quarantine pickle" behaviour made real.</summary>
+    [HttpPost("consume")]
+    [Authorize(Policy = Policies.CanAdmin)]
+    public async Task<ActionResult> Consume([FromBody] ConsumeReq req, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(req.Id)) return BadRequest(new { error = "id required" });
+        if (!_policy.Current.AllowedModels.Any(a => a.Id.Equals(req.Id, StringComparison.OrdinalIgnoreCase)))
+            return BadRequest(new { error = "model is not on the approved registry — approve it first" });
+
+        // Resolve the model's actual promoted file from the Hub (so Detection reflects reality).
+        string file = req.File ?? "", format = req.Format ?? "";
+        var quarantinedPickle = false;
+        if (string.IsNullOrEmpty(file))
+        {
+            var detail = await _svc.GetModelAsync(req.Id, ct);
+            var weights = detail?.Files.Where(f => f.Format is "safetensors" or "onnx" or "gguf" or "pickle").ToList() ?? new();
+            var safe = weights.FirstOrDefault(f => f.Format == "safetensors")
+                       ?? weights.FirstOrDefault(f => f.Format == "onnx")
+                       ?? weights.FirstOrDefault(f => f.Format == "gguf");
+            var chosen = safe ?? weights.FirstOrDefault();   // pickle-only fallback
+            file = chosen?.Name ?? "model.safetensors";
+            format = chosen?.Format ?? "safetensors";
+            quarantinedPickle = safe is not null && weights.Any(f => f.Format == "pickle");
+        }
+        var repo = string.IsNullOrWhiteSpace(req.Repo) ? "huggingface-approved" : req.Repo!;
+        var m = _consumed.Add(repo, req.Id, req.Version ?? "main", file, format);
+        return Ok(new { consumed = true, repo = m.Repo, model = m.ModelId, file, format, quarantinedPickle });
+    }
+
+    /// <summary>Simulate an UNapproved model landing in a repo (so Detection shows a shadow-AI row).</summary>
+    [HttpPost("consume/shadow")]
+    [Authorize(Policy = Policies.CanAdmin)]
+    public ActionResult ConsumeShadow([FromBody] ConsumeReq req)
+    {
+        if (string.IsNullOrWhiteSpace(req.Id)) return BadRequest(new { error = "id required" });
+        var repo = string.IsNullOrWhiteSpace(req.Repo) ? "huggingface-quarantine" : req.Repo!;
+        var m = _consumed.Add(repo, req.Id, req.Version ?? "main", req.File ?? "pytorch_model.bin", req.Format ?? "pickle");
+        return Ok(new { shadow = true, repo = m.Repo, model = m.ModelId });
+    }
+
+    /// <summary>Remove a consumed model from a repository.</summary>
+    [HttpDelete("consume")]
+    [Authorize(Policy = Policies.CanAdmin)]
+    public ActionResult Unconsume([FromQuery] string repo, [FromQuery] string id)
+        => Ok(new { removed = _consumed.Remove(repo, id) });
+
+    [HttpGet("discover")]
+    public async Task<ActionResult> Discover([FromQuery] string? q, [FromQuery] string sort = "downloads",
+        [FromQuery] int limit = 30, CancellationToken ct = default)
+    {
+        try { var models = await _svc.SearchAsync(q, sort, limit, ct); return Ok(new { count = models.Count, models }); }
+        catch (Exception ex) { return Ok(new { count = 0, models = Array.Empty<object>(), error = ex.Message }); }
+    }
+
+    [HttpGet("model")]
+    public async Task<ActionResult> Model([FromQuery] string id, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(id)) return BadRequest(new { error = "id required" });
+        var m = await _svc.GetModelAsync(id, ct);
+        return m is null ? NotFound(new { error = $"model '{id}' not found on the Hub" }) : Ok(m);
+    }
+
+    /// <summary>
+    /// Byte-level weight verification (100%-accuracy path): magic-byte signature per file via
+    /// HTTP Range; when inconclusive the file is downloaded to cache and structurally scanned
+    /// (zip pickle entries / pickle opcode stream / raw). Nothing is ever assumed silently.
+    /// </summary>
+    [HttpGet("verify")]
+    public async Task<ActionResult> Verify([FromQuery] string id, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(id)) return BadRequest(new { error = "id required" });
+        var m = await _svc.GetModelAsync(id, ct);
+        if (m is null) return NotFound(new { error = $"model '{id}' not found on the Hub" });
+        var verdicts = await _verifier.VerifyModelAsync(id, m.Files, ct);
+        return Ok(new
+        {
+            id,
+            files = verdicts,
+            summary = new
+            {
+                total = verdicts.Count,
+                pickleConfirmed = verdicts.Count(v => v.Format == "pickle" && v.Confirmed),
+                unconfirmed = verdicts.Count(v => !v.Confirmed),
+                maliciousHits = verdicts.SelectMany(v => v.MaliciousHits.Select(h => $"{v.Name}: {h}"))
+                    .Where(h => h.Contains("DANGEROUS") || h.Contains("DYNAMIC")).ToList(),
+            },
+        });
+    }
+
+    /// <summary>Start async background verification (returns immediately; poll /verify/status).</summary>
+    [HttpPost("verify/start")]
+    public async Task<ActionResult> VerifyStart([FromQuery] string id, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(id)) return BadRequest(new { error = "id required" });
+        var m = await _svc.GetModelAsync(id, ct);
+        if (m is null) return NotFound(new { error = $"model '{id}' not found on the Hub" });
+        var job = _jobs.Start(id, m.Files);
+        return Accepted(job.Snapshot());
+    }
+
+    /// <summary>All verification jobs (for the global downloads panel).</summary>
+    [HttpGet("verify/jobs")]
+    public ActionResult VerifyJobs() => Ok(new { jobs = _jobs.All() });
+
+    /// <summary>Poll the live state of a verification job (per-file head → download% → scan → verdict).</summary>
+    [HttpGet("verify/status")]
+    public ActionResult VerifyStatus([FromQuery] string id)
+    {
+        var job = _jobs.Get(id);
+        return job is null ? Ok(new { status = "none" }) : Ok(job.Snapshot());
+    }
+
+    /// <summary>Evict this model's cached downloads from disk after a decision. Returns bytes freed.</summary>
+    [HttpDelete("verify/cache")]
+    [Authorize(Policy = Policies.CanAdmin)]
+    public ActionResult VerifyEvict([FromQuery] string id)
+        => Ok(new { freedBytes = _jobs.Evict(id) });
+
+    [HttpGet("registry")]
+    public async Task<ActionResult> Registry(CancellationToken ct)
+        => Ok(new
+        {
+            enforce = _policy.Current.EnforceModelAllowList,
+            count = _policy.Current.AllowedModels.Count,
+            models = await _svc.RegistryAsync(ct),
+        });
+
+    public record AllowReq(string Id, string? License, string? Notes);
+
+    [HttpPost("registry/allow")]
+    [Authorize(Policy = Policies.CanAdmin)]
+    public async Task<ActionResult> Allow([FromBody] AllowReq req, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(req.Id)) return BadRequest(new { error = "id required" });
+        var next = Clone(_policy.Current);
+        if (next.AllowedModels.Any(a => a.Id.Equals(req.Id, StringComparison.OrdinalIgnoreCase)))
+            return Ok(new { allowed = true, already = true });
+        next.AllowedModels.Add(new AllowedModel
+        {
+            Id = req.Id, License = req.License ?? "", Notes = req.Notes ?? "", ApprovedBy = _user.Name,
+        });
+        await _policy.UpdateAsync(next, _user.Name);
+        return Ok(new { allowed = true, count = next.AllowedModels.Count });
+    }
+
+    [HttpDelete("registry")]
+    [Authorize(Policy = Policies.CanAdmin)]
+    public async Task<ActionResult> Disallow([FromQuery] string id, CancellationToken ct)
+    {
+        var next = Clone(_policy.Current);
+        var removed = next.AllowedModels.RemoveAll(a => a.Id.Equals(id, StringComparison.OrdinalIgnoreCase));
+        if (removed > 0) await _policy.UpdateAsync(next, _user.Name);
+        return Ok(new { removed });
+    }
+
+    public record EnforceReq(bool Enforce);
+
+    [HttpPut("enforce")]
+    [Authorize(Policy = Policies.CanAdmin)]
+    public async Task<ActionResult> Enforce([FromBody] EnforceReq req, CancellationToken ct)
+    {
+        var next = Clone(_policy.Current);
+        next.EnforceModelAllowList = req.Enforce;
+        await _policy.UpdateAsync(next, _user.Name);
+        return Ok(new { enforce = req.Enforce });
+    }
+
+    [HttpGet("detect")]
+    public async Task<ActionResult> Detect(CancellationToken ct)
+    {
+        var found = await _svc.DetectAsync(ct);
+        return Ok(new
+        {
+            configured = found.Count > 0 || true,
+            count = found.Count,
+            shadow = found.Count(f => f.Status == "Shadow AI"),
+            artifacts = found,
+        });
+    }
+
+    private static FirewallPolicy Clone(FirewallPolicy p)
+        => JsonSerializer.Deserialize<FirewallPolicy>(JsonSerializer.Serialize(p))!;
+}
+
+/// <summary>
+/// Self-evolution: GitHub tickets + tester comments drive automated code changes via the EVOLVE
+/// engine. PR-ONLY — every change is a pull request for human review; nothing auto-merges.
+/// </summary>
+[ApiController]
+[Route("api/evolution")]
+[Authorize(Policy = Policies.CanViewer)]
+public class EvolutionController : ControllerBase
+{
+    private readonly Advisory.Api.Evolution.EvolutionService _svc;
+    public EvolutionController(Advisory.Api.Evolution.EvolutionService svc)
+    { _svc = svc; }
+
+    [HttpGet("status")]
+    public ActionResult Status() => Ok(_svc.Status());
+
+    [HttpGet("tickets")]
+    public async Task<ActionResult> Tickets(CancellationToken ct)
+    {
+        if (!_svc.Enabled) return Ok(new { enabled = false, tickets = Array.Empty<object>() });
+        var tickets = await _svc.TicketsAsync(ct);
+        var active = _svc.Runs(100).Where(r => r.Status is "queued" or "running" or "tests").Select(r => r.Ticket).ToHashSet();
+        return Ok(new { enabled = true, repo = _svc.Repo, tickets, activeTickets = active });
+    }
+
+    [HttpGet("runs")]
+    public ActionResult Runs([FromQuery] int limit = 50) => Ok(new { runs = _svc.Runs(limit) });
+
+    [HttpGet("run/{id}")]
+    public ActionResult Run(string id)
+        => _svc.Run(id) is { } r ? Ok(r) : NotFound(new { error = "run not found" });
+
+    public record EvolveReq(int Ticket);
+
+    /// <summary>Trigger evolution for a ticket (admin) by DISPATCHING THE GITHUB WORKFLOW — the exact
+    /// same `evolve.yml` that an `evolve`-labelled issue fires. Opens a PR for review; never merges.</summary>
+    [HttpPost("evolve")]
+    [Authorize(Policy = Policies.CanAdmin)]
+    public async Task<ActionResult> Evolve([FromBody] EvolveReq req, CancellationToken ct)
+    {
+        if (!_svc.Enabled) return BadRequest(new { error = "evolution is disabled (set EVOLUTION_ENABLED=true)" });
+        if (string.IsNullOrWhiteSpace(_svc.Repo)) return BadRequest(new { error = "no target repo (set EVOLUTION_REPO)" });
+        var tickets = await _svc.TicketsAsync(ct);
+        var t = tickets.FirstOrDefault(x => x.Number == req.Ticket);
+        if (t is null) return NotFound(new { error = $"ticket #{req.Ticket} not found or not labelled '{_svc.Label}'" });
+
+        // Same GitHub event as labelling an issue: dispatch the evolve.yml workflow.
+        var (ok, detail) = await _svc.DispatchWorkflowAsync(req.Ticket, ct);
+        var run = _svc.NewRun(t);
+        run.Status = ok ? "running" : "failed";
+        run.Stage = ok ? "workflow-dispatched" : "dispatch-failed";
+        run.Append(ok ? $"[dispatch] {detail} — watch GitHub Actions / Pull requests for the PR." : $"[error] {detail}");
+        if (ok) run.PrUrl = $"https://github.com/{_svc.Repo}/actions";
+        return ok
+            ? Accepted(new { runId = run.Id, ticket = t.Number, status = run.Status, detail })
+            : BadRequest(new { error = detail });
+    }
+}
+
+/// <summary>
+/// On-Demand Scanning (JFrog parity): trigger an ad-hoc scan of any package through the real
+/// gate engine and watch the row go Scanning → Done with severity / issue / violation counts.
+/// </summary>
+[ApiController]
+[Route("api/ondemand")]
+[Authorize(Policy = Policies.CanViewer)]
+public class OnDemandController : ControllerBase
+{
+    private readonly Advisory.Api.Scan.OnDemandScanService _svc;
+    public OnDemandController(Advisory.Api.Scan.OnDemandScanService svc) => _svc = svc;
+
+    [HttpGet("list")]
+    public ActionResult List() => Ok(new { count = _svc.List().Count, scans = _svc.List() });
+
+    [HttpPost("scan")]
+    public ActionResult Scan([FromBody] PackageRef pkg)
+    {
+        if (string.IsNullOrWhiteSpace(pkg.Name) || string.IsNullOrWhiteSpace(pkg.Version))
+            return BadRequest(new { error = "name and version are required" });
+        return Accepted(_svc.Start(pkg));
+    }
+}
+
+/// <summary>
+/// The "Ask AI" assistant + AI/Groq admin settings. Chat answers are grounded in THIS environment:
+/// the active signed policy plus recent gate decisions from the audit ledger, so it answers like
+/// JFrog's AI Assistant ("which CVEs are reachable here", "what was held and why"). The Groq key is
+/// entered here (admin) and stored server-side in the signed policy — never returned to the client.
+/// </summary>
+[ApiController]
+[Route("api/ai")]
+[Authorize(Policy = Policies.CanViewer)]
+public class AiController : ControllerBase
+{
+    private readonly IGroqClient _groq;
+    private readonly IPolicyStore _policy;
+    private readonly IAuditLog _audit;
+    private readonly Advisory.Api.Auth.ICurrentUser _user;
+
+    public AiController(IGroqClient groq, IPolicyStore policy, IAuditLog audit, Advisory.Api.Auth.ICurrentUser user)
+    { _groq = groq; _policy = policy; _audit = audit; _user = user; }
+
+    /// <summary>Assistant settings for the UI. The API key is NEVER returned — only whether one is set.</summary>
+    [HttpGet("settings")]
+    public ActionResult Settings()
+    {
+        var a = _policy.Current.Ai;
+        return Ok(new
+        {
+            assistantEnabled = a.AssistantEnabled,
+            provider = a.Provider,
+            model = a.Model,
+            endpoint = a.Endpoint,
+            hasKey = !string.IsNullOrWhiteSpace(a.ApiKey),
+            configured = _groq.IsConfigured,           // true if policy key OR env key resolves
+            usingEnvKey = string.IsNullOrWhiteSpace(a.ApiKey) && _groq.IsConfigured,
+        });
+    }
+
+    public record AiSettingsUpdate(bool? AssistantEnabled, string? Model, string? Endpoint, string? ApiKey, bool ClearKey);
+
+    /// <summary>Save AI settings into the signed policy (admin). Blank ApiKey keeps the existing key.</summary>
+    [HttpPut("settings")]
+    [Authorize(Policy = Policies.CanAdmin)]
+    public async Task<ActionResult> SaveSettings([FromBody] AiSettingsUpdate req, CancellationToken ct)
+    {
+        var p = _policy.Current;
+        // clone the policy so we mutate a copy, then persist (keeps the signed-hash chain honest)
+        var json = JsonSerializer.Serialize(p);
+        var next = JsonSerializer.Deserialize<FirewallPolicy>(json)!;
+        var a = next.Ai;
+        if (req.AssistantEnabled is { } en) a.AssistantEnabled = en;
+        if (!string.IsNullOrWhiteSpace(req.Model)) a.Model = req.Model!;
+        if (!string.IsNullOrWhiteSpace(req.Endpoint)) a.Endpoint = req.Endpoint!;
+        if (req.ClearKey) a.ApiKey = null;
+        else if (!string.IsNullOrWhiteSpace(req.ApiKey)) a.ApiKey = req.ApiKey;
+        await _policy.UpdateAsync(next, _user.Name);
+        return Ok(new { saved = true, configured = _groq.IsConfigured });
+    }
+
+    /// <summary>Admin "Test connection": validate the supplied (or stored) key against the provider.</summary>
+    [HttpPost("test")]
+    [Authorize(Policy = Policies.CanAdmin)]
+    public async Task<ActionResult> Test([FromBody] AiSettingsUpdate req, CancellationToken ct)
+    {
+        var a = _policy.Current.Ai;
+        var key = !string.IsNullOrWhiteSpace(req.ApiKey) ? req.ApiKey! : a.ApiKey;
+        if (string.IsNullOrWhiteSpace(key)) return Ok(new { ok = false, detail = "no key supplied or stored" });
+        var (ok, detail) = await _groq.TestAsync(key!, req.Model ?? a.Model, req.Endpoint ?? a.Endpoint, ct);
+        return Ok(new { ok, detail });
+    }
+
+    public record AiChat(string Message, List<AiTurn>? History);
+    public record AiTurn(string Role, string Content);
+
+    /// <summary>The assistant. Grounded in the live policy + recent ledger decisions for THIS environment.</summary>
+    [HttpPost("chat")]
+    public async Task<ActionResult> Chat([FromBody] AiChat req, CancellationToken ct)
+    {
+        if (!_policy.Current.Ai.AssistantEnabled)
+            return Ok(new { ok = false, reply = "The AI assistant is disabled. An administrator can enable it under Administration → AI assistant." });
+        if (string.IsNullOrWhiteSpace(req.Message))
+            return Ok(new { ok = false, reply = "Ask a question about your packages, policy or recent decisions." });
+
+        var prompt = new System.Text.StringBuilder();
+        if (req.History is { Count: > 0 })
+            foreach (var t in req.History.TakeLast(6))
+                prompt.AppendLine($"{(t.Role == "user" ? "User" : "Assistant")}: {t.Content}");
+        prompt.AppendLine().AppendLine("Current question: " + req.Message);
+        prompt.AppendLine().AppendLine(BuildContext());
+
+        var (ok, text) = await _groq.ChatAsync(AssistantSystem, prompt.ToString(), 900, 0.3, ct);
+        return Ok(new { ok, reply = ok ? text : text, model = _groq.Model });
+    }
+
+    private const string AssistantSystem =
+        "You are the Package Firewall AI assistant for a bank's software supply-chain security gate. " +
+        "Answer questions about the user's packages, the firewall policy, and recent gate decisions " +
+        "using ONLY the environment context provided. Be concise and concrete. When the context does not " +
+        "contain the answer, say so plainly and suggest where to look (e.g. run a scan, open Reports). " +
+        "Never invent CVE IDs, versions or package names. Plain prose; short bullet lists are fine.";
+
+    /// <summary>Snapshot of the live policy + recent ledger so the model answers about THIS deployment.</summary>
+    private string BuildContext()
+    {
+        var p = _policy.Current;
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine("=== ENVIRONMENT CONTEXT (Package Firewall) ===");
+        sb.AppendLine($"Policy v{p.Version}, updated {p.UpdatedAt:yyyy-MM-dd} by {p.UpdatedBy}.");
+        sb.AppendLine($"Gate: block CVSS >= {p.CvssBlockThreshold}; block KEV={p.BlockKnownExploited}; block EPSS >= {p.EpssBlockThreshold}; " +
+            $"min package age {p.MinPackageAgeDays}d; license blocklist [{string.Join(", ", p.LicenseBlocklist)}]; " +
+            $"reachability={p.EnableReachability} (downgrade-unreachable={p.DowngradeUnreachable}); content-scan={p.EnableContentScan}.");
+        sb.AppendLine($"Enabled sources: {string.Join(", ", p.EnabledSources)} (required: {string.Join(", ", p.RequiredSources)}).");
+        if (p.CustomSources.Count > 0) sb.AppendLine($"Custom OSV sources: {string.Join(", ", p.CustomSources.Select(c => c.Label))}.");
+        sb.AppendLine($"Watches: {string.Join("; ", p.Watches.Where(w => w.Enabled).Select(w => w.Name))}.");
+        sb.AppendLine($"Active exceptions/waivers: {p.Exceptions.Count}.");
+
+        var recent = _audit.Query(null, 40).ToList();
+        sb.AppendLine().AppendLine($"Recent gate decisions (latest {recent.Count}):");
+        if (recent.Count == 0) sb.AppendLine("  (none yet — no packages have been evaluated)");
+        foreach (var e in recent.Take(25))
+        {
+            var findings = e.Findings.Count == 0 ? "" :
+                " findings=" + string.Join(",", e.Findings.Take(4).Select(f =>
+                    $"{f.Id}[{f.Severity}{(f.KnownExploited ? ",KEV" : "")}{(f.CvssScore is { } cv ? $",cvss{cv}" : "")}{(f.FixedVersion is { } fv ? $",fix→{fv}" : "")}]"));
+            sb.AppendLine($"  - {e.Package.Ecosystem}:{e.Package.Name}@{e.Package.Version} → {e.Decision}" +
+                $"{(e.TriggeredRules.Count > 0 ? " (" + string.Join("; ", e.TriggeredRules) + ")" : "")}{findings}");
+        }
+        return sb.ToString();
+    }
+}

@@ -1,9 +1,9 @@
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
-COPY src/PkgFirewall.Api/PkgFirewall.Api.csproj ./PkgFirewall.Api/
-RUN dotnet restore ./PkgFirewall.Api/PkgFirewall.Api.csproj
-COPY src/PkgFirewall.Api/ ./PkgFirewall.Api/
-RUN dotnet publish ./PkgFirewall.Api/PkgFirewall.Api.csproj -c Release -o /app
+COPY src/Advisory.Api/Advisory.Api.csproj ./Advisory.Api/
+RUN dotnet restore ./Advisory.Api/Advisory.Api.csproj
+COPY src/Advisory.Api/ ./Advisory.Api/
+RUN dotnet publish ./Advisory.Api/Advisory.Api.csproj -c Release -o /app
 
 # Reachability analyzer deps (acorn) installed in a node stage, copied into runtime.
 FROM node:20-alpine AS reach
@@ -27,4 +27,4 @@ COPY --from=build /app ./
 COPY --from=reach /reach /app/reachability
 ENV ASPNETCORE_URLS=http://+:5000
 EXPOSE 5000
-ENTRYPOINT ["dotnet", "PkgFirewall.Api.dll"]
+ENTRYPOINT ["dotnet", "Advisory.Api.dll"]

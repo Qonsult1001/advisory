@@ -1,13 +1,13 @@
-# PkgFirewall Evolution
+# Advisory Evolution
 
-Self-evolving code maintenance for PkgFirewall, driven by GitHub tickets and tester comments.
+Self-evolving code maintenance for Advisory, driven by GitHub tickets and tester comments.
 
 There are two layers:
 
 ## 1. The harness — `evolution/harness/`  ← the engine
 
 A ticket-driven, **PR-only** evolution loop adapted from
-[yoyo-evolve](https://github.com/yologdev/yoyo-evolve) (MIT). The "brain" is **Claude Code** running
+an MIT-licensed evolution harness (see NOTICE). The "brain" is **Claude Code** running
 the `/evolve` command — no separate Rust binary, no API-key juggling; it uses your existing Claude
 login. When a tester labels an issue `evolve` (or comments on one), it plans → implements a focused
 change + test → builds/tests (`dotnet`/`vite`) → **opens a PR for human review**. Never merges.
@@ -15,9 +15,9 @@ change + test → builds/tests (`dotnet`/`vite`) → **opens a PR for human revi
 This is the folder you push to the private GitHub repo. See `harness/README.md` for setup, the
 GitHub Actions trigger, and the safety model.
 
-## 2. The dashboard — `src/PkgFirewall.Api/Evolution/` + the **Evolution** sidebar tab
+## 2. The dashboard — `src/Advisory.Api/Evolution/` + the **Evolution** sidebar tab
 
-A read/trigger view inside PkgFirewall: it lists the repo's `evolve` tickets, shows evolution runs
+A read/trigger view inside Advisory: it lists the repo's `evolve` tickets, shows evolution runs
 and their PRs, and lets an admin trigger a run. It talks to GitHub via the `gh` CLI and is **disabled
 by default**. Enable with:
 
@@ -31,7 +31,7 @@ EVOLUTION_LABEL=evolve          # default
 
 | | |
 |---|---|
-| Upstream | yoyo-evolve — https://github.com/yologdev/yoyo-evolve (MIT) |
+| Upstream | the upstream harness — https://github.com/yologdev/the upstream harness (MIT) |
 | Your fork | `G:\development\SAID-ECHO\EVOLVE` (GitHub: `Qonsult1001/SAID-ECHO`) |
 | Brain | Claude Code CLI (`/evolve` command) — your existing licence |
 | Run mode | GitHub Actions on `evolve`-labelled issue / tester comment, PR-only |

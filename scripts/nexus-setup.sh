@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Wires Nexus for the PkgFirewall two-repo enforcement model.
+# Wires Nexus for the Advisory two-repo enforcement model.
 # Creates, per ecosystem:
 #   <eco>-quarantine : a PROXY repo to the public upstream, NOT exposed to developers
 #   <eco>-approved   : a HOSTED repo that developers pull from

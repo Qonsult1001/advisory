@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# run_mutants.sh — mutation testing for PkgFirewall via Stryker.NET.
+# run_mutants.sh — mutation testing for Advisory via Stryker.NET.
 #
-# Adapted from yoyo-evolve (MIT) which used cargo-mutants. Mutation testing checks whether the test
+# based on an MIT-licensed evolution harness (see NOTICE) which used cargo-mutants. Mutation testing checks whether the test
 # suite actually CATCHES bugs: it mutates the code and verifies a test fails. A high "survival" rate
 # means tests pass but don't really protect us — exactly the gaps the evolution agent should close.
 #
@@ -25,8 +25,8 @@ fi
 
 echo "→ Running mutation tests (threshold: ${THRESHOLD}%)…"
 # Stryker reads the test project; point it at the API under test.
-( cd tests/PkgFirewall.Tests && \
-  dotnet stryker --project ../../src/PkgFirewall.Api/PkgFirewall.Api.csproj \
+( cd tests/Advisory.Tests && \
+  dotnet stryker --project ../../src/Advisory.Api/Advisory.Api.csproj \
     --threshold-break "$THRESHOLD" --reporter json --reporter cleartext 2>&1 ) | tee .evolve/mutants.log
 
 # Stryker exits non-zero when score < threshold-break; surface that.

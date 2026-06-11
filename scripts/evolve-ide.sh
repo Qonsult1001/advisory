@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# evolve-ide.sh — infrastructure for the PkgFirewall evolution cycle. PR-ONLY.
+# evolve-ide.sh — infrastructure for the Advisory evolution cycle. PR-ONLY.
 #
-# Adapted from yoyo-evolve (MIT, https://github.com/yologdev/yoyo-evolve). Stripped to the pieces a
+# Based on an MIT-licensed evolution harness (see NOTICE). Stripped to the pieces a
 # .NET+React repo needs, and hardened so it can ONLY ever open a pull request — it never pushes to
 # the default branch and never merges.
 #
@@ -18,7 +18,7 @@ BRANCH="evolve/session-$DATE"
 EVO=".evolve"; mkdir -p "$EVO"
 
 # ── Internal timer gate (when may this cycle connect to GitHub?) ──
-# Like SAID-ECHO/EVOLVE's evolve.sh: a run only proceeds during allowed hours, so you can keep a
+# Scheduled like a cron-gated maintenance run: a run only proceeds during allowed hours, so you can keep a
 # loop running (evolve-claude.sh --loop) but it only acts on a schedule, not every tick.
 #   EVOLVE_HOURS  — comma-separated hours (0-23) when a cycle may run. Default: every 4h.
 #                   Set "*" to allow any hour. Off-hours print SKIPPED and exit 0.
@@ -41,9 +41,9 @@ build_and_test() {
   # Returns 0 only if build + tests pass. Output captured to .evolve/checks.log.
   : > "$EVO/checks.log"
   echo "→ dotnet build" | tee -a "$EVO/checks.log"
-  dotnet build src/PkgFirewall.Api/PkgFirewall.Api.csproj -c Release --nologo >>"$EVO/checks.log" 2>&1 || return 1
+  dotnet build src/Advisory.Api/Advisory.Api.csproj -c Release --nologo >>"$EVO/checks.log" 2>&1 || return 1
   echo "→ dotnet test" | tee -a "$EVO/checks.log"
-  dotnet test tests/PkgFirewall.Tests/PkgFirewall.Tests.csproj --nologo >>"$EVO/checks.log" 2>&1 || return 1
+  dotnet test tests/Advisory.Tests/Advisory.Tests.csproj --nologo >>"$EVO/checks.log" 2>&1 || return 1
   if git diff --name-only "$DEFAULT_BRANCH"...HEAD 2>/dev/null | grep -q '^web/'; then
     echo "→ npm build (web changed)" | tee -a "$EVO/checks.log"
     npm --prefix web run build >>"$EVO/checks.log" 2>&1 || return 1
@@ -75,7 +75,7 @@ case "${1:-}" in
     echo "$BRANCH" > "$EVO/branch"
 
     cat > "$EVO/plan_prompt.md" <<EOF
-You are evolving the PkgFirewall codebase to address the tickets in .evolve/ISSUES_TODAY.md.
+You are evolving the Advisory codebase to address the tickets in .evolve/ISSUES_TODAY.md.
 Plan one focused task per ticket: the smallest correct change plus a test. Score by Impact×Urgency
 (see skills/plan/SKILL.md). Do not exceed the tickets' scope. Write SESSION_PLAN.md.
 EOF
