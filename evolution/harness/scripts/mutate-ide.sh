@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# evolve-ide.sh — infrastructure for the Advisory evolution cycle. PR-ONLY.
+# mutate-ide.sh — infrastructure for the Advisory evolution cycle. PR-ONLY.
 #
 # Based on an MIT-licensed evolution harness (see NOTICE). Stripped to the pieces a
 # .NET+React repo needs, and hardened so it can ONLY ever open a pull request — it never pushes to
@@ -11,27 +11,27 @@ set -uo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
 REPO="${REPO:-$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || echo '')}"
-LABEL="${LABEL:-evolve}"
+LABEL="${LABEL:-mutation}"
 DEFAULT_BRANCH="${DEFAULT_BRANCH:-main}"
 DATE="$(date +%Y%m%d-%H%M)"
-BRANCH="evolve/session-$DATE"
+BRANCH="mutation/session-$DATE"
 EVO=".evolve"; mkdir -p "$EVO"
 
 # ── Internal timer gate (when may this cycle connect to GitHub?) ──
 # Scheduled like a cron-gated maintenance run: a run only proceeds during allowed hours, so you can keep a
-# loop running (evolve-claude.sh --loop) but it only acts on a schedule, not every tick.
-#   EVOLVE_HOURS  — comma-separated hours (0-23) when a cycle may run. Default: every 4h.
+# loop running (mutate-claude.sh --loop) but it only acts on a schedule, not every tick.
+#   MUTATE_HOURS  — comma-separated hours (0-23) when a cycle may run. Default: every 4h.
 #                   Set "*" to allow any hour. Off-hours print SKIPPED and exit 0.
 #   FORCE_RUN=true — bypass the gate (manual run).
-EVOLVE_HOURS="${EVOLVE_HOURS:-0,4,8,12,16,20}"
+MUTATE_HOURS="${MUTATE_HOURS:-0,4,8,12,16,20}"
 
 timer_gate() {
   [ "${FORCE_RUN:-}" = "true" ] && return 0
-  [ "$EVOLVE_HOURS" = "*" ] && return 0
+  [ "$MUTATE_HOURS" = "*" ] && return 0
   local now; now=$((10#$(date +%H)))
-  case ",$EVOLVE_HOURS," in
+  case ",$MUTATE_HOURS," in
     *",$now,"*) return 0 ;;                       # this hour is an allowed slot
-    *) echo "SKIPPED — hour $now is not in the schedule [$EVOLVE_HOURS]. (FORCE_RUN=true to override.)"; return 1 ;;
+    *) echo "SKIPPED — hour $now is not in the schedule [$MUTATE_HOURS]. (FORCE_RUN=true to override.)"; return 1 ;;
   esac
 }
 
@@ -94,7 +94,7 @@ EOF
     echo "→ final checks: $TESTS"
 
     # Commit any stragglers.
-    git add -A && git commit -m "evolve: session wrap-up ($DATE)" 2>/dev/null || true
+    git add -A && git commit -m "mutate: session wrap-up ($DATE)" 2>/dev/null || true
 
     # PUSH THE BRANCH ONLY — never the default branch.
     git push -u origin "$BRANCH" || die "push failed (auth?)"
@@ -105,7 +105,7 @@ EOF
 Addresses: $TICKETS
 Tests: $([ "$TESTS" = pass ] && echo '✅ passing' || echo '⚠️ not passing — draft for review')
 
-Written by the evolution cycle (Claude Code). **For human review — will not auto-merge.**
+Written by the mutation cycle. **For human review — will not auto-merge.**
 
 <details><summary>checks (tail)</summary>
 
@@ -115,7 +115,7 @@ $(tail -40 "$EVO/checks.log" 2>/dev/null)
 </details>"
 
     PR_URL="$(gh pr create --repo "$REPO" --base "$DEFAULT_BRANCH" --head "$BRANCH" $DRAFT \
-      --title "evolve: session $DATE" --body "$BODY" 2>&1 | grep -oE 'https://[^ ]+' | tail -1)"
+      --title "mutate: session $DATE" --body "$BODY" 2>&1 | grep -oE 'https://[^ ]+' | tail -1)"
     echo "PR: ${PR_URL:-<create failed>}"
 
     # Reply on each ticket with the PR link.

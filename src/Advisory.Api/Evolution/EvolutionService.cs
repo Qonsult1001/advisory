@@ -44,8 +44,8 @@ public class EvolutionService
     // ---- config (PR-only is NOT configurable; sandbox repo is) ----
     public bool Enabled => _cfg.GetValue("EVOLUTION_ENABLED", false);
     public string? Repo => _cfg["EVOLUTION_REPO"];                 // e.g. "Qonsult1001/advisory"
-    public string Label => _cfg["EVOLUTION_LABEL"] ?? "evolve";
-    public string Workflow => _cfg["EVOLUTION_WORKFLOW"] ?? "evolve.yml";
+    public string Label => _cfg["EVOLUTION_LABEL"] ?? "mutation";
+    public string Workflow => _cfg["EVOLUTION_WORKFLOW"] ?? "mutation.yml";
     public string Model => _cfg["EVOLUTION_MODEL"] ?? "claude-opus-4-8";
     // The mechanism is the GitHub Actions workflow + scripts (no Rust binary, no API key here).
     // "Configured" = gh CLI present + a target repo set; the dashboard triggers the same workflow
@@ -63,7 +63,7 @@ public class EvolutionService
         label = Label,
         prOnly = true,                       // hard guarantee
         engineConfigured = EngineConfigured,
-        mechanism = "GitHub Actions workflow + scripts/evolve-*.sh (Claude Code)",
+        mechanism = "GitHub Actions workflow + scripts/mutate-*.sh",
         workflow = Workflow,
         ghAvailable = GhAvailable(),
         model = Model,

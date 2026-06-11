@@ -639,7 +639,7 @@ const NAV = [
     ["queue", "Intake queue"], ["quarantine", "Quarantine"], ["reports", "Reports"],
     ["exceptions", "Approved exceptions"], ["audit", "Decision ledger"],
   ]},
-  { type: "item", key: "evolution", label: "Evolution", icon: "brain" },
+  { type: "item", key: "evolution", label: "Mutation", icon: "brain" },
 ];
 const NAV_PARENT = (() => { const m = {}; NAV.forEach(g => g.children?.forEach(([k]) => m[k] = g.key)); return m; })();
 
@@ -3242,16 +3242,18 @@ function Evolution() {
 
   return (
     <div style={{ animation: "fwfade .2s ease" }}>
-      <Crumb trail={[{ label: "All Projects" }, { label: "Evolution" }]} />
+      <Crumb trail={[{ label: "All Projects" }, { label: "Mutation" }]} />
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14 }}>
         <div>
           <div style={{ display: "flex", alignItems: "center", gap: 9, fontSize: 18, fontWeight: 700 }}>
-            <Icon name="brain" size={20} color={C.accent} /> Self-Evolution</div>
+            <Icon name="brain" size={20} color={C.accent} /> Mutation</div>
           <p style={{ color: C.sub, fontSize: 12.5, marginTop: 4, maxWidth: 720 }}>
-            GitHub tickets and tester comments drive automated code changes via the <b>/evolve</b> cycle
-            (Claude Code + scripts). Triggering here dispatches the <b>same GitHub Actions workflow</b> an
-            <code style={s.code}>evolve</code>-labelled issue fires. Every change is a <b>pull request for
-            human review</b> — nothing auto-merges.</p>
+            The <b>mutation</b> loop fixes bugs and broken code. GitHub tickets and tester comments drive
+            automated fixes via the <b>/mutate</b> cycle. Triggering here dispatches the <b>same GitHub
+            Actions workflow</b> a <code style={s.code}>mutation</code>-labelled issue fires. Every change is a
+            <b> pull request for human review</b> — nothing auto-merges.
+            <br/><span style={{ color: C.dim }}>(Forward-looking landscape research is the separate <b>Evolution</b>
+            task — it only updates the backlog, never product code.)</span></p>
         </div>
         {status && <div style={{ textAlign: "right" }}>
           <Tag tone={status.enabled ? C.allow : C.sub}>{status.enabled ? "Enabled" : "Disabled"}</Tag>
@@ -3268,15 +3270,15 @@ function Evolution() {
       </div>
 
       {status && !status.enabled && (
-        <Callout>Evolution is <b>disabled</b>. Set <code style={s.code}>EVOLUTION_ENABLED=true</code> and
+        <Callout>Mutation is <b>disabled</b>. Set <code style={s.code}>EVOLUTION_ENABLED=true</code> and
           <code style={s.code}>EVOLUTION_REPO=owner/repo</code> on the API, and make sure <code style={s.code}>gh</code> is
-          authenticated in the API container. The actual evolution runs via the repo's
-          <code style={s.code}>.github/workflows/evolve.yml</code> (Claude Code) — this dashboard just lists tickets
+          authenticated in the API container. The actual fixes run via the repo's
+          <code style={s.code}>.github/workflows/mutation.yml</code> — this dashboard just lists tickets
           and dispatches that workflow. PR-only.</Callout>
       )}
 
       {status?.enabled && (<>
-        <SubHead>Tickets labelled "{status.label}" — pick one to evolve</SubHead>
+        <SubHead>Tickets labelled "{status.label}" — pick one to fix</SubHead>
         <div style={s.card}>
           <table style={s.table}><thead><tr>
             {["#", "Title", "Author", "Comments", "Updated", ""].map((c, i) => <th key={i} style={s.th}>{c}</th>)}
@@ -3296,14 +3298,14 @@ function Evolution() {
                   {activeTickets.has(t.number)
                     ? <span style={{ color: C.info, fontWeight: 600, fontSize: 11.5 }}>in progress…</span>
                     : <button style={s.add} disabled={busy === t.number || !status.engineConfigured} onClick={() => evolve(t.number)}>
-                        {busy === t.number ? "Starting…" : "▸ Evolve"}</button>}</td>
+                        {busy === t.number ? "Starting…" : "▸ Mutate"}</button>}</td>
               </tr>
             ))}
           </tbody></table>
         </div>
       </>)}
 
-      <SubHead>Evolution runs</SubHead>
+      <SubHead>Mutation runs</SubHead>
       <div style={s.card}>
         <table style={s.table}><thead><tr>
           {["Run", "Ticket", "Status", "Stage", "Tests", "PR", "Started"].map((c) => <th key={c} style={s.th}>{c}</th>)}

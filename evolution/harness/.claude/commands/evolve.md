@@ -1,94 +1,43 @@
-# Autonomous Evolution Cycle (Advisory · PR-only)
+# Evolution Cycle (research/landscape — does NOT change product code)
 
-Run one self-evolution cycle on this repository. You are the LLM; `scripts/evolve-ide.sh` handles
-infrastructure (GitHub, git, build, tests, PR). Execute every step in order. **Do not stop, do not
-ask for permission, do not summarize between steps.**
+A standalone investigation task. Where `/mutate` fixes bugs and broken code from tickets, EVOLUTION
+studies the **software-supply-chain security landscape** and records findings into the backlog so a
+future `/mutate` can act on them. It writes only to `RESEARCH.md` and `memory/` — never to `src/` or
+`web/`. Run it deliberately, not on the bug-fixing schedule.
 
-> **Primary aim: fix bugs and broken code.** This cycle exists to address the concrete defects and
-> gaps that testers file as `evolve`-labelled tickets — not to invent features or chase research.
-> (Landscape/standards research is a *separate* task — see `/research` — which only updates the
-> backlog and never changes product code.)
->
-> Based on an MIT-licensed evolution harness (see NOTICE). This repo is a .NET 10 + React codebase
-> (Advisory), so build/test use `dotnet` and `vite`, and the cycle is **PR-only**: changes go to a
-> branch and open a pull request for human review — never to `main`.
+## Scope — keep it grounded in real security/compliance
 
-## Step 1: Setup
+Research is only useful here if it maps to how this gate is judged. Anchor every search to:
 
-```
-./scripts/evolve-ide.sh setup
-```
+- **Standards & frameworks:** NIST SSDF (SP 800-218), SLSA build-integrity levels, EO 14028,
+  SBOM / provenance / attestation, PCI-DSS, SOC 2, ISO 27001 — the obligations Advisory exists to help meet.
+- **The competitor frame:** JFrog (Xray / Curation / Catalog / AppTrust), Tenable **Nessus**, Snyk,
+  Sonatype Nexus Firewall, Socket, Endor Labs. What do they enforce that we don't yet? Where are we ahead?
+- **Primary sources:** arXiv (cs.CR — supply-chain attacks, malicious-package detection, model
+  provenance, LLM data-exfiltration), CISA advisories, OpenSSF, real CVE/incident write-ups (xz,
+  Shai-Hulud-style npm worms, PyPI typosquats).
 
-This verifies the build, fetches open GitHub issues labelled `evolve` (with their tester comments),
-and writes `.evolve/ISSUES_TODAY.md` and `.evolve/plan_prompt.md`. If there are **no** labelled
-issues and no pending tester replies, it prints `NO WORK` — in that case, stop here and report
-"nothing to evolve".
+Do **not** research generic programming topics. If it doesn't touch supply-chain risk, compliance
+evidence, or a control this gate could enforce, it's out of scope.
 
-## Step 2: Remember who you are, then understand the task
+## Steps
 
-Continuity first — read these so you act with memory, not from scratch:
-- `IDENTITY.md` — who you are and what you will/won't do. **Honor it.**
-- `PERSONALITY.md` — your voice (you'll write a journal entry later).
-- Last 3 entries of `JOURNAL.md` — have you tried this before? What did you learn?
-- `memory/active_learnings.md` — distilled lessons. Don't repeat past mistakes.
-- `RESEARCH.md` — your open questions about this codebase.
-
-Then the task:
-- Read `.evolve/ISSUES_TODAY.md` (the tickets + tester comments to address).
-- Read `CLAUDE.md` and the relevant source under `src/Advisory.Api/` and `web/src/`.
-
-Note the specific bug/gap each ticket describes. Do not invent work beyond the tickets, and never
-weaken a security control to make a test pass (see IDENTITY.md).
-
-## Step 3: Plan
-
-Read `.evolve/plan_prompt.md`. Follow the `plan` skill's Impact×Urgency framework. Write
-`SESSION_PLAN.md`: one focused task per ticket (smallest correct change + a test that proves it).
-Commit: `git add SESSION_PLAN.md && git commit -m "evolve: session plan"`.
-
-## Step 4: Implement each task
-
-For each task in `SESSION_PLAN.md`:
-
-1. **Write or update a test first** that captures the expected behaviour.
-2. Make the **minimum** surgical edit to the source — do not rewrite whole files, do not touch
-   unrelated code, CI, secrets, Dockerfiles, or the gate's security controls.
-3. Verify:
-   ```
-   dotnet build src/Advisory.Api/Advisory.Api.csproj -c Release --nologo
-   dotnet test tests/Advisory.Tests/Advisory.Tests.csproj --nologo
-   ```
-   If the change touches the web console, also run `npm --prefix web run build`.
-4. If it builds and tests pass → commit (`git commit -m "evolve: <ticket> <summary>"`).
-   If stuck after 3 attempts → `git checkout -- .` and move on (record it as a partial reply).
-
-## Step 5: Open the pull request (PR-ONLY)
-
-```
-./scripts/evolve-ide.sh finish
-```
-
-This pushes your branch (`evolve/session-<date>`), opens a **pull request** for human review, and
-posts a comment on each addressed ticket linking the PR. If tests did not all pass it opens a
-**draft** PR flagged for review. **It never pushes to `main` and never merges.**
-
-## Step 6: Journal
-
-Bump `DAY_COUNT` (read it, add 1, write it back). Append a short, honest entry to the top of
-`JOURNAL.md` (below `# Journal`), in the voice from `PERSONALITY.md`: what you changed and why, what
-went well, what didn't, what surprised you. Not a commit list — a real entry. Commit it onto the
-session branch.
-
-## Step 7: Memory & research (this is how you grow)
-
-1. **Learning** (only if genuinely novel): append one JSON line to `memory/learnings.jsonl` —
-   `{"day":N,"ts":"<iso>","title":"...","context":"...","takeaway":"..."}` — and, if it's a lesson
-   you'll want every session, add a bullet to `memory/active_learnings.md`. Don't log trivia.
-2. **Research gap** (always consider): if this session revealed something you didn't understand or
-   couldn't handle well, append a `### [ ]` entry to `RESEARCH.md` with a Goal. If you closed a gap,
-   check its box. Commit `RESEARCH.md` and any memory changes onto the session branch.
-
-## Step 8: Report
-
-State: tasks completed vs reverted, tickets addressed (implemented / partial / wontfix / reply),
-the journal entry title, any learning recorded, and the PR URL. Then stop.
+1. **Read context:** `IDENTITY.md` (you think like a compliance officer), `RESEARCH.md` (open
+   questions), `memory/active_learnings.md`. Pick ONE open `### [ ]` research gap, or a clearly
+   higher-value new topic from the scope above.
+2. **Investigate** via web search (arXiv, vendor docs, standards bodies). Read primary sources, not
+   summaries. Note specifics: a technique, a control a competitor enforces, a standard's exact
+   requirement, an attack class we don't detect.
+3. **Record, don't implement:**
+   - If you closed a gap, check its `### [x]` box in `RESEARCH.md` and write 2-4 sentences of what
+     you learned and the concrete implication for Advisory (e.g. "SLSA L3 wants signed provenance;
+     our promotion bridge could attest builds — file as a mutation ticket").
+   - If you found a NEW gap or capability worth building, add a `### [ ]` entry with a Goal, framed
+     as something `/mutate` (or a human ticket) could later act on.
+   - If genuinely novel, append one line to `memory/learnings.jsonl`.
+4. **Commit** only `RESEARCH.md` and `memory/` changes:
+   `git add RESEARCH.md memory && git commit -m "evolve: <topic>"`. Push to a `evolution/<topic>`
+   branch and open a PR (same PR-only discipline) — or, for a pure backlog note, commit to a branch
+   and let a human pull it in.
+5. **Report:** the topic, the source(s), the implication for the gate, and any ticket you'd recommend
+   filing. Then stop. **You did not change any product code — that is correct.**

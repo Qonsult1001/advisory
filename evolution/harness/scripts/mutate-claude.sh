@@ -1,28 +1,28 @@
 #!/usr/bin/env bash
-# evolve-claude.sh — the evolution timer. Runs /evolve via the Claude Code CLI on a loop.
+# mutate-claude.sh — the mutation timer. Runs /mutate via the Claude Code CLI on a loop.
 #
 # Based on an MIT-licensed evolution harness (see NOTICE).
 #
 # HOW IT WORKS (no API key, no GitHub secret):
-#   • `claude -p "/evolve"` uses your EXISTING Claude Code login (Pro/Max). You're already
+#   • `claude -p "/mutate"` uses your EXISTING Claude Code login (Pro/Max). You're already
 #     authenticated if you can run `claude`. There is NOTHING to configure for auth.
 #   • GitHub access is via the `gh` CLI being logged in (`gh auth login`).
-#   • Keep this looping; the INTERNAL timer in scripts/evolve-ide.sh (EVOLVE_HOURS) decides which
+#   • Keep this looping; the INTERNAL timer in scripts/mutate-ide.sh (MUTATE_HOURS) decides which
 #     ticks actually connect to GitHub and do work — off-schedule ticks print SKIPPED and cost nothing.
 #   • PR-only: every change becomes a pull request for human review.
 #
 # Usage:
-#   ./scripts/evolve-claude.sh            # run one cycle now (subject to the hour gate)
-#   ./scripts/evolve-claude.sh --loop 30m # tick every 30 min; acts only during EVOLVE_HOURS
-#   FORCE_RUN=true ./scripts/evolve-claude.sh   # bypass the schedule, act immediately
+#   ./scripts/mutate-claude.sh            # run one cycle now (subject to the hour gate)
+#   ./scripts/mutate-claude.sh --loop 30m # tick every 30 min; acts only during MUTATE_HOURS
+#   FORCE_RUN=true ./scripts/mutate-claude.sh   # bypass the schedule, act immediately
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
 run_once() {
-  echo "[$(date '+%F %T')] /evolve cycle start"
-  # Claude Code executes the /evolve command (see .claude/commands/evolve.md).
-  claude -p --dangerously-skip-permissions --verbose "/evolve" 2>&1
-  echo "[$(date '+%F %T')] /evolve cycle complete"
+  echo "[$(date '+%F %T')] /mutate cycle start"
+  # Claude Code executes the /mutate command (see .claude/commands/mutate.md).
+  claude -p --dangerously-skip-permissions --verbose "/mutate" 2>&1
+  echo "[$(date '+%F %T')] /mutate cycle complete"
 }
 
 secs() { local v="$1" n="${1%[smhSMH]}" u="${1##*[0-9]}"; case "$u" in s|S) echo "$n";; m|M) echo $((n*60));; h|H) echo $((n*3600));; *) echo $((n*60));; esac; }

@@ -1,8 +1,8 @@
 ---
-name: Evolve request
+name: Mutation request
 about: A change/fix for the evolution loop to implement (PR-only, human-reviewed)
 title: ""
-labels: evolve
+labels: mutation
 ---
 
 ## What should change
@@ -15,5 +15,5 @@ labels: evolve
 <!-- A test case or observable behaviour. The loop must make a test pass before opening a PR. -->
 
 ---
-> Adding the **`evolve`** label triggers the evolution cycle. It opens a **pull request** for review
+> Adding the **`mutation`** label triggers the evolution cycle. It opens a **pull request** for review
 > — nothing merges automatically. Reply in the comments and the next cycle addresses your feedback.

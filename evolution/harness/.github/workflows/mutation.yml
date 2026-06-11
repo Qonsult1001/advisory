@@ -1,9 +1,9 @@
-name: Evolution
+name: Mutation
 
-# Remote trigger for the SAME scripts you run locally. When an issue is labelled `evolve` (or a
+# Remote trigger for the SAME scripts you run locally. When an issue is labelled `mutation` (or a
 # tester comments on a labelled issue), or you dispatch manually, this installs the Claude Code CLI
-# and runs `scripts/evolve-claude.sh` — the exact entrypoint the local timer uses. The script runs
-# `claude -p "/evolve"`, which calls `scripts/evolve-ide.sh` (timer gate + build/test + PR). PR-only.
+# and runs `scripts/mutate-claude.sh` — the exact entrypoint the local timer uses. The script runs
+# `claude -p "/mutate"`, which calls `scripts/mutate-ide.sh` (timer gate + build/test + PR). PR-only.
 #
 # Auth: CI has no interactive Claude login, so it needs ONE secret —
 #   CLAUDE_CODE_OAUTH_TOKEN  (from `claude setup-token`)   ← recommended
@@ -18,21 +18,21 @@ on:
   workflow_dispatch:
     inputs:
       force:
-        description: "Bypass the EVOLVE_HOURS schedule"
+        description: "Bypass the MUTATE_HOURS schedule"
         type: boolean
         default: true
 
 permissions:
-  contents: write           # push the session branch (NOT main — enforced in evolve-ide.sh)
+  contents: write           # push the session branch (NOT main — enforced in mutate-ide.sh)
   pull-requests: write      # open the PR
   issues: write             # comment back on the ticket
 
 jobs:
-  evolve:
+  mutate:
     if: >
       github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'issues' && github.event.label.name == 'evolve') ||
-      (github.event_name == 'issue_comment' && contains(join(github.event.issue.labels.*.name, ','), 'evolve'))
+      (github.event_name == 'issues' && github.event.label.name == 'mutation') ||
+      (github.event_name == 'issue_comment' && contains(join(github.event.issue.labels.*.name, ','), 'mutation'))
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -59,16 +59,16 @@ jobs:
 
       - name: Run the evolution scripts (same entrypoint as local)
         run: |
-          chmod +x scripts/evolve-claude.sh scripts/evolve-ide.sh
-          ./scripts/evolve-claude.sh
+          chmod +x scripts/mutate-claude.sh scripts/mutate-ide.sh
+          ./scripts/mutate-claude.sh
         env:
           # Claude CLI auth — provide whichever secret you set.
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          # Evolution config consumed by scripts/evolve-ide.sh
+          # Mutation config consumed by scripts/mutate-ide.sh
           REPO: ${{ github.repository }}
-          LABEL: evolve
+          LABEL: mutation
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          EVOLVE_HOURS: '*'                          # CI is event-triggered, so act every run
+          MUTATE_HOURS: '*'                          # CI is event-triggered, so act every run
           FORCE_RUN: ${{ github.event_name == 'workflow_dispatch' && 'true' || '' }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
