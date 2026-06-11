@@ -10,6 +10,25 @@
 set -uo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
+# ---- Tool resolution (works in Git-Bash AND WSL) ----
+# The /mutate cycle may run inside WSL, where the .NET SDK and GitHub CLI are NOT installed as Linux
+# binaries — only the Windows .exe versions exist (reachable via /mnt/c, runnable through WSL interop).
+# So bare `dotnet`/`gh` resolve in Git-Bash but FAIL in WSL ("command not found") — which is why the
+# cycle reported "0 tickets" and a RED build. Wrapper functions fall back to the Windows .exe when the
+# native binary is absent, so the bare call sites below work unchanged in either shell.
+_find_exe() {  # _find_exe <name> <path1> [path2...]
+  command -v "$1" >/dev/null 2>&1 && { echo "$1"; return; }
+  command -v "$1.exe" >/dev/null 2>&1 && { echo "$1.exe"; return; }
+  local n="$1"; shift
+  for p in "$@"; do [ -x "$p" ] && { echo "$p"; return; }; done
+  echo "$n"
+}
+DOTNET_BIN="$(_find_exe dotnet "/mnt/c/Program Files/dotnet/dotnet.exe" "/c/Program Files/dotnet/dotnet.exe")"
+GH_BIN="$(_find_exe gh "/mnt/c/Program Files/GitHub CLI/gh.exe" "/c/Program Files/GitHub CLI/gh.exe")"
+dotnet() { "$DOTNET_BIN" "$@"; }
+gh()     { "$GH_BIN" "$@"; }
+echo "[env] dotnet=$DOTNET_BIN | gh=$GH_BIN"
+
 REPO="${REPO:-$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || echo '')}"
 LABEL="${LABEL:-mutation}"
 DEFAULT_BRANCH="${DEFAULT_BRANCH:-main}"
