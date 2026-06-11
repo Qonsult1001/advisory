@@ -15,7 +15,7 @@
 #   • Output is a RESEARCH.md/memory PR (PR-only) — never product code.
 #
 # DASHBOARD BUTTON: the web "Run research now" button drops research-*.request into the queue dir.
-#   The API writes to /data/evolution-queue, bind-mounted to ./.evolution-queue, so this loop reads
+#   The API writes to /data/evolution-queue, bind-mounted to ./data/evolution-queue, so this loop reads
 #   the same files from the host.
 #
 # Usage:
@@ -25,7 +25,7 @@
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
-QUEUE_DIR="${EVOLUTION_QUEUE_DIR:-./.evolution-queue}"
+QUEUE_DIR="${EVOLUTION_QUEUE_DIR:-./data/evolution-queue}"
 
 drain_queue() {
   # A research-*.request means "run now" was clicked — consume it and force a run this tick.

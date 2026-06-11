@@ -25,6 +25,9 @@ services:
       - AuditPath=/data/audit.jsonl
       - WormPath=/data/audit.worm.jsonl
       - ScanIndexPath=/data/scans.json
+      # The whole repo is mounted read-only at /workspace so the API can SEE and trigger the local
+      # mutation worker (scripts/mutate-claude.sh) directly — no manual start-worker.cmd needed.
+      - REPO_ROOT=/workspace
       # --- Durable intake queue (SQL Server; table auto-created) ---
       - SQL_CONNECTION_STRING=Server=mssql,1433;Database=master;User Id=sa;Password=Your_strong_Pass123;TrustServerCertificate=True
       - INTAKE_BATCH=10
@@ -57,15 +60,14 @@ services:
       - EVOLUTION_ENABLED=${EVOLUTION_ENABLED:-false}
       - EVOLUTION_REPO=${EVOLUTION_REPO:-}
       - GH_TOKEN=${PKGFW_GH_TOKEN:-}
-      # Mutation queue lives on a real host folder (bind mount below) so the LOCAL mutate loop
-      # on your machine can read the request files the dashboard drops here.
       - EVOLUTION_QUEUE_DIR=/data/evolution-queue
       # - ITSM_WEBHOOK_URL=          # ServiceNow/Jira ticket event
     volumes:
-      - "fw-data:/data"
-      # Bind the queue to a real folder on your drive => persistent + readable from the host loop.
-      # Override the host path with EVOLUTION_QUEUE_HOST (defaults to ./.evolution-queue in the repo).
-      - "${EVOLUTION_QUEUE_HOST:-./.evolution-queue}:/data/evolution-queue"
+      # ALL runtime data lives in ./data in your dev root (G:\development\Advisory\data) — visible,
+      # persistent, editable. policy.json, audit ledgers, scans, and the mutation queue are all here.
+      - "./data:/data"
+      # The repo itself, mounted READ-ONLY, so the API can see + run scripts/mutate-claude.sh directly.
+      - "./:/workspace:ro"
 
   # OpenAI Privacy Filter (openai/privacy-filter, Apache-2.0) running on-prem via transformers.js.
   # Detects + redacts PII in unstructured text; model cached in a volume after first download.
@@ -85,6 +87,6 @@ services:
 
 volumes:
   nexus-data:
-  fw-data:
   pf-cache:
   mssql-data:
+  # NOTE: API data is no longer a named volume — it's the ./data bind mount (visible in your dev root).

@@ -43,3 +43,6 @@ Thumbs.db
 
 # Mutation queue (bind-mounted runtime data — request files dropped by the dashboard)
 .evolution-queue/
+
+# All runtime data now lives here in the dev root (visible, persistent)
+data/

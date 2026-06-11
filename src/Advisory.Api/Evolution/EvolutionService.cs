@@ -17,14 +17,45 @@ public class EvoRun
     public string TicketTitle { get; set; } = "";
     public string Status { get; set; } = "queued";   // queued | running | tests | pr-open | failed | skipped
     public string Stage { get; set; } = "";
+    public int Pct { get; set; }                      // 0-100 progress for the bar
+    public int? EtaSeconds { get; set; }              // calibrated estimate to finish (null = unknown)
     public string? Branch { get; set; }
     public string? PrUrl { get; set; }
     public int? PrNumber { get; set; }
     public bool TestsPassed { get; set; }
     public string Log { get; set; } = "";
     public DateTimeOffset StartedAt { get; set; } = DateTimeOffset.UtcNow;
+    public DateTimeOffset? PickedUpAt { get; set; }   // when the worker actually started running it
     public DateTimeOffset? FinishedAt { get; set; }
     public void Append(string line) { Log += line + "\n"; if (Log.Length > 40000) Log = Log[^40000..]; }
+}
+
+/// <summary>The ordered stages of a /mutate cycle, with the % each one reaches and a typical
+/// duration (seconds) used to compute a calibrated ETA. Honest, short estimates — a cycle is
+/// minutes, not days.</summary>
+public static class MutateStages
+{
+    // (key, label, pct-at-completion, typical seconds for THIS stage)
+    public static readonly (string Key, string Label, int Pct, int Secs)[] All =
+    {
+        ("queued",  "waiting for worker",      0,   0),
+        ("setup",   "setup · fetch ticket",    10,  20),
+        ("plan",    "planning the fix",        25,  40),
+        ("test",    "writing a failing test",  45,  60),
+        ("fix",     "implementing the fix",    65,  90),
+        ("build",   "building",                80,  40),
+        ("tests",   "running tests",           92,  50),
+        ("pr",      "opening pull request",    100, 25),
+    };
+    public static int TotalSecs => All.Sum(s => s.Secs);
+    public static (int pct, int etaSecs) For(string key)
+    {
+        int idx = Array.FindIndex(All, s => s.Key == key);
+        if (idx < 0) return (0, TotalSecs);
+        int pct = All[idx].Pct;
+        int remaining = All.Skip(idx + 1).Sum(s => s.Secs);   // time for stages still ahead
+        return (pct, remaining);
+    }
 }
 
 /// <summary>
@@ -60,6 +91,12 @@ public class EvolutionService
     // The dashboard button queues a ticket here; a local `scripts/mutate-claude.sh --loop` drains it.
     private string QueueDir => _cfg["EVOLUTION_QUEUE_DIR"] ?? (Directory.Exists("/data") ? "/data/evolution-queue" : Path.Combine(Path.GetTempPath(), "advisory-evolution-queue"));
 
+    // ---- worker heartbeat: the local mutate-claude.sh loop pings this so the dashboard can say
+    //      whether a worker is actually draining the queue (vs "Queued" sitting forever). ----
+    private DateTimeOffset? _workerSeen;
+    public void WorkerHeartbeat() => _workerSeen = DateTimeOffset.UtcNow;
+    public bool WorkerAlive => _workerSeen is { } t && (DateTimeOffset.UtcNow - t) < TimeSpan.FromSeconds(150);
+
     public object Status() => new
     {
         enabled = Enabled,
@@ -72,13 +109,40 @@ public class EvolutionService
         queueDir = QueueDir,
         ghAvailable = GhAvailable(),
         model = Model,
+        workerAlive = WorkerAlive,                                   // is a worker draining the queue?
+        workerLastSeen = _workerSeen,
         activeRuns = _runs.Values.Count(r => r.Status is "running" or "tests" or "queued"),
     };
+
+    /// <summary>Worker reports progress for a run. Updates stage, %, ETA, status, PR.</summary>
+    public EvoRun? UpdateProgress(string id, string? stage, string? status, string? prUrl, string? logLine)
+    {
+        if (!_runs.TryGetValue(id, out var r)) return null;
+        WorkerHeartbeat();
+        if (!string.IsNullOrWhiteSpace(stage))
+        {
+            var s = MutateStages.All.FirstOrDefault(x => x.Key == stage);
+            r.Stage = s.Label ?? stage!;
+            var (pct, eta) = MutateStages.For(stage!);
+            r.Pct = pct; r.EtaSeconds = eta;
+            if (r.PickedUpAt is null && stage != "queued") r.PickedUpAt = DateTimeOffset.UtcNow;
+        }
+        if (!string.IsNullOrWhiteSpace(status)) r.Status = status!;
+        if (!string.IsNullOrWhiteSpace(prUrl)) r.PrUrl = prUrl;
+        if (!string.IsNullOrWhiteSpace(logLine)) r.Append(logLine!);
+        if (status is "pr-open" or "failed" or "skipped") { r.FinishedAt = DateTimeOffset.UtcNow; r.Pct = status == "pr-open" ? 100 : r.Pct; r.EtaSeconds = 0; }
+        return r;
+    }
+
+    /// <summary>The most recent run still waiting/working — what the worker should pick up next.</summary>
+    public EvoRun? NextQueued() => _runs.Values
+        .Where(r => r.Status is "queued")
+        .OrderBy(r => r.StartedAt).FirstOrDefault();
 
     /// <summary>Queue a ticket for the LOCAL mutation loop to pick up. We don't dispatch CI because
     /// CI has no Claude login; the local loop (scripts/mutate-claude.sh --loop) drains this queue and
     /// runs the /mutate cycle with your Claude session, PR-only.</summary>
-    public async Task<(bool ok, string detail)> DispatchWorkflowAsync(int ticket, CancellationToken ct)
+    public async Task<(bool ok, string detail)> DispatchWorkflowAsync(int ticket, string runId, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(Repo)) return (false, "no EVOLUTION_REPO set");
         // Make sure the ticket is labelled so the loop's setup step finds it.
@@ -86,9 +150,10 @@ public class EvolutionService
         try
         {
             Directory.CreateDirectory(QueueDir);
+            // Request format: ticket / runId / iso-timestamp. The worker reads runId to report progress.
             await File.WriteAllTextAsync(Path.Combine(QueueDir, $"ticket-{ticket}.request"),
-                $"{ticket}\n{DateTimeOffset.UtcNow:o}\n", ct);
-            return (true, $"queued #{ticket} for the local mutation loop — run scripts/mutate-claude.sh (or --loop) to process it");
+                $"{ticket}\n{runId}\n{DateTimeOffset.UtcNow:o}\n", ct);
+            return (true, $"queued #{ticket} (run {runId}) for the local mutation worker");
         }
         catch (Exception ex) { return (false, $"could not queue: {ex.Message}"); }
     }
