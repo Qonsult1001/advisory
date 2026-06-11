@@ -16,3 +16,8 @@ change near here must preserve the integrity guarantees.
 ### [ ] Test coverage map
 **Goal:** Identify which controls have real tests and which don't. Run mutation testing to find
 tests that pass but don't actually catch bugs. Prioritise closing those gaps.
+
+### [ ] Audit endpoint/control-state consistency across the API
+**Goal:** #2 showed two endpoints disagreeing on whether the gateway was active. Sweep the API for
+other places where a policy toggle is honored in one path but not a sibling path (models vs chat,
+scan vs block, enabled vs listed). A control that's enforced inconsistently is a finding.
