@@ -53,6 +53,7 @@ export REPO="${REPO:-${EVOLUTION_REPO:-$(gh repo view --json nameWithOwner -q .n
 QUEUE_DIR="${EVOLUTION_QUEUE_DIR:-./data/evolution-queue}"
 API="${ADVISORY_API:-http://localhost:5000/api}"
 CUR_RUN=""    # run id we are currently reporting progress for
+CUR_TICKET="" # ticket number being processed (used to close the issue after auto-release)
 
 # One-line environment report so the worker window shows exactly what it resolved.
 echo "[env] dotnet=$DOTNET_BIN | gh=$GH_BIN | claude=$(command -v claude || echo MISSING) | repo=${REPO:-<none>}"
@@ -133,8 +134,9 @@ drain_queue() {   # returns 0 if a request was found (work to do), 1 if none
   for req in "$QUEUE_DIR"/ticket-*.request; do
     [ -e "$req" ] || continue
     # request format: line1=ticket, line2=runId, line3=timestamp
+    CUR_TICKET="$(sed -n '1p' "$req" 2>/dev/null | tr -d '[:space:]')"
     CUR_RUN="$(sed -n '2p' "$req" 2>/dev/null | tr -d '[:space:]')"
-    echo "[$(date '+%F %T')] picked up $(basename "$req") (run=${CUR_RUN:-?})"
+    echo "[$(date '+%F %T')] picked up $(basename "$req") (ticket=#${CUR_TICKET:-?} run=${CUR_RUN:-?})"
     consume_request "$(basename "$req")"   # remove via API (root) so it isn't re-picked next tick
     found=0
   done
@@ -203,8 +205,14 @@ run_cycle() {
       progress "pr" "running" "$newpr" "AUTO: merging #$newnum + recompiling Docker…"
       echo "[$(date '+%F %T')] AUTO_RELEASE: releasing #$newnum"
       if REPO="$REPO" bash scripts/mutate-ide.sh release "$newnum" 2>&1 | tee -a /tmp/release.$$ ; then
-        progress "pr" "pr-open" "$newpr" "AUTO: merged #$newnum, pulled main, recompiled + redeployed ✔"
-        echo "[$(date '+%F %T')] AUTO_RELEASE done for #$newnum"
+        # Belt-and-suspenders: explicitly close the ticket so it can't be left OPEN if the PR body
+        # lacked a "Closes #N" keyword (the squash-merge doesn't always carry the body).
+        if [ -n "$CUR_TICKET" ]; then
+          gh issue close "$CUR_TICKET" --repo "$REPO" \
+            --comment "Fixed and released via PR #$newnum (merged to main, recompiled + redeployed). Closing." 2>/dev/null || true
+        fi
+        progress "pr" "pr-open" "$newpr" "AUTO: merged #$newnum, closed #${CUR_TICKET}, redeployed ✔"
+        echo "[$(date '+%F %T')] AUTO_RELEASE done for #$newnum (closed #${CUR_TICKET})"
       else
         progress "pr" "pr-open" "$newpr" "AUTO release failed — PR #$newnum is open, release manually"
       fi
