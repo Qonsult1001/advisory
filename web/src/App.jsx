@@ -62,6 +62,8 @@ const api = {
   app: (key) => fetch(`${API}/apptrust/application?key=${encodeURIComponent(key)}`).then((r) => r.json()),
   odsList: () => fetch(`${API}/ondemand/list`).then((r) => r.json()),
   odsScan: (pkg) => fetch(`${API}/ondemand/scan`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(pkg) }).then((r) => r.json()),
+  adminSettings: () => fetch(`${API}/admin/settings`).then((r) => r.json()),
+  saveAdminSettings: (body) => fetch(`${API}/admin/settings`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).then((r) => r.json()),
   getAiSettings: () => fetch(`${API}/ai/settings`).then((r) => r.json()),
   saveAiSettings: (body) => fetch(`${API}/ai/settings`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).then((r) => r.json()),
   testAi: (body) => fetch(`${API}/ai/test`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) }).then((r) => r.json()),
@@ -178,8 +180,8 @@ export default function App() {
             <span style={{ fontWeight: 700, fontSize: 15 }}><span style={{ color: "#fff" }}>Advi</span><span style={{ color: "#5fd968" }}>sory</span></span>
           </div>
           <div style={{ display: "flex", gap: 4 }}>
-            <span style={s.appTabOn}>Platform</span>
-            <span style={s.appTab}>Administration</span>
+            <span style={tab === "admin" ? s.appTab : s.appTabOn} onClick={() => setTab(tab === "admin" ? "dashboard" : "dashboard")}>Platform</span>
+            <span style={tab === "admin" ? s.appTabOn : s.appTab} onClick={() => setTab("admin")}>Administration</span>
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
@@ -303,6 +305,7 @@ export default function App() {
 
           {tab === "evolution" && <Evolution />}
           {tab === "research" && <Research />}
+          {tab === "admin" && <AdminCenter />}
 
           {tab === "aiml" && <AimlOverview setTab={setTab} />}
           {tab === "airegistry" && <AiCatalog initialTab="registry" setTab={setTab} />}
@@ -909,6 +912,15 @@ function Ctl({ id, rule, children }) {
   );
 }
 function SubHead({ children }) { return <div style={s.subhead}>{children}</div>; }
+// Small labelled form field (label above an input/select). Used by the Admin Center.
+function Field({ label, children }) {
+  return (
+    <div>
+      <div style={{ fontSize: 10.5, color: C.sub, textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 3 }}>{label}</div>
+      {children}
+    </div>
+  );
+}
 function Switch({ on, onChange, disabled }) {
   return (
     <button disabled={disabled} onClick={() => onChange(!on)}
@@ -3432,6 +3444,110 @@ function ProgressBar({ pct, done, failed }) {
     </div>
   );
 }
+// ── Admin Center — global platform config: AI agents, per-task routing, memory + DB/runtime ──
+function AdminCenter() {
+  const [d, setD] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState(null);
+  useEffect(() => { api.adminSettings().then(setD).catch(() => setD({ agents: [], standards: [], runtimes: [], databases: [], taskKinds: [], mutationRouting: {}, evolutionRouting: {} })); }, []);
+  if (!d) return <div style={{ padding: 30, color: C.sub }}>Loading Administration…</div>;
+
+  const update = (patch) => setD({ ...d, ...patch });
+  const setAgent = (i, patch) => { const a = [...d.agents]; a[i] = { ...a[i], ...patch }; update({ agents: a }); };
+  const addAgent = () => update({ agents: [...d.agents, { id: "agent-" + (d.agents.length + 1), name: "New agent", standard: "openai", model: "", endpoint: "", apiKey: "", cursorUser: "", enabled: true, hasKey: false }] });
+  const removeAgent = (i) => update({ agents: d.agents.filter((_, j) => j !== i) });
+  const agentOptions = [{ id: "", label: "— default engine —" }, ...d.agents.map((a) => ({ id: a.id, label: `${a.name} (${a.model || a.standard})` }))];
+
+  const save = async () => {
+    setBusy(true); setMsg(null);
+    // send apiKey only when the operator typed a new one (blank keeps the stored key)
+    const agents = d.agents.map((a) => ({ ...a, apiKey: a.apiKey && a.apiKey.length && !a.apiKey.startsWith("•") ? a.apiKey : "" }));
+    const r = await api.saveAdminSettings({ agents, mutationRouting: d.mutationRouting, evolutionRouting: d.evolutionRouting, memoryMb: Number(d.memoryMb) || 0, runtime: d.runtime, database: d.database }).catch(() => ({ error: "save failed" }));
+    setMsg(r.saved ? `Saved — ${r.agents} agent(s) configured.` : (r.error || "save failed"));
+    setBusy(false);
+    api.adminSettings().then(setD).catch(() => {});
+  };
+
+  const Routing = ({ label, routing, onChange }) => (
+    <div style={{ marginBottom: 14 }}>
+      <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 6 }}>{label}</div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10 }}>
+        {(d.taskKinds || []).map((k) => (
+          <div key={k}>
+            <div style={{ fontSize: 10.5, color: C.sub, textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 3 }}>{k}</div>
+            <select value={routing?.[k] || ""} onChange={(e) => onChange({ ...routing, [k]: e.target.value || null })} style={{ ...s.select, width: "100%" }}>
+              {agentOptions.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
+            </select>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+
+  return (
+    <div>
+      <Crumb trail={[{ label: "Administration" }, { label: "AI & Platform" }]} />
+      <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 4 }}>Administration</div>
+      <p style={{ color: C.sub, fontSize: 12.5, marginTop: 0, maxWidth: 760 }}>
+        Configure the AI agents the platform may use (any provider/standard), route mutation &amp; evolution
+        tasks to specific agents, and set memory + the database/runtime the platform deploys on. Credentials
+        are stored server-side in the signed policy and never returned — only whether a key is set.
+      </p>
+      {msg && <Callout>{msg}</Callout>}
+
+      <SubHead>AI agents</SubHead>
+      <div style={s.card}>
+        {d.agents.length === 0 && <div style={{ padding: "20px", color: C.sub, fontSize: 12.5 }}>No agents yet. Add one — e.g. Claude (Cursor CLI) for research, Groq gpt-oss-120b for execution.</div>}
+        {d.agents.map((a, i) => (
+          <div key={i} style={{ padding: "14px 16px", borderBottom: `1px solid ${C.line}`, display: "grid", gridTemplateColumns: "1.2fr 1fr 1.2fr 1.4fr 1fr auto", gap: 10, alignItems: "end" }}>
+            <Field label="Name"><input value={a.name} onChange={(e) => setAgent(i, { name: e.target.value })} style={{ ...s.input, width: "100%" }} /></Field>
+            <Field label="Standard">
+              <select value={a.standard} onChange={(e) => setAgent(i, { standard: e.target.value })} style={{ ...s.select, width: "100%" }}>
+                {(d.standards || []).map((x) => <option key={x} value={x}>{x}</option>)}
+              </select>
+            </Field>
+            <Field label="Model"><input value={a.model} placeholder="claude-opus-4-6 / gpt-oss-120b" onChange={(e) => setAgent(i, { model: e.target.value })} style={{ ...s.input, width: "100%" }} /></Field>
+            {a.standard === "cursor-cli"
+              ? <Field label="Cursor user"><input value={a.cursorUser || ""} placeholder="cursor account" onChange={(e) => setAgent(i, { cursorUser: e.target.value })} style={{ ...s.input, width: "100%" }} /></Field>
+              : <Field label="Endpoint"><input value={a.endpoint || ""} placeholder="https://api…/v1" onChange={(e) => setAgent(i, { endpoint: e.target.value })} style={{ ...s.input, width: "100%" }} /></Field>}
+            <Field label={a.hasKey ? "API key (set ✓)" : "API key"}>
+              <input type="password" value={a.apiKey || ""} placeholder={a.hasKey ? "•••••• (unchanged)" : "paste key"} onChange={(e) => setAgent(i, { apiKey: e.target.value })} style={{ ...s.input, width: "100%" }} />
+            </Field>
+            <button onClick={() => removeAgent(i)} title="Remove agent" style={{ background: "transparent", border: "none", color: C.sub, cursor: "pointer", fontSize: 15, padding: "6px" }}>✕</button>
+          </div>
+        ))}
+        <div style={{ padding: "12px 16px" }}><button style={s.add} onClick={addAgent}>+ Add agent</button></div>
+      </div>
+
+      <SubHead>Task routing — assign agents to each phase</SubHead>
+      <div style={{ ...s.card, padding: "16px 18px" }}>
+        <Routing label="Mutation (bug-fix cycle)" routing={d.mutationRouting} onChange={(r) => update({ mutationRouting: r })} />
+        <Routing label="Evolution (research cycle)" routing={d.evolutionRouting} onChange={(r) => update({ evolutionRouting: r })} />
+        <div style={{ fontSize: 11.5, color: C.dim }}>Leave a phase on “default engine” to use the worker’s built-in Claude. Example: research → Claude (Cursor) Opus, execution → Groq gpt-oss-120b, documentation → gpt-oss-20b.</div>
+      </div>
+
+      <SubHead>Platform</SubHead>
+      <div style={{ ...s.card, padding: "16px 18px", display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 16 }}>
+        <Field label="Memory budget (MB, 0 = default)"><input type="number" value={d.memoryMb} onChange={(e) => update({ memoryMb: e.target.value })} style={{ ...s.input, width: 120 }} /></Field>
+        <Field label="Runtime">
+          <select value={d.runtime} onChange={(e) => update({ runtime: e.target.value })} style={{ ...s.select, width: "100%" }}>
+            {(d.runtimes || []).map((x) => <option key={x} value={x}>{x}</option>)}
+          </select>
+        </Field>
+        <Field label="Database">
+          <select value={d.database} onChange={(e) => update({ database: e.target.value })} style={{ ...s.select, width: "100%" }}>
+            {(d.databases || []).map((x) => <option key={x} value={x}>{x}</option>)}
+          </select>
+        </Field>
+      </div>
+
+      <div style={{ marginTop: 16 }}>
+        <button style={{ ...s.add, opacity: busy ? 0.6 : 1 }} disabled={busy} onClick={save}>{busy ? "Saving…" : "Save Administration settings"}</button>
+      </div>
+    </div>
+  );
+}
+
 function Evolution() {
   const [status, setStatus] = useState(null);
   const [tickets, setTickets] = useState(null);

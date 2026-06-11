@@ -97,6 +97,9 @@ public class FirewallPolicy
     //     stored server-side in the signed policy (self-hosted). Falls back to env GROQ_API_KEY when blank. ---
     public AiSettings Ai { get; set; } = new();
 
+    // --- Admin Center: configured AI agents, per-task routing, memory + DB/runtime selection. ---
+    public AdminSettings Admin { get; set; } = new();
+
     // --- Scan artifact content for embedded secrets + IaC misconfigurations when bytes are
     //     available (controls SEC-SECRET-01 / SEC-IAC-01). High-severity hits block. ---
     public bool EnableContentScan { get; set; } = true;
@@ -221,6 +224,52 @@ public class AiSettings
     public string Model { get; set; } = "openai/gpt-oss-120b";
     public string? ApiKey { get; set; }                              // entered via admin UI; blank => use env GROQ_API_KEY
     public string Endpoint { get; set; } = "https://api.groq.com/openai/v1/chat/completions";
+}
+
+// ─────────────────────────── Admin Center (global platform config) ───────────────────────────
+
+/// <summary>One named AI agent the operator configures in the Admin Center. Multiple can exist;
+/// mutation/evolution tasks are routed to them by name (see TaskRouting). Credentials are entered
+/// in the admin UI and stored in the signed policy (self-hosted) — never logged, masked on read.</summary>
+public class AiAgent
+{
+    public string Id { get; set; } = "";                  // stable key, e.g. "claude-cursor", "groq-exec"
+    public string Name { get; set; } = "";                // display name
+    // Standard the agent speaks to. Lets the operator "choose any AI":
+    //   anthropic     — Anthropic Messages API
+    //   openai        — OpenAI-compatible /v1 (covers Groq, OpenAI, on-prem gpt-oss, vLLM, etc.)
+    //   cursor-cli    — drive Claude inside the Cursor CLI (uses Cursor user creds, not an API key)
+    //   claude-cli    — the local Claude Code CLI (the mutation worker's default)
+    public string Standard { get; set; } = "openai";
+    public string Model { get; set; } = "";               // e.g. claude-opus-4-6, openai/gpt-oss-120b, gpt-oss-20b
+    public string? Endpoint { get; set; }                 // base URL for openai-standard providers
+    public string? ApiKey { get; set; }                   // masked on read; blank => use env
+    public string? CursorUser { get; set; }               // cursor-cli: the Cursor account/user detail
+    public bool Enabled { get; set; } = true;
+}
+
+/// <summary>Which configured agent handles each phase of a cycle. Empty => fall back to the default
+/// worker engine. This is the "different tasks to different AI agents" routing.</summary>
+public class TaskRouting
+{
+    public string? Research { get; set; }     // investigate existing code (e.g. claude-cursor / Opus)
+    public string? Planning { get; set; }     // plan the fix
+    public string? Execution { get; set; }    // implement (e.g. groq gpt-oss-120b)
+    public string? Documentation { get; set; }// PR text, journal, close-out (e.g. gpt-oss-20b)
+}
+
+/// <summary>Global platform settings surfaced in the Administration view.</summary>
+public class AdminSettings
+{
+    public List<AiAgent> Agents { get; set; } = new();    // the AI agents the operator can pick from
+    public TaskRouting MutationRouting { get; set; } = new();
+    public TaskRouting EvolutionRouting { get; set; } = new();
+    // Memory budget the agents may use (MB); 0 => engine default.
+    public int MemoryMb { get; set; } = 0;
+    // Container/runtime the platform deploys + creates temp test environments on.
+    public string Runtime { get; set; } = "docker";       // docker | podman | none
+    // Database backing the platform (matches docker-compose default).
+    public string Database { get; set; } = "sqlserver";   // sqlserver | postgres | sqlite
 }
 
 /// <summary>Admin config for a built-in source type: its credential/endpoint and enabled state.</summary>
