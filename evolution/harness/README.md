@@ -21,18 +21,38 @@ issue labelled `evolve`  ──►  GitHub Action  ──►  Claude Code runs /
   here — it refuses to operate on the default branch.
 - **Stack-aware:** builds/tests with `dotnet` and `vite` (this is a .NET 10 + React repo).
 
-## Run it
+## Run it — the timer (no API key, no secret)
 
-**On a ticket (CI, recommended):** `.github/workflows/evolve.yml` fires when an issue is labelled
-`evolve` or a tester comments on a labelled issue. Add a repo secret
-`CLAUDE_CODE_OAUTH_TOKEN` (or `ANTHROPIC_API_KEY`).
+The primary mechanism is a **local loop that uses your existing Claude Code login**. There is
+**nothing to configure for auth** beyond being logged into the `claude` and `gh` CLIs.
 
-**Locally (manual):**
 ```bash
-gh auth login                       # once
-./scripts/evolve-claude.sh          # one cycle
-./scripts/evolve-claude.sh --loop 1h
+gh auth login                          # once — GitHub access for `gh`
+./scripts/evolve-claude.sh --loop 30m  # tick every 30 min
 ```
+
+Each tick runs `claude -p "/evolve"`. An **internal timer** inside `scripts/evolve-ide.sh` decides
+which ticks actually connect to GitHub and do work:
+
+```bash
+EVOLVE_HOURS=0,4,8,12,16,20   # default: act only at these hours; other ticks print SKIPPED
+EVOLVE_HOURS='*'              # act every tick
+FORCE_RUN=true               # bypass the schedule, act now
+```
+
+So you keep the loop running cheaply; it only opens PRs on schedule, and only when an open issue is
+labelled `evolve`.
+
+## Remote trigger (GitHub Actions) — runs the SAME scripts
+
+`.github/workflows/evolve.yml` lets a ticket trigger evolution remotely. When an issue is labelled
+`evolve` (or a tester comments on a labelled one), the workflow installs the Claude CLI and runs
+**`scripts/evolve-claude.sh`** — the exact entrypoint the local timer uses. So CI and local share one
+code path; the workflow is just a remote trigger for the scripts.
+
+CI has no interactive Claude login, so this path (and only this path) needs **one secret**:
+`CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`) or `ANTHROPIC_API_KEY`. GitHub access uses the
+built-in `GITHUB_TOKEN` — no extra secret. The local timer above needs **no secret at all**.
 
 ## Safety (enforced, not optional)
 

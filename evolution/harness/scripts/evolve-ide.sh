@@ -17,6 +17,24 @@ DATE="$(date +%Y%m%d-%H%M)"
 BRANCH="evolve/session-$DATE"
 EVO=".evolve"; mkdir -p "$EVO"
 
+# ── Internal timer gate (when may this cycle connect to GitHub?) ──
+# Like SAID-ECHO/EVOLVE's evolve.sh: a run only proceeds during allowed hours, so you can keep a
+# loop running (evolve-claude.sh --loop) but it only acts on a schedule, not every tick.
+#   EVOLVE_HOURS  — comma-separated hours (0-23) when a cycle may run. Default: every 4h.
+#                   Set "*" to allow any hour. Off-hours print SKIPPED and exit 0.
+#   FORCE_RUN=true — bypass the gate (manual run).
+EVOLVE_HOURS="${EVOLVE_HOURS:-0,4,8,12,16,20}"
+
+timer_gate() {
+  [ "${FORCE_RUN:-}" = "true" ] && return 0
+  [ "$EVOLVE_HOURS" = "*" ] && return 0
+  local now; now=$((10#$(date +%H)))
+  case ",$EVOLVE_HOURS," in
+    *",$now,"*) return 0 ;;                       # this hour is an allowed slot
+    *) echo "SKIPPED — hour $now is not in the schedule [$EVOLVE_HOURS]. (FORCE_RUN=true to override.)"; return 1 ;;
+  esac
+}
+
 die() { echo "evolve-ide: $*" >&2; exit 1; }
 
 build_and_test() {
@@ -36,6 +54,8 @@ build_and_test() {
 case "${1:-}" in
   setup)
     [ -n "$REPO" ] || die "no REPO and no gh remote — set REPO=owner/name"
+    # Internal timer: only connect to GitHub during allowed hours.
+    timer_gate || exit 0
     echo "Repo: $REPO | Label: $LABEL | Session branch: $BRANCH"
 
     # Fetch open tickets with the evolve label, plus their comments (tester replies).

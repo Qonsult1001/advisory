@@ -1,11 +1,20 @@
 #!/usr/bin/env bash
-# evolve-claude.sh — run one /evolve cycle via the Claude Code CLI (uses your existing Claude login).
+# evolve-claude.sh — the evolution timer. Runs /evolve via the Claude Code CLI on a loop.
 #
 # Adapted from yoyo-evolve (MIT, https://github.com/yologdev/yoyo-evolve).
 #
+# HOW IT WORKS (no API key, no GitHub secret):
+#   • `claude -p "/evolve"` uses your EXISTING Claude Code login (Pro/Max). You're already
+#     authenticated if you can run `claude`. There is NOTHING to configure for auth.
+#   • GitHub access is via the `gh` CLI being logged in (`gh auth login`).
+#   • Keep this looping; the INTERNAL timer in scripts/evolve-ide.sh (EVOLVE_HOURS) decides which
+#     ticks actually connect to GitHub and do work — off-schedule ticks print SKIPPED and cost nothing.
+#   • PR-only: every change becomes a pull request for human review.
+#
 # Usage:
-#   ./scripts/evolve-claude.sh           # run once
-#   ./scripts/evolve-claude.sh --loop 1h # run every hour (local only; CI uses the workflow)
+#   ./scripts/evolve-claude.sh            # run one cycle now (subject to the hour gate)
+#   ./scripts/evolve-claude.sh --loop 30m # tick every 30 min; acts only during EVOLVE_HOURS
+#   FORCE_RUN=true ./scripts/evolve-claude.sh   # bypass the schedule, act immediately
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 

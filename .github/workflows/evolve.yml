@@ -1,13 +1,26 @@
 name: Evolution
 
-# Triggered by real tickets: an issue gets the `evolve` label, or a tester comments on a labelled
-# issue. Runs the /evolve cycle via Claude Code and opens a PR. PR-only — never merges to main.
+# Remote trigger for the SAME scripts you run locally. When an issue is labelled `evolve` (or a
+# tester comments on a labelled issue), or you dispatch manually, this installs the Claude Code CLI
+# and runs `scripts/evolve-claude.sh` — the exact entrypoint the local timer uses. The script runs
+# `claude -p "/evolve"`, which calls `scripts/evolve-ide.sh` (timer gate + build/test + PR). PR-only.
+#
+# Auth: CI has no interactive Claude login, so it needs ONE secret —
+#   CLAUDE_CODE_OAUTH_TOKEN  (from `claude setup-token`)   ← recommended
+#   or ANTHROPIC_API_KEY
+# GitHub access uses the built-in GITHUB_TOKEN (no extra secret).
+
 on:
   issues:
     types: [labeled]
   issue_comment:
     types: [created]
-  workflow_dispatch:        # manual run for testing
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Bypass the EVOLVE_HOURS schedule"
+        type: boolean
+        default: true
 
 permissions:
   contents: write           # push the session branch (NOT main — enforced in evolve-ide.sh)
@@ -16,13 +29,12 @@ permissions:
 
 jobs:
   evolve:
-    # Only run for the evolve label, or comments on issues that carry it.
     if: >
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'issues' && github.event.label.name == 'evolve') ||
       (github.event_name == 'issue_comment' && contains(join(github.event.issue.labels.*.name, ','), 'evolve'))
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
@@ -35,23 +47,28 @@ jobs:
         uses: actions/setup-node@v4
         with: { node-version: '20' }
 
-      - name: Configure git + gh
+      - name: Install Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Configure git + gh auth
         run: |
-          git config user.name  "pkgfw-evolve[bot]"
-          git config user.email "pkgfw-evolve[bot]@users.noreply.github.com"
+          git config user.name  "Willie Olivier"
+          git config user.email "189504724+Qonsult1001@users.noreply.github.com"
+          # gh is preinstalled on the runner; authenticate with the workflow token.
           echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
 
-      # Run the evolution cycle through Claude Code. Requires an Anthropic key or Claude OAuth token
-      # in repo secrets (CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY).
-      - name: Run /evolve
-        uses: anthropics/claude-code-action@v1
-        with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          # or: anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          prompt: "/evolve"
-          claude_args: "--dangerously-skip-permissions --max-turns 60"
+      - name: Run the evolution scripts (same entrypoint as local)
+        run: |
+          chmod +x scripts/evolve-claude.sh scripts/evolve-ide.sh
+          ./scripts/evolve-claude.sh
         env:
+          # Claude CLI auth — provide whichever secret you set.
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Evolution config consumed by scripts/evolve-ide.sh
           REPO: ${{ github.repository }}
           LABEL: evolve
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          EVOLVE_HOURS: '*'                          # CI is event-triggered, so act every run
+          FORCE_RUN: ${{ github.event_name == 'workflow_dispatch' && 'true' || '' }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
