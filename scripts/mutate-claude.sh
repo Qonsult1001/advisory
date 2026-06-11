@@ -31,9 +31,24 @@ cd "$(git rev-parse --show-toplevel)"
 # Source .env (gitignored) so the key set there flows through to the claude CLI.
 if [ -f .env ]; then set -a; . ./.env 2>/dev/null || true; set +a; fi
 
+# ---- Environment self-sufficiency (don't trust the inherited PATH) ----
+# A worker launched from cmd.exe can inherit a narrow PATH that's missing dotnet / gh, which makes
+# the cycle report "dotnet not found" or "0 tickets" even though the tools exist. Ensure the common
+# install locations are on PATH so the cycle behaves the same as an interactive shell.
+for d in "/c/Program Files/dotnet" "/c/Program Files/GitHub CLI" "/c/nvm4w/nodejs" \
+         "$HOME/.dotnet/tools" "/c/Program Files/Git/bin" "/c/Program Files/Git/usr/bin"; do
+  case ":$PATH:" in *":$d:"*) : ;; *) [ -d "$d" ] && PATH="$PATH:$d" ;; esac
+done
+export PATH
+# Tell the cycle which repo to act on (mutate-ide.sh reads REPO; default to this repo's gh remote).
+export REPO="${REPO:-${EVOLUTION_REPO:-$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || echo '')}}"
+
 QUEUE_DIR="${EVOLUTION_QUEUE_DIR:-./data/evolution-queue}"
 API="${ADVISORY_API:-http://localhost:5000/api}"
 CUR_RUN=""    # run id we are currently reporting progress for
+
+# One-line environment report so the worker window shows exactly what it resolved.
+echo "[env] dotnet=$(command -v dotnet || echo MISSING) | gh=$(command -v gh || echo MISSING) | claude=$(command -v claude || echo MISSING) | repo=${REPO:-<none>}"
 
 # Fail fast with a clear message if there is no headless credential.
 if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && [ -z "${ANTHROPIC_API_KEY:-}" ]; then
