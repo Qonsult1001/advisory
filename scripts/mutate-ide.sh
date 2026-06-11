@@ -189,11 +189,14 @@ $(tail -40 "$EVO/checks.log" 2>/dev/null)
     echo "→ now at: $(git log --oneline -1)"
 
     # Recompile + redeploy so the running stack matches main.
+    # PIN the project name to 'advisory' — otherwise compose derives it from the cwd (which differs
+    # in a worktree / WSL path like /mnt/g/...), spins up a SECOND stack, and its nexus collides on
+    # port 8081 ("port is already allocated"). -p advisory always targets the real running stack.
     if command -v docker >/dev/null 2>&1; then
-      echo "→ docker compose build api console"
-      docker compose build api console || die "docker build failed"
-      echo "→ docker compose up -d"
-      docker compose up -d api console || die "docker up failed"
+      echo "→ docker compose -p advisory build api console"
+      docker compose -p advisory build api console || die "docker build failed"
+      echo "→ docker compose -p advisory up -d api console (no-deps: don't touch nexus/mssql)"
+      docker compose -p advisory up -d --no-deps api console || die "docker up failed"
       echo "RELEASE OK — merged #$PR, pulled $DEFAULT_BRANCH, rebuilt + redeployed."
     else
       echo "RELEASE OK — merged #$PR and pulled $DEFAULT_BRANCH. (docker not found; recompile manually.)"
