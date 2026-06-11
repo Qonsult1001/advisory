@@ -107,6 +107,12 @@ public class FirewallPolicy
     public bool EnableReachability { get; set; } = true;
     public bool DowngradeUnreachable { get; set; } = false; // conservative default: off
 
+    // --- Manually-linked git repositories (control: SEC-SRC-01). Replaces the auto-listing of
+    //     all private repos so that only explicitly approved repos appear under observation.
+    //     Admins add/remove via POST/DELETE /api/scans/git-repositories (Admin-only write, persisted
+    //     here so every change is versioned and auditable in the signed policy). ---
+    public List<LinkedGitRepo> LinkedGitRepos { get; set; } = new();
+
     // --- Watches: named bindings of a rule-set to a resource scope (JFrog-style organization).
     //     The gate's flat controls above are the engine; watches are the governance view that
     //     scopes/labels which rules apply where, and own the notify/block actions per scope. ---
@@ -260,6 +266,19 @@ public class WatchRule
     public bool KnownExploitedOnly { get; set; }       // CVEs: only act on KEV-listed
     public bool Block { get; set; } = true;            // action: block the artifact
     public bool Notify { get; set; } = true;           // action: emit notification/violation
+}
+
+/// <summary>A git repository explicitly linked for observation (control: SEC-SRC-01).
+/// Stored in the signed policy so every add/remove is versioned and auditable.
+/// Replaces the previous auto-listing of all repos for a GitHub owner.</summary>
+public class LinkedGitRepo
+{
+    public string FullName { get; set; } = "";          // e.g. "myorg/payments-api"
+    public string Url { get; set; } = "";               // HTTPS URL, e.g. "https://github.com/myorg/payments-api"
+    public string DefaultBranch { get; set; } = "main";
+    public string Visibility { get; set; } = "private";
+    public string? Language { get; set; }
+    public DateTimeOffset LinkedAt { get; set; } = DateTimeOffset.UtcNow;
 }
 
 public class WeightsPolicy

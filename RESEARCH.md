@@ -47,6 +47,14 @@ attestation on promotion would look like (in-toto/SLSA predicate) so AppTrust ca
 Sigstore-for-models so Catalog can verify a model was published by who it claims, not just that the
 bytes are structurally safe.
 
+### [ ] Remove unused IGitRepoClient / GitHubRepoClient after #30
+**Section:** Xray
+**Goal:** `IGitRepoClient` and `GitHubRepoClient` are still registered in DI after issue #30
+switched to manual repo management. Confirm nothing else depends on them, then remove the
+service registration, the class, the interface, and the "github" HttpClient registration in
+Program.cs to clean up dead code. Low risk, but a compliance tidy: unused registered services
+are noise in a dependency audit.
+
 ### [ ] Reachability-aware vuln scoring vs competitors
 **Section:** Xray
 **Source:** Endor Labs / Snyk reachability; arXiv cs.CR call-graph reachability

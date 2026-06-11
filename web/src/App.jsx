@@ -21,6 +21,8 @@ const api = {
   getQueueDepth: () => fetch(`${API}/queue/depth`).then((r) => r.json()),
   getScans: () => fetch(`${API}/scans/repositories`).then((r) => r.json()),
   getGitRepos: () => fetch(`${API}/scans/git-repositories`).then((r) => r.json()),
+  linkGitRepo: (body) => fetch(`${API}/scans/git-repositories`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).then((r) => r.json()),
+  unlinkGitRepo: (fullName) => fetch(`${API}/scans/git-repositories/${encodeURIComponent(fullName)}`, { method: "DELETE" }).then((r) => r.json()),
   getRepoArtifacts: (repo) => fetch(`${API}/scans/repository/${encodeURIComponent(repo)}/artifacts`).then((r) => r.json()),
   getArtifactScan: (repo, eco, name, version, rescan) => fetch(`${API}/scans/artifact?repo=${encodeURIComponent(repo)}&ecosystem=${eco}&name=${encodeURIComponent(name)}&version=${encodeURIComponent(version)}${rescan ? "&rescan=true" : ""}`).then((r) => r.json()),
   getQuarantine: () => fetch(`${API}/quarantine`).then((r) => r.json()),
@@ -1348,12 +1350,26 @@ function ScansRepos({ onOpen }) {
   const [sub, setSub] = useState("repositories");
   const [q, setQ] = useState("");
   const [sort, setSort] = useState({ key: "name", dir: 1 });
+  const [linkForm, setLinkForm] = useState(null); // null=hidden, {}=open
+  const [linkSaving, setLinkSaving] = useState(false);
   useEffect(() => { api.getScans().then(setData).catch(() => setData({ configured: false, repositories: [] })).finally(() => setLoading(false)); }, []);
   useEffect(() => {
     if (sub !== "git" || gitData !== null) return;
     setGitLoading(true);
     api.getGitRepos().then(setGitData).catch(() => setGitData({ configured: false, repositories: [] })).finally(() => setGitLoading(false));
   }, [sub, gitData]);
+  const refreshGit = () => { setGitLoading(true); api.getGitRepos().then(setGitData).catch(() => setGitData({ configured: true, repositories: [] })).finally(() => setGitLoading(false)); };
+  const handleLink = () => {
+    if (!linkForm?.fullName || !linkForm?.url) return;
+    setLinkSaving(true);
+    api.linkGitRepo({ fullName: linkForm.fullName.trim(), url: linkForm.url.trim(), defaultBranch: linkForm.branch || "main", visibility: linkForm.visibility || "private" })
+      .then(() => { setLinkForm(null); refreshGit(); })
+      .catch(() => {})
+      .finally(() => setLinkSaving(false));
+  };
+  const handleUnlink = (fullName) => {
+    api.unlinkGitRepo(fullName).then(() => refreshGit()).catch(() => {});
+  };
   const subTabs = [["git", "Git Repositories"], ["repositories", "Repositories"], ["builds", "Builds"], ["bundles", "Release Bundles"], ["packages", "Packages"]];
   let repos = (data?.repositories || []);
   if (q) repos = repos.filter((r) => r.name.toLowerCase().includes(q.toLowerCase()) || (r.format || "").toLowerCase().includes(q.toLowerCase()));
@@ -1416,22 +1432,54 @@ function ScansRepos({ onOpen }) {
         </div>
       )}
       {!loading && sub === "git" && gitLoading && <div style={s.kevEmpty}>Loading git repositories…</div>}
-      {!loading && sub === "git" && !gitLoading && gitData && !gitData.configured && (
-        <Card title="Git Repositories" desc=""><div style={{ padding: 22, color: C.sub, fontSize: 12.5, lineHeight: 1.6 }}>
-          GitHub not connected (<code style={s.code}>GITHUB_OWNER</code> unset, or set <code style={s.code}>EVOLUTION_REPO</code>). Set <code style={s.code}>GITHUB_OWNER</code> to your org or user to list repositories here.
-        </div></Card>
-      )}
-      {!loading && sub === "git" && !gitLoading && gitData?.configured && (
+      {!loading && sub === "git" && !gitLoading && gitData && (
         <div style={s.card}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "16px 20px", borderBottom: `1px solid ${C.lineSoft}` }}>
             <div style={{ fontSize: 16, fontWeight: 600 }}>Git Repositories ({gitData.count ?? 0})</div>
+            <button onClick={() => setLinkForm({ fullName: "", url: "", branch: "main", visibility: "private" })}
+              style={{ ...s.btn, background: C.accent, color: "#fff", border: "none", padding: "6px 14px", fontSize: 12.5, borderRadius: 6, cursor: "pointer" }}>
+              + Link Repository
+            </button>
           </div>
+          {linkForm !== null && (
+            <div style={{ padding: "14px 20px", borderBottom: `1px solid ${C.lineSoft}`, background: C.surfaceAlt ?? C.surface, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                <span style={{ fontSize: 11, color: C.sub }}>Full Name (owner/repo)</span>
+                <input value={linkForm.fullName} onChange={(e) => setLinkForm((f) => ({ ...f, fullName: e.target.value }))}
+                  placeholder="myorg/payments-api" style={{ ...s.input, width: 200 }} />
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                <span style={{ fontSize: 11, color: C.sub }}>Repository URL</span>
+                <input value={linkForm.url} onChange={(e) => setLinkForm((f) => ({ ...f, url: e.target.value }))}
+                  placeholder="https://github.com/myorg/payments-api" style={{ ...s.input, width: 280 }} />
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                <span style={{ fontSize: 11, color: C.sub }}>Default Branch</span>
+                <input value={linkForm.branch} onChange={(e) => setLinkForm((f) => ({ ...f, branch: e.target.value }))}
+                  placeholder="main" style={{ ...s.input, width: 90 }} />
+              </div>
+              <div style={{ display: "flex", gap: 6 }}>
+                <button onClick={handleLink} disabled={linkSaving || !linkForm.fullName || !linkForm.url}
+                  style={{ ...s.btn, background: C.accent, color: "#fff", border: "none", padding: "6px 14px", fontSize: 12.5, borderRadius: 6, cursor: "pointer", opacity: (linkSaving || !linkForm.fullName || !linkForm.url) ? 0.5 : 1 }}>
+                  {linkSaving ? "Linking…" : "Link"}
+                </button>
+                <button onClick={() => setLinkForm(null)}
+                  style={{ ...s.btn, background: "transparent", color: C.sub, border: `1px solid ${C.line}`, padding: "6px 10px", fontSize: 12.5, borderRadius: 6, cursor: "pointer" }}>
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
           <table style={s.table}><thead><tr>
-            {["Repository", "Visibility", "Language", "Default Branch", "Last Pushed"].map((l) => (
+            {["Repository", "Visibility", "Language", "Default Branch", "Linked At", ""].map((l) => (
               <th key={l} style={s.th}>{l}</th>
             ))}
           </tr></thead><tbody>
-            {(gitData.repositories || []).length === 0 && <tr><td style={s.td} colSpan={5}>No repositories found.</td></tr>}
+            {(gitData.repositories || []).length === 0 && (
+              <tr><td style={{ ...s.td, color: C.sub }} colSpan={6}>
+                No repositories linked. Use &ldquo;Link Repository&rdquo; to add one.
+              </td></tr>
+            )}
             {(gitData.repositories || []).map((r) => (
               <tr key={r.fullName} style={s.tr}>
                 <td style={{ ...s.td, fontWeight: 600 }}>
@@ -1440,7 +1488,13 @@ function ScansRepos({ onOpen }) {
                 <td style={{ ...s.td, color: C.sub, fontSize: 12.5 }}>{r.visibility}</td>
                 <td style={{ ...s.td, color: C.sub, fontSize: 12.5 }}>{r.language || "—"}</td>
                 <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11.5 }}>{r.defaultBranch}</td>
-                <td style={{ ...s.td, color: C.sub, fontSize: 11.5, whiteSpace: "nowrap" }}>{r.lastPushed ? new Date(r.lastPushed).toLocaleDateString() : "—"}</td>
+                <td style={{ ...s.td, color: C.sub, fontSize: 11.5, whiteSpace: "nowrap" }}>{r.linkedAt ? new Date(r.linkedAt).toLocaleDateString() : "—"}</td>
+                <td style={s.td} onClick={(e) => e.stopPropagation()}>
+                  <button onClick={() => handleUnlink(r.fullName)} title="Unlink repository"
+                    style={{ background: "transparent", border: "none", color: C.sub, cursor: "pointer", fontSize: 14, padding: "2px 6px" }}>
+                    ✕
+                  </button>
+                </td>
               </tr>
             ))}
           </tbody></table>

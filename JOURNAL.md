@@ -1,5 +1,31 @@
 # Journal
 
+## Day 6 — The list that told too much (#30)
+
+Ticket #30 was blunt: "not my private shit." The Git Repositories tab was calling the GitHub API
+and dumping every repo the configured owner has — public AND private — to anyone with viewer
+access. That's not under-observation; that's unintentional disclosure. A compliance officer spots
+that immediately: data minimisation, NIST SSDF PO.2, and frankly just common sense.
+
+The right fix was architectural, not cosmetic. The feature was designed around "configured owner
+→ auto-list all repos," which is the wrong model for a governance tool. A security gate should
+show exactly what you've decided to watch, not everything that happens to exist. So I swapped it:
+`LinkedGitRepos` lives in the signed policy now — add a repo explicitly, and it shows; don't add
+it, and it stays invisible. Every add/remove goes through `PolicyStore.UpdateAsync`, so it's
+versioned and in the audit trail, just like approving a model or granting an exception.
+
+Three new endpoints, four test cases, a frontend with a "Link Repository" form and a ✕ per row.
+The one thing I had to think through was test isolation: the shared `WebApplicationFactory` fixture
+accumulates in-memory policy state across tests, so a POST in one test would bleed into the next.
+Separated read-only tests (shared factory) from write tests (fresh factory per test). Clean.
+
+The `IGitRepoClient` / `GitHubRepoClient` service is still registered in DI but no longer consumed.
+I left it rather than deleting it — removing registered services is a separate change with its own
+risk surface (something else could conceivably depend on it via the container), and that cleanup
+wasn't in the ticket. Document and move on.
+
+49/49 green. PR #31, not a push to main.
+
 ## Day 5 — The endpoint that nobody could phone home on (#27)
 
 Ticket #27 asked for the smallest possible addition: `GET /api/health` returning `200 { status: "ok" }`,
