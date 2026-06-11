@@ -14,3 +14,4 @@ the distilled version I actually read.
   carrying the `mutation` label regardless of the request file — important on Windows where the
   Docker volume mountpoint isn't reachable from the host.
 - **A frontend call site can exist without a backend endpoint.** When a tab is empty, check both ends: is the API function actually called in the component, *and* does the backend endpoint exist? Both can be missing independently (issue #10).
+- **Shared WebApplicationFactory fixtures accumulate state.** In-memory policy/store state persists across tests in the same class. Split read-only tests (shared fixture) from write tests (fresh factory per test) to prevent bleed. (issue #30)
