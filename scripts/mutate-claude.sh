@@ -80,7 +80,10 @@ progress() {   # progress <stage> [status] [prUrl] [logline]
 # the dashboard shows WHAT the engine is doing (reading/editing files, running commands) — not just a %.
 # Echoes raw output too (worker window still shows everything). Falls back to passthrough if no python.
 stream_activity() {
-  python - "$API" "$CUR_RUN" <<'PY' 2>/dev/null || cat
+  # Use python3 (WSL/Linux) or python (Git-Bash); fall back to raw passthrough if neither exists.
+  local PY; PY="$(command -v python3 || command -v python || echo '')"
+  [ -z "$PY" ] && { cat; return; }
+  "$PY" - "$API" "$CUR_RUN" <<'PY' 2>/dev/null || cat
 import sys, json, urllib.request
 api, run = sys.argv[1], sys.argv[2]
 def post(text):
