@@ -13,3 +13,4 @@ the distilled version I actually read.
 - **The label is the real signal; the queue file is a convenience.** `/mutate` acts on tickets
   carrying the `mutation` label regardless of the request file — important on Windows where the
   Docker volume mountpoint isn't reachable from the host.
+- **A frontend call site can exist without a backend endpoint.** When a tab is empty, check both ends: is the API function actually called in the component, *and* does the backend endpoint exist? Both can be missing independently (issue #10).

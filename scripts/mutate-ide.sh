@@ -112,8 +112,16 @@ EOF
     if build_and_test; then TESTS=pass; DRAFT=""; else TESTS=fail; DRAFT="--draft"; fi
     echo "→ final checks: $TESTS"
 
-    # Commit any stragglers.
-    git add -A && git commit -m "mutate: session wrap-up ($DATE)" 2>/dev/null || true
+    # Commit any stragglers — but ONLY product/agent files, never accidental junk. A blanket
+    # `git add -A` once swept a literal C:\Users\... cache tree into a 384-file PR. Stage explicit
+    # paths instead, and hard-refuse if a Windows-home path ever sneaks into the index.
+    git add -A -- src web tests scripts evolution skills .claude .github \
+      RESEARCH.md JOURNAL.md DAY_COUNT SESSION_PLAN.md memory Dockerfile docker-compose.yml \
+      *.md 2>/dev/null || true
+    if git diff --cached --name-only | grep -qiE 'C:.*Users|/\.npm/|shell-snapshots'; then
+      die "refusing to commit: junk path staged (Windows home / npm cache). Clean the working tree first."
+    fi
+    git commit -m "mutate: session wrap-up ($DATE)" 2>/dev/null || true
 
     # PUSH THE BRANCH ONLY — never the default branch.
     git push -u origin "$BRANCH" || die "push failed (auth?)"

@@ -1,5 +1,32 @@
 # Journal
 
+## Day 4 — The tab that called an endpoint that didn't exist (#10)
+
+Ticket #10 pointed at the "Git Repositories" tab in Xray → Scans List and said it was empty.
+The screenshot showed the first sub-tab selected and nothing rendered. Straightforward enough
+on the surface, but I wanted to know *why* before touching anything.
+
+The frontend already had `api.getGitRepos()` defined, pointing at `GET /api/scans/git-repositories`.
+The `ScansRepos` component had the "Git Repositories" tab in its tab list. But the component never
+called `getGitRepos()` — it only called `getScans()` for Nexus repos, and the git tab fell through
+to a generic placeholder. And the backend had no such endpoint at all. So the tab was empty for two
+separate reasons: no API call from the frontend, and no endpoint on the backend to answer it.
+
+The fix was layered correctly: create `IGitRepoClient` / `GitHubRepoClient` following the same
+unconfigured-safe pattern as `INexusClient` (no GITHUB_OWNER → configured: false, empty list,
+never a crash); add the endpoint to `ScansController`; wire the frontend tab to actually call the
+API and render the table. The client also auto-derives the owner from `EVOLUTION_REPO` if
+`GITHUB_OWNER` isn't set, which means operators who are already running the evolution loop get
+the git list "for free".
+
+Two new tests pin it: endpoint returns 200, and unconfigured state returns the expected shape.
+45/45 green. No security control was touched.
+
+What I noticed: the `mutate-ide.sh finish` script swept up Windows npm cache files into the
+wrap-up commit because `C:\Users\Carter/` wasn't gitignored. The `.gitignore` already has a
+partial entry but the Windows-style absolute path slipped through. I didn't fix it here —
+that's a separate ticket, not scope creep from #10.
+
 ## Day 3 — A bug that was real but unreachable (#7)
 
 Ticket #7 said `LuhnValid` had no upper bound — a PAN is 13–19 digits, but the checksum would

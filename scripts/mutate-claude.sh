@@ -31,15 +31,22 @@ cd "$(git rev-parse --show-toplevel)"
 # Source .env (gitignored) so the key set there flows through to the claude CLI.
 if [ -f .env ]; then set -a; . ./.env 2>/dev/null || true; set +a; fi
 
-# ---- Environment self-sufficiency (don't trust the inherited PATH) ----
-# A worker launched from cmd.exe can inherit a narrow PATH that's missing dotnet / gh, which makes
-# the cycle report "dotnet not found" or "0 tickets" even though the tools exist. Ensure the common
-# install locations are on PATH so the cycle behaves the same as an interactive shell.
-for d in "/c/Program Files/dotnet" "/c/Program Files/GitHub CLI" "/c/nvm4w/nodejs" \
-         "$HOME/.dotnet/tools" "/c/Program Files/Git/bin" "/c/Program Files/Git/usr/bin"; do
-  case ":$PATH:" in *":$d:"*) : ;; *) [ -d "$d" ] && PATH="$PATH:$d" ;; esac
-done
-export PATH
+# ---- Tool resolution (works in Git-Bash AND WSL) ----
+# The worker itself calls `gh` (PR detection) and may report `dotnet`. In WSL those Linux binaries
+# don't exist — only the Windows .exe (via /mnt/c). Bare `gh` then fails SILENTLY, which is why the
+# worker reported "no change" even after a real PR was opened. Wrapper functions fall back to the
+# .exe so every gh/dotnet call works in either shell. (Same approach as scripts/mutate-ide.sh.)
+_find_exe() {  # _find_exe <name> <path1> [path2...]
+  command -v "$1" >/dev/null 2>&1 && { echo "$1"; return; }
+  command -v "$1.exe" >/dev/null 2>&1 && { echo "$1.exe"; return; }
+  local n="$1"; shift
+  for p in "$@"; do [ -x "$p" ] && { echo "$p"; return; }; done
+  echo "$n"
+}
+GH_BIN="$(_find_exe gh "/mnt/c/Program Files/GitHub CLI/gh.exe" "/c/Program Files/GitHub CLI/gh.exe")"
+DOTNET_BIN="$(_find_exe dotnet "/mnt/c/Program Files/dotnet/dotnet.exe" "/c/Program Files/dotnet/dotnet.exe")"
+gh()     { "$GH_BIN" "$@"; }
+dotnet() { "$DOTNET_BIN" "$@"; }
 # Tell the cycle which repo to act on (mutate-ide.sh reads REPO; default to this repo's gh remote).
 export REPO="${REPO:-${EVOLUTION_REPO:-$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || echo '')}}"
 
@@ -48,7 +55,7 @@ API="${ADVISORY_API:-http://localhost:5000/api}"
 CUR_RUN=""    # run id we are currently reporting progress for
 
 # One-line environment report so the worker window shows exactly what it resolved.
-echo "[env] dotnet=$(command -v dotnet || echo MISSING) | gh=$(command -v gh || echo MISSING) | claude=$(command -v claude || echo MISSING) | repo=${REPO:-<none>}"
+echo "[env] dotnet=$DOTNET_BIN | gh=$GH_BIN | claude=$(command -v claude || echo MISSING) | repo=${REPO:-<none>}"
 
 # Fail fast with a clear message if there is no headless credential.
 if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && [ -z "${ANTHROPIC_API_KEY:-}" ]; then

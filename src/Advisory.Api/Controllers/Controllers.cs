@@ -11,6 +11,7 @@ using Advisory.Api.VulnSources;
 using Advisory.Api.Nexus;
 using Advisory.Api.Queue;
 using Advisory.Api.Research;
+using Advisory.Api.Integrations;
 
 namespace Advisory.Api.Controllers;
 
@@ -514,13 +515,28 @@ public class ScansController : ControllerBase
 {
     private readonly INexusClient _nexus;
     private readonly Advisory.Api.Scan.ScanStore _scans;
-    public ScansController(INexusClient nexus, Advisory.Api.Scan.ScanStore scans) { _nexus = nexus; _scans = scans; }
+    private readonly IGitRepoClient _git;
+    public ScansController(INexusClient nexus, Advisory.Api.Scan.ScanStore scans, IGitRepoClient git)
+    { _nexus = nexus; _scans = scans; _git = git; }
 
     [HttpGet("repositories")]
     public async Task<ActionResult> Repositories(CancellationToken ct)
     {
         if (!_nexus.IsConfigured) return Ok(new { configured = false, repositories = Array.Empty<object>() });
         var repos = await _nexus.ListRepositoriesAsync(ct);
+        return Ok(new { configured = true, count = repos.Count, repositories = repos });
+    }
+
+    /// <summary>
+    /// Git repositories under observation — powers the "Git Repositories" tab in Xray Scans List.
+    /// Requires GITHUB_OWNER (or falls back to the owner extracted from EVOLUTION_REPO).
+    /// When unconfigured returns { configured: false, repositories: [] } — never 404.
+    /// </summary>
+    [HttpGet("git-repositories")]
+    public async Task<ActionResult> GitRepositories(CancellationToken ct)
+    {
+        if (!_git.IsConfigured) return Ok(new { configured = false, repositories = Array.Empty<object>() });
+        var repos = await _git.ListRepositoriesAsync(ct);
         return Ok(new { configured = true, count = repos.Count, repositories = repos });
     }
 
