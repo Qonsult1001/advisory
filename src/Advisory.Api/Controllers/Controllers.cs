@@ -551,6 +551,9 @@ public class ScansController : ControllerBase
     {
         if (string.IsNullOrWhiteSpace(req.FullName) || string.IsNullOrWhiteSpace(req.Url))
             return BadRequest(new { error = "fullName and url are required" });
+        var nameParts = req.FullName.Trim().Split('/');
+        if (nameParts.Length != 2 || string.IsNullOrWhiteSpace(nameParts[0]) || string.IsNullOrWhiteSpace(nameParts[1]))
+            return BadRequest(new { error = "fullName must be in owner/repo format (e.g. myorg/payments-api)" });
         var next = JsonSerializer.Deserialize<FirewallPolicy>(JsonSerializer.Serialize(_policy.Current))!;
         if (next.LinkedGitRepos.Any(r => r.FullName.Equals(req.FullName, StringComparison.OrdinalIgnoreCase)))
             return Ok(new { linked = true, already = true });

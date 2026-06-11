@@ -1352,10 +1352,11 @@ function ScansRepos({ onOpen }) {
   const [sub, setSub] = useState("repositories");
   const [q, setQ] = useState("");
   const [sort, setSort] = useState({ key: "name", dir: 1 });
-  const [linkForm, setLinkForm] = useState(null); // null=hidden, {}=open
+  const [linkForm, setLinkForm] = useState(null); // null=hidden, {}=open; origFullName set when editing
   const [linkSaving, setLinkSaving] = useState(false);
   const [scanResults, setScanResults] = useState({}); // fullName → scan result
   const [scanning, setScanning] = useState({}); // fullName → bool
+  const [scanErrors, setScanErrors] = useState({}); // fullName → error string
   useEffect(() => { api.getScans().then(setData).catch(() => setData({ configured: false, repositories: [] })).finally(() => setLoading(false)); }, []);
   useEffect(() => {
     if (sub !== "git" || gitData !== null) return;
@@ -1363,22 +1364,32 @@ function ScansRepos({ onOpen }) {
     api.getGitRepos().then(setGitData).catch(() => setGitData({ configured: false, repositories: [] })).finally(() => setGitLoading(false));
   }, [sub, gitData]);
   const refreshGit = () => { setGitLoading(true); api.getGitRepos().then(setGitData).catch(() => setGitData({ configured: true, repositories: [] })).finally(() => setGitLoading(false)); };
+  const isValidFullName = (name) => { const p = (name || "").trim().split("/"); return p.length === 2 && p[0].length > 0 && p[1].length > 0; };
   const handleLink = () => {
-    if (!linkForm?.fullName || !linkForm?.url) return;
+    if (!linkForm?.fullName || !linkForm?.url || !isValidFullName(linkForm.fullName)) return;
     setLinkSaving(true);
-    api.linkGitRepo({ fullName: linkForm.fullName.trim(), url: linkForm.url.trim(), defaultBranch: linkForm.branch || "main", visibility: linkForm.visibility || "private" })
+    const doPost = () => api.linkGitRepo({ fullName: linkForm.fullName.trim(), url: linkForm.url.trim(), defaultBranch: linkForm.branch || "main", visibility: linkForm.visibility || "private" })
       .then(() => { setLinkForm(null); refreshGit(); })
       .catch(() => {})
       .finally(() => setLinkSaving(false));
+    if (linkForm.origFullName && linkForm.origFullName !== linkForm.fullName.trim()) {
+      api.unlinkGitRepo(linkForm.origFullName).catch(() => {}).then(doPost);
+    } else if (linkForm.origFullName) {
+      // fullName unchanged — just re-save url/branch by unlink + relink
+      api.unlinkGitRepo(linkForm.origFullName).catch(() => {}).then(doPost);
+    } else {
+      doPost();
+    }
   };
   const handleUnlink = (fullName) => {
     api.unlinkGitRepo(fullName).then(() => refreshGit()).catch(() => {});
   };
   const handleScan = (fullName) => {
     setScanning((s) => ({ ...s, [fullName]: true }));
+    setScanErrors((e) => { const n = { ...e }; delete n[fullName]; return n; });
     api.scanGitRepo(fullName)
       .then((r) => { setScanResults((prev) => ({ ...prev, [fullName]: r })); })
-      .catch(() => {})
+      .catch((err) => { setScanErrors((e) => ({ ...e, [fullName]: err?.message || "Scan request failed" })); setScanning((s) => ({ ...s, [fullName]: false })); })
       .finally(() => {
         // Poll once after a short delay to pick up fast completions.
         setTimeout(() => {
@@ -1464,7 +1475,10 @@ function ScansRepos({ onOpen }) {
               <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                 <span style={{ fontSize: 11, color: C.sub }}>Full Name (owner/repo)</span>
                 <input value={linkForm.fullName} onChange={(e) => setLinkForm((f) => ({ ...f, fullName: e.target.value }))}
-                  placeholder="myorg/payments-api" style={{ ...s.input, width: 200 }} />
+                  placeholder="myorg/payments-api" style={{ ...s.input, width: 200, borderColor: linkForm.fullName && !isValidFullName(linkForm.fullName) ? C.block : undefined }} />
+                {linkForm.fullName && !isValidFullName(linkForm.fullName) && (
+                  <span style={{ fontSize: 10.5, color: C.block }}>Must be owner/repo (e.g. myorg/payments-api)</span>
+                )}
               </div>
               <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                 <span style={{ fontSize: 11, color: C.sub }}>Repository URL</span>
@@ -1477,10 +1491,12 @@ function ScansRepos({ onOpen }) {
                   placeholder="main" style={{ ...s.input, width: 90 }} />
               </div>
               <div style={{ display: "flex", gap: 6 }}>
-                <button onClick={handleLink} disabled={linkSaving || !linkForm.fullName || !linkForm.url}
-                  style={{ ...s.btn, background: C.accent, color: "#fff", border: "none", padding: "6px 14px", fontSize: 12.5, borderRadius: 6, cursor: "pointer", opacity: (linkSaving || !linkForm.fullName || !linkForm.url) ? 0.5 : 1 }}>
-                  {linkSaving ? "Linking…" : "Link"}
-                </button>
+                {(() => { const linkDisabled = linkSaving || !linkForm.fullName || !linkForm.url || !isValidFullName(linkForm.fullName); return (
+                  <button onClick={handleLink} disabled={linkDisabled}
+                    style={{ ...s.btn, background: C.accent, color: "#fff", border: "none", padding: "6px 14px", fontSize: 12.5, borderRadius: 6, cursor: "pointer", opacity: linkDisabled ? 0.5 : 1 }}>
+                    {linkSaving ? (linkForm.origFullName ? "Saving…" : "Linking…") : (linkForm.origFullName ? "Save" : "Link")}
+                  </button>
+                ); })()}
                 <button onClick={() => setLinkForm(null)}
                   style={{ ...s.btn, background: "transparent", color: C.sub, border: `1px solid ${C.line}`, padding: "6px 10px", fontSize: 12.5, borderRadius: 6, cursor: "pointer" }}>
                   Cancel
@@ -1501,6 +1517,7 @@ function ScansRepos({ onOpen }) {
             {(gitData.repositories || []).map((r) => {
               const sr = scanResults[r.fullName];
               const isScan = !!scanning[r.fullName];
+              const scanErr = scanErrors[r.fullName];
               const verdictColor = !sr ? C.sub : sr.verdict === "Vulnerable" ? C.block : sr.verdict === "Clean" ? C.allow : C.warn;
               return (
                 <tr key={r.fullName} style={s.tr}>
@@ -1511,13 +1528,14 @@ function ScansRepos({ onOpen }) {
                   <td style={{ ...s.td, color: C.sub, fontSize: 12.5 }}>{r.language || "—"}</td>
                   <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11.5 }}>{r.defaultBranch}</td>
                   <td style={s.td}>
-                    {!sr && !isScan && (
+                    {!sr && !isScan && !scanErr && (
                       <button onClick={() => handleScan(r.fullName)}
                         style={{ fontSize: 11.5, padding: "3px 10px", borderRadius: 5, border: `1px solid ${C.line}`, background: C.surface, color: C.sub, cursor: "pointer" }}>
                         Scan
                       </button>
                     )}
                     {isScan && !sr && <span style={{ fontSize: 11.5, color: C.sub }}>Scanning…</span>}
+                    {scanErr && !sr && <span style={{ fontSize: 11.5, color: C.block }} title={scanErr}>Scan failed</span>}
                     {sr && (
                       <span style={{ fontSize: 11.5, fontWeight: 600, color: verdictColor }}>
                         {sr.status === "Scanning" ? "Scanning…" : sr.verdict}
@@ -1540,6 +1558,10 @@ function ScansRepos({ onOpen }) {
                         ↺
                       </button>
                     )}
+                    <button onClick={() => setLinkForm({ fullName: r.fullName, url: r.url, branch: r.defaultBranch, visibility: r.visibility, origFullName: r.fullName })} title="Edit repository"
+                      style={{ background: "transparent", border: "none", color: C.sub, cursor: "pointer", fontSize: 13, padding: "2px 6px" }}>
+                      ✎
+                    </button>
                     <button onClick={() => handleUnlink(r.fullName)} title="Unlink repository"
                       style={{ background: "transparent", border: "none", color: C.sub, cursor: "pointer", fontSize: 14, padding: "2px 6px" }}>
                       ✕
