@@ -7,6 +7,11 @@ REM
 REM  Leave this window open. Click "Mutate" in the dashboard and watch the run
 REM  go Queued -> Running -> Tests -> PR with a live progress bar.
 REM
+REM  NOTE on "Not logged in": Claude Code allows a limited number of concurrent
+REM  sessions per login. If your IDE / other Claude windows are busy, the worker
+REM  may transiently see "Not logged in". This worker now RETRIES with backoff to
+REM  wait for a free slot. For the smoothest run, close idle Claude sessions first.
+REM
 REM  Requirements (already true on this machine): git bash, claude CLI, gh CLI.
 REM ============================================================================
 setlocal

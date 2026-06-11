@@ -62,9 +62,33 @@ drain_queue() {   # returns 0 if a request was found (work to do), 1 if none
   return $found
 }
 
+# Claude Code allows a limited number of concurrent sessions per login. When other Claude/IDE
+# sessions are busy, a fresh `claude -p` can transiently report "Not logged in". Probe first and
+# retry with backoff so a momentary contention doesn't kill the run.
+claude_ready() {
+  local tries="${1:-6}" n=1 probe
+  while [ $n -le "$tries" ]; do
+    probe="$(claude -p --dangerously-skip-permissions "reply with exactly: READY" 2>&1)"
+    printf '%s' "$probe" | grep -qx "READY" && return 0
+    if printf '%s' "$probe" | grep -qiE "not logged in|please run /login"; then
+      echo "[$(date '+%F %T')] auth busy (attempt $n/$tries) — retrying in $((n*10))s. Close idle Claude sessions to free a slot."
+      progress "setup" "running" "" "waiting for a free Claude session slot (attempt $n/$tries)"
+      sleep $((n*10)); n=$((n+1)); continue
+    fi
+    return 0   # some other output — not an auth problem; let the real cycle run and report
+  done
+  return 1
+}
+
 run_cycle() {
   progress "setup" "running" "" "worker picked up the ticket"
   echo "[$(date '+%F %T')] /mutate cycle start (run=${CUR_RUN:-?})"
+
+  # Preflight auth with retry (handles transient "Not logged in" under concurrent sessions).
+  if ! claude_ready 6; then
+    progress "fix" "failed" "" "Claude login unavailable after retries — close other Claude sessions and click Mutate again"
+    echo "[$(date '+%F %T')] /mutate cycle FAILED — login unavailable after retries"; CUR_RUN=""; return 0
+  fi
 
   # PRs that already existed before this run — so we only claim a PR the cycle actually created.
   local before; before="$(gh pr list --state open --json number --jq '[.[].number]|join(",")' 2>/dev/null || true)"
