@@ -1,0 +1,57 @@
+name: Evolution
+
+# Triggered by real tickets: an issue gets the `evolve` label, or a tester comments on a labelled
+# issue. Runs the /evolve cycle via Claude Code and opens a PR. PR-only — never merges to main.
+on:
+  issues:
+    types: [labeled]
+  issue_comment:
+    types: [created]
+  workflow_dispatch:        # manual run for testing
+
+permissions:
+  contents: write           # push the session branch (NOT main — enforced in evolve-ide.sh)
+  pull-requests: write      # open the PR
+  issues: write             # comment back on the ticket
+
+jobs:
+  evolve:
+    # Only run for the evolve label, or comments on issues that carry it.
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'issues' && github.event.label.name == 'evolve') ||
+      (github.event_name == 'issue_comment' && contains(join(github.event.issue.labels.*.name, ','), 'evolve'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with: { dotnet-version: '10.0.x' }
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with: { node-version: '20' }
+
+      - name: Configure git + gh
+        run: |
+          git config user.name  "pkgfw-evolve[bot]"
+          git config user.email "pkgfw-evolve[bot]@users.noreply.github.com"
+          echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
+
+      # Run the evolution cycle through Claude Code. Requires an Anthropic key or Claude OAuth token
+      # in repo secrets (CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY).
+      - name: Run /evolve
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # or: anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: "/evolve"
+          claude_args: "--dangerously-skip-permissions --max-turns 60"
+        env:
+          REPO: ${{ github.repository }}
+          LABEL: evolve
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

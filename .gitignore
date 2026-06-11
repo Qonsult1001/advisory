@@ -33,3 +33,10 @@ tools/privacy-filter/node_modules/
 .DS_Store
 Thumbs.db
 .claude/
+
+# Track the evolution slash-command, ignore the rest of .claude runtime
+!.claude/
+!.claude/commands/
+!.claude/commands/**
+.claude/*
+!.claude/commands
