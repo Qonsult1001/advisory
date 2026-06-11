@@ -1130,6 +1130,25 @@ public class EvolutionController : ControllerBase
     public ActionResult Run(string id)
         => _svc.Run(id) is { } r ? Ok(r) : NotFound(new { error = "run not found" });
 
+    // ---- worker plumbing (the local mutate-claude.sh loop calls these) ----
+    /// <summary>Worker heartbeat — proves a loop is draining the queue (dashboard "worker online").</summary>
+    [HttpPost("worker/ping")]
+    [Authorize(Policy = Policies.CanAdmin)]
+    public ActionResult WorkerPing() { _svc.WorkerHeartbeat(); return Ok(new { workerAlive = _svc.WorkerAlive }); }
+
+    /// <summary>The next queued run for the worker to pick up (null when the queue is empty).</summary>
+    [HttpGet("next")]
+    public ActionResult Next() => Ok(new { run = _svc.NextQueued() });
+
+    public record ProgressReq(string? Stage, string? Status, string? PrUrl, string? Log);
+
+    /// <summary>Worker reports live progress for a run (stage → % + ETA on the dashboard).</summary>
+    [HttpPost("run/{id}/progress")]
+    [Authorize(Policy = Policies.CanAdmin)]
+    public ActionResult Progress(string id, [FromBody] ProgressReq req)
+        => _svc.UpdateProgress(id, req.Stage, req.Status, req.PrUrl, req.Log) is { } r
+            ? Ok(r) : NotFound(new { error = "run not found" });
+
     public record EvolveReq(int Ticket);
 
     /// <summary>Trigger mutation for a ticket (admin): label it and QUEUE IT FOR THE LOCAL /mutate loop
@@ -1144,12 +1163,12 @@ public class EvolutionController : ControllerBase
         var t = tickets.FirstOrDefault(x => x.Number == req.Ticket);
         if (t is null) return NotFound(new { error = $"ticket #{req.Ticket} not found or not labelled '{_svc.Label}'" });
 
-        // Label the ticket and drop a request file for the local mutation loop to drain.
-        var (ok, detail) = await _svc.DispatchWorkflowAsync(req.Ticket, ct);
+        // Create the run first so its id can travel in the queue request (the worker reports progress against it).
         var run = _svc.NewRun(t);
-        run.Status = ok ? "queued" : "failed";
-        run.Stage = ok ? "queued-local" : "queue-failed";
-        run.Append(ok ? $"[queue] {detail} — the local loop will open a PR; watch GitHub Pull requests." : $"[error] {detail}");
+        run.Status = "queued"; run.Stage = "waiting for worker"; run.Pct = 0; run.EtaSeconds = Advisory.Api.Evolution.MutateStages.TotalSecs;
+        var (ok, detail) = await _svc.DispatchWorkflowAsync(req.Ticket, run.Id, ct);
+        if (!ok) { run.Status = "failed"; run.Stage = "queue-failed"; }
+        run.Append(ok ? $"[queue] {detail} — waiting for the local worker to pick it up." : $"[error] {detail}");
         if (ok) run.PrUrl = $"https://github.com/{_svc.Repo}/pulls";
         return ok
             ? Accepted(new { runId = run.Id, ticket = t.Number, status = run.Status, detail })

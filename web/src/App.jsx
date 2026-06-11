@@ -3231,6 +3231,26 @@ const EVO_STATUS = {
   tests: { c: "#1f7fd1", t: "Testing" }, "pr-open": { c: "#40be46", t: "PR open" },
   skipped: { c: "#6e7479", t: "No change" }, failed: { c: "#d63649", t: "Failed" },
 };
+// Live elapsed since a run was picked up by the worker (mm:ss).
+function elapsed(since) {
+  if (!since) return "—";
+  const s = Math.max(0, Math.floor((Date.now() - new Date(since)) / 1000));
+  return `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s`;
+}
+function etaText(sec) {
+  if (sec == null) return "";
+  if (sec <= 0) return "done";
+  return sec >= 60 ? `~${Math.round(sec / 60)}m` : `~${sec}s`;
+}
+// Thin inline progress bar (no chart lib).
+function ProgressBar({ pct, done, failed }) {
+  const col = failed ? "#d63649" : done ? "#40be46" : "#1f7fd1";
+  return (
+    <div style={{ height: 6, background: "#e9ebee", borderRadius: 4, overflow: "hidden", minWidth: 120 }}>
+      <div style={{ width: `${Math.max(2, Math.min(100, pct || 0))}%`, height: "100%", background: col, transition: "width .6s ease" }} />
+    </div>
+  );
+}
 function Evolution() {
   const [status, setStatus] = useState(null);
   const [tickets, setTickets] = useState(null);
@@ -3242,7 +3262,14 @@ function Evolution() {
     api.evoTickets().then(setTickets).catch(() => setTickets({ enabled: false, tickets: [] }));
     api.evoRuns().then((r) => setRuns(r.runs || [])).catch(() => {});
   };
-  useEffect(() => { load(); const t = setInterval(() => api.evoRuns().then((r) => setRuns(r.runs || [])).catch(() => {}), 3000); return () => clearInterval(t); }, []);
+  useEffect(() => {
+    load();
+    const t = setInterval(() => {
+      api.evoRuns().then((r) => setRuns(r.runs || [])).catch(() => {});
+      api.evoStatus().then(setStatus).catch(() => {});      // keep workerAlive fresh
+    }, 3000);
+    return () => clearInterval(t);
+  }, []);
   const evolve = async (n) => { setBusy(n); await api.evolve(n).catch(() => {}); setBusy(null); load(); };
   const activeTickets = new Set(tickets?.activeTickets || []);
 
@@ -3271,10 +3298,18 @@ function Evolution() {
       {/* status strip */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 14, marginBottom: 16 }}>
         <MiniStat label="Target repo" value={status?.repo || "—"} mono />
-        <MiniStat label="Trigger" value={status?.engineConfigured ? "local loop" : "not configured"} tone={status?.engineConfigured ? C.accentDim : C.warn} />
+        <MiniStat label="Worker" value={status?.workerAlive ? "● online" : "○ offline"} tone={status?.workerAlive ? C.accentDim : C.warn} />
         <MiniStat label="Open tickets" value={tickets?.tickets?.length ?? "—"} />
         <MiniStat label="Active runs" value={status?.activeRuns ?? 0} tone={status?.activeRuns ? C.info : C.ink} />
       </div>
+
+      {status?.enabled && !status?.workerAlive && (status?.activeRuns > 0 || runs.some((r) => r.status === "queued")) && (
+        <Callout><b>⚠ No worker is running</b>, so queued tickets just wait. The cycle runs on
+          <b> your machine</b> (the container has no Claude login). Start it once:
+          <br/>• Windows: double-click <code style={s.code}>start-worker.cmd</code> in the repo root, or
+          <br/>• Terminal: <code style={s.code}>bash scripts/mutate-claude.sh --loop 1m</code>
+          <br/>Leave it open — clicked tickets will then run and show a live progress bar here.</Callout>
+      )}
 
       {status && !status.enabled && (
         <Callout>Mutation is <b>disabled</b>. Set <code style={s.code}>EVOLUTION_ENABLED=true</code> and
@@ -3315,22 +3350,33 @@ function Evolution() {
       <SubHead>Mutation runs</SubHead>
       <div style={s.card}>
         <table style={s.table}><thead><tr>
-          {["Run", "Ticket", "Status", "Stage", "Tests", "PR", "Started"].map((c) => <th key={c} style={s.th}>{c}</th>)}
+          {["Run", "Ticket", "Status", "Progress", "Tests", "PR", "Elapsed"].map((c) => <th key={c} style={s.th}>{c}</th>)}
         </tr></thead><tbody>
           {runs.length === 0 && <tr><td colSpan={7} style={{ padding: "36px 20px", textAlign: "center", color: C.sub }}>No runs yet.</td></tr>}
           {runs.map((r) => {
             const st = EVO_STATUS[r.status] || { c: C.sub, t: r.status };
+            const done = r.status === "pr-open", failed = r.status === "failed";
+            const active = r.status === "queued" || r.status === "running" || r.status === "tests";
+            const waiting = r.status === "queued";
             return (
               <React.Fragment key={r.id}>
                 <tr style={{ ...s.tr, cursor: "pointer" }} onClick={() => setOpenRun(openRun === r.id ? null : r.id)}>
                   <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11 }}>{r.id}</td>
-                  <td style={s.td}>#{r.ticket} <span style={{ color: C.sub }}>{r.ticketTitle?.slice(0, 40)}</span></td>
+                  <td style={s.td}>#{r.ticket} <span style={{ color: C.sub }}>{r.ticketTitle?.slice(0, 36)}</span></td>
                   <td style={s.td}><span style={{ color: st.c, fontWeight: 700, fontSize: 12 }}>● {st.t}</span></td>
-                  <td style={{ ...s.td, color: C.sub, fontFamily: C.mono, fontSize: 11 }}>{r.stage}</td>
-                  <td style={s.td}>{r.status === "pr-open" || r.status === "failed"
+                  <td style={{ ...s.td, minWidth: 200 }}>
+                    <ProgressBar pct={r.pct} done={done} failed={failed} />
+                    <div style={{ fontSize: 11, color: C.sub, marginTop: 4 }}>
+                      {waiting && !status?.workerAlive
+                        ? <span style={{ color: C.warn }}>waiting for worker — start it to run</span>
+                        : <>{r.stage || st.t}{r.pct ? ` · ${r.pct}%` : ""}
+                          {active && !waiting && r.etaSeconds != null ? <span style={{ color: C.dim }}> · {etaText(r.etaSeconds)} left</span> : ""}</>}
+                    </div>
+                  </td>
+                  <td style={s.td}>{done || failed
                     ? (r.testsPassed ? <span style={{ color: C.accentDim }}>✅</span> : <span style={{ color: C.warn }}>⚠</span>) : "—"}</td>
                   <td style={s.td}>{r.prUrl ? <a href={r.prUrl} target="_blank" rel="noreferrer" style={s.linkGreen}>PR ↗</a> : "—"}</td>
-                  <td style={{ ...s.td, color: C.sub, fontSize: 11 }}>{new Date(r.startedAt).toLocaleTimeString()}</td>
+                  <td style={{ ...s.td, color: C.sub, fontSize: 11 }}>{active ? elapsed(r.pickedUpAt || r.startedAt) : new Date(r.startedAt).toLocaleTimeString()}</td>
                 </tr>
                 {openRun === r.id && (
                   <tr><td colSpan={7} style={{ padding: "12px 18px", background: C.bg2 }}>
