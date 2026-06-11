@@ -12,11 +12,10 @@
 #   • PR-only: every change becomes a pull request for human review.
 #
 # DASHBOARD BUTTON: the web "Mutate" button labels the ticket and drops a request file in the
-#   queue dir. This loop drains it each tick. To see those exact request files, point the loop at
-#   the same dir the API writes to (the fw-data volume), e.g.:
-#     EVOLUTION_QUEUE_DIR="$(docker volume inspect advisory_fw-data -f '{{.Mountpoint}}')/evolution-queue" \
-#       ./scripts/mutate-claude.sh --loop 5m
-#   Even without that, /mutate acts on whatever tickets carry the `mutation` label, so the button works.
+#   queue dir. The API container writes to /data/evolution-queue, which docker-compose BIND MOUNTS
+#   to ./.evolution-queue in this repo — so this loop reads the SAME files from the host. No volume
+#   spelunking needed. (Override the host path with EVOLUTION_QUEUE_HOST in compose / EVOLUTION_QUEUE_DIR here.)
+#   Even if the file is missed, /mutate acts on whatever tickets carry the `mutation` label, so the button works.
 #
 # Usage:
 #   ./scripts/mutate-claude.sh            # run one cycle now (subject to the hour gate)
@@ -26,7 +25,8 @@ set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
 # Dashboard "Mutate" button queues ticket requests here; we drain them on each run.
-QUEUE_DIR="${EVOLUTION_QUEUE_DIR:-./.evolve-queue}"
+# Default matches the docker-compose bind mount (./.evolution-queue:/data/evolution-queue).
+QUEUE_DIR="${EVOLUTION_QUEUE_DIR:-./.evolution-queue}"
 
 drain_queue() {
   [ -d "$QUEUE_DIR" ] || return 0
