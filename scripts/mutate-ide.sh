@@ -126,6 +126,49 @@ $(tail -40 "$EVO/checks.log" 2>/dev/null)
     echo "FINISH OK"
     ;;
 
+  release)
+    # OPERATOR-TRIGGERED end-to-end: merge a reviewed PR, pull latest into the working tree,
+    # then recompile + redeploy Docker so what's running == main. NEVER called by the autonomous
+    # loop — the loop only ever opens a PR (finish). You run this when you're satisfied with a PR.
+    #   scripts/mutate-ide.sh release            # merge the PR for the current branch
+    #   scripts/mutate-ide.sh release 5          # merge PR #5
+    [ -n "$REPO" ] || die "no REPO"
+    PR="${2:-}"
+    if [ -z "$PR" ]; then
+      PR="$(gh pr view --repo "$REPO" --json number --jq .number 2>/dev/null)"
+      [ -n "$PR" ] || die "no PR for the current branch — pass a PR number: release <N>"
+    fi
+
+    # Safety gate: refuse to merge a PR whose checks aren't clean (mirrors PR-only discipline).
+    STATE="$(gh pr view "$PR" --repo "$REPO" --json mergeable,state --jq '.state + "/" + .mergeable' 2>/dev/null)"
+    echo "→ PR #$PR state: $STATE"
+    case "$STATE" in
+      OPEN/*) : ;;
+      *) die "PR #$PR is not OPEN ($STATE) — nothing to release" ;;
+    esac
+
+    echo "→ merging PR #$PR (squash, delete branch)"
+    gh pr merge "$PR" --repo "$REPO" --squash --delete-branch || die "merge failed (conflicts? checks? perms?)"
+
+    # ALWAYS pull latest into the working tree — all changes live in GitHub now.
+    echo "→ syncing working tree to origin/$DEFAULT_BRANCH"
+    git checkout "$DEFAULT_BRANCH" 2>/dev/null || git checkout -B "$DEFAULT_BRANCH"
+    git fetch origin "$DEFAULT_BRANCH" --quiet || die "fetch failed"
+    git reset --hard "origin/$DEFAULT_BRANCH" || die "could not fast-forward to origin/$DEFAULT_BRANCH"
+    echo "→ now at: $(git log --oneline -1)"
+
+    # Recompile + redeploy so the running stack matches main.
+    if command -v docker >/dev/null 2>&1; then
+      echo "→ docker compose build api console"
+      docker compose build api console || die "docker build failed"
+      echo "→ docker compose up -d"
+      docker compose up -d api console || die "docker up failed"
+      echo "RELEASE OK — merged #$PR, pulled $DEFAULT_BRANCH, rebuilt + redeployed."
+    else
+      echo "RELEASE OK — merged #$PR and pulled $DEFAULT_BRANCH. (docker not found; recompile manually.)"
+    fi
+    ;;
+
   *)
-    echo "usage: $0 {setup|finish}"; exit 1 ;;
+    echo "usage: $0 {setup|finish|release [PR#]}"; exit 1 ;;
 esac

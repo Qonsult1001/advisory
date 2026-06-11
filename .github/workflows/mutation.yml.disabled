@@ -1,3 +1,7 @@
+# DISABLED: CI has no Claude login (needs CLAUDE_CODE_OAUTH_TOKEN secret). The mutation cycle
+# runs LOCALLY via scripts/mutate-claude.sh using your Claude session. To enable CI instead,
+# add the secret and rename this file back to mutation.yml.
+
 name: Mutation
 
 # Remote trigger for the SAME scripts you run locally. When an issue is labelled `mutation` (or a

@@ -3249,8 +3249,9 @@ function Evolution() {
             <Icon name="brain" size={20} color={C.accent} /> Mutation</div>
           <p style={{ color: C.sub, fontSize: 12.5, marginTop: 4, maxWidth: 720 }}>
             The <b>mutation</b> loop fixes bugs and broken code. GitHub tickets and tester comments drive
-            automated fixes via the <b>/mutate</b> cycle. Triggering here dispatches the <b>same GitHub
-            Actions workflow</b> a <code style={s.code}>mutation</code>-labelled issue fires. Every change is a
+            automated fixes via the <b>/mutate</b> cycle. Triggering here <b>labels the ticket and queues it
+            for the local mutation loop</b> (<code style={s.code}>scripts/mutate-claude.sh</code>), which runs
+            the cycle on your machine using your Claude login. Every change is a
             <b> pull request for human review</b> — nothing auto-merges.
             <br/><span style={{ color: C.dim }}>(Forward-looking landscape research is the separate <b>Evolution</b>
             task — it only updates the backlog, never product code.)</span></p>
@@ -3264,7 +3265,7 @@ function Evolution() {
       {/* status strip */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 14, marginBottom: 16 }}>
         <MiniStat label="Target repo" value={status?.repo || "—"} mono />
-        <MiniStat label="Trigger" value={status?.engineConfigured ? "workflow ready" : "not configured"} tone={status?.engineConfigured ? C.accentDim : C.warn} />
+        <MiniStat label="Trigger" value={status?.engineConfigured ? "local loop" : "not configured"} tone={status?.engineConfigured ? C.accentDim : C.warn} />
         <MiniStat label="Open tickets" value={tickets?.tickets?.length ?? "—"} />
         <MiniStat label="Active runs" value={status?.activeRuns ?? 0} tone={status?.activeRuns ? C.info : C.ink} />
       </div>
@@ -3272,9 +3273,9 @@ function Evolution() {
       {status && !status.enabled && (
         <Callout>Mutation is <b>disabled</b>. Set <code style={s.code}>EVOLUTION_ENABLED=true</code> and
           <code style={s.code}>EVOLUTION_REPO=owner/repo</code> on the API, and make sure <code style={s.code}>gh</code> is
-          authenticated in the API container. The actual fixes run via the repo's
-          <code style={s.code}>.github/workflows/mutation.yml</code> — this dashboard just lists tickets
-          and dispatches that workflow. PR-only.</Callout>
+          authenticated in the API container. The actual fixes run <b>locally</b> via
+          <code style={s.code}>scripts/mutate-claude.sh --loop</code> (your Claude login) — this dashboard
+          labels tickets and queues them for that loop. PR-only.</Callout>
       )}
 
       {status?.enabled && (<>

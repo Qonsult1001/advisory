@@ -40,3 +40,6 @@ Thumbs.db
 !.claude/commands/**
 .claude/*
 !.claude/commands
+
+# Mutation queue (bind-mounted runtime data — request files dropped by the dashboard)
+.evolution-queue/

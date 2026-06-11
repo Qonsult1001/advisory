@@ -11,6 +11,12 @@
 #     ticks actually connect to GitHub and do work — off-schedule ticks print SKIPPED and cost nothing.
 #   • PR-only: every change becomes a pull request for human review.
 #
+# DASHBOARD BUTTON: the web "Mutate" button labels the ticket and drops a request file in the
+#   queue dir. The API container writes to /data/evolution-queue, which docker-compose BIND MOUNTS
+#   to ./.evolution-queue in this repo — so this loop reads the SAME files from the host. No volume
+#   spelunking needed. (Override the host path with EVOLUTION_QUEUE_HOST in compose / EVOLUTION_QUEUE_DIR here.)
+#   Even if the file is missed, /mutate acts on whatever tickets carry the `mutation` label, so the button works.
+#
 # Usage:
 #   ./scripts/mutate-claude.sh            # run one cycle now (subject to the hour gate)
 #   ./scripts/mutate-claude.sh --loop 30m # tick every 30 min; acts only during MUTATE_HOURS
@@ -18,9 +24,24 @@
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
+# Dashboard "Mutate" button queues ticket requests here; we drain them on each run.
+# Default matches the docker-compose bind mount (./.evolution-queue:/data/evolution-queue).
+QUEUE_DIR="${EVOLUTION_QUEUE_DIR:-./.evolution-queue}"
+
+drain_queue() {
+  [ -d "$QUEUE_DIR" ] || return 0
+  for req in "$QUEUE_DIR"/ticket-*.request; do
+    [ -e "$req" ] || continue
+    echo "[$(date '+%F %T')] dashboard request: $(basename "$req")"
+    rm -f "$req"            # consume the request (the labelled ticket is what the cycle acts on)
+  done
+}
+
 run_once() {
+  drain_queue            # honor any dashboard-queued requests (they just ensure a labelled ticket exists)
   echo "[$(date '+%F %T')] /mutate cycle start"
-  # Claude Code executes the /mutate command (see .claude/commands/mutate.md).
+  # Claude Code executes the /mutate command (see .claude/commands/mutate.md). FORCE_RUN bypasses
+  # the EVOLVE_HOURS gate so a manual/queued run acts immediately.
   claude -p --dangerously-skip-permissions --verbose "/mutate" 2>&1
   echo "[$(date '+%F %T')] /mutate cycle complete"
 }
