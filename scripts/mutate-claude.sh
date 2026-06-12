@@ -313,11 +313,12 @@ drain_queue() {   # returns 0 if a request was found (work to do), 1 if none
 # this succeeds immediately. "Not logged in" here means the credential is MISSING or INVALID —
 # not a transient slot race — so we report it clearly rather than spin.
 claude_ready() {
+  # Quick auth check before the heavy cycle. `< /dev/null` so it doesn't block ~3s waiting on stdin.
   local probe
-  probe="$(claude -p --dangerously-skip-permissions "reply with exactly: READY" 2>&1)"
+  probe="$(claude -p --dangerously-skip-permissions "reply with exactly: READY" < /dev/null 2>&1)"
   printf '%s' "$probe" | grep -qx "READY" && return 0
-  if printf '%s' "$probe" | grep -qiE "not logged in|please run /login|invalid|unauthor"; then
-    return 1   # missing/invalid headless credential
+  if printf '%s' "$probe" | grep -qiE "not logged in|please run /login|invalid|unauthor|401|authentication"; then
+    return 1   # missing/invalid credential — caught here instead of a silent empty cycle
   fi
   return 0       # some other output — not an auth problem; let the real cycle run and report
 }
@@ -384,23 +385,10 @@ run_cycle() {
   # non-empty; otherwise a deterministic writable path. This was the real cause of the empty cycles.
   local out rc tmp; tmp="$(mktemp 2>/dev/null)"; [ -n "$tmp" ] || tmp="${TMPDIR:-/tmp}/mutate-out.$$"
   : > "$tmp" 2>/dev/null || tmp="./.evolve/mutate-out.$$"   # last-resort: repo-local (always writable)
-  # ONE-SHOT ENVIRONMENT DIAGNOSTIC — dump exactly what the LIVE worker sees, so we stop guessing from
-  # fresh-shell reproductions. Writes to .evolve/worker-env.txt and echoes a summary to the log.
-  {
-    echo "=== worker env @ $(date '+%F %T') ==="
-    echo "shell: $0  BASH_VERSION=${BASH_VERSION:-?}  interactive=${-}"
-    echo "uname: $(uname -a 2>/dev/null)"
-    echo "claude bin: $(command -v claude 2>/dev/null)  ->  $(readlink -f "$(command -v claude 2>/dev/null)" 2>/dev/null)"
-    echo "CLAUDE_CONFIG_DIR=${CLAUDE_CONFIG_DIR:-<unset>}  exists=$( [ -d "${CLAUDE_CONFIG_DIR:-/nonexist}" ] && echo yes || echo no )"
-    echo "HOME=$HOME  PWD=$PWD"
-    echo "token set: $( [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && echo CLAUDE_CODE_OAUTH_TOKEN || ([ -n "${ANTHROPIC_API_KEY:-}" ] && echo ANTHROPIC_API_KEY || echo NONE) )"
-    echo "ADVISORY_APPROVAL=${ADVISORY_APPROVAL:-} FORCE_RUN=${FORCE_RUN:-} MUTATE_HOURS=${MUTATE_HOURS:-}"
-    echo "--- self-test: claude -p 'say SELFTEST' (no skill) ---"
-    st="$(claude -p --verbose --output-format stream-json "say SELFTEST" < /dev/null 2>&1)"
-    echo "selftest bytes=${#st}  has_text=$(printf '%s' "$st" | grep -c '"type":"text"')  has_hook=$(printf '%s' "$st" | grep -c hook_started)"
-    printf '%s' "$st" | grep -oE '"(error|message)":"[^"]{0,120}"' | head -3
-  } > ./.evolve/worker-env.txt 2>&1
-  echo "[$(date '+%F %T')]   ↳ ENV DIAG: $(grep -E 'selftest bytes|claude bin|CLAUDE_CONFIG_DIR|interactive' ./.evolve/worker-env.txt 2>/dev/null | tr '\n' ' | ')"
+  # Auth is resolved at startup (interactive login or .env token). One quick line so the log shows
+  # which credential path is in use — no extra claude call (the self-test diagnostic was removed; it
+  # was adding a full ~30-60s API round-trip to every cycle for no benefit once auth was confirmed).
+  echo "[$(date '+%F %T')]   ↳ auth: ${CLAUDE_CONFIG_DIR:+config=$CLAUDE_CONFIG_DIR }token=$( [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && echo set || echo none )"
 
   local attempt=0; local -a backoffs=(30 60); local rate_limited=0
   while : ; do
