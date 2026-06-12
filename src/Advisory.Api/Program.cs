@@ -141,6 +141,12 @@ app.MapGet("/api/health", () => Results.Ok(new { status = "ok", service = "Advis
    .AllowAnonymous();
 app.MapGet("/api/health/live", () => Results.Ok(new { status = "ok" }))
    .AllowAnonymous();
+app.MapGet("/api/version", () => Results.Ok(new
+    {
+        service = "advisory",
+        version = typeof(Program).Assembly.GetName().Version?.ToString() ?? "0.0.0"
+    }))
+   .AllowAnonymous();
 app.Run();
 
 public partial class Program { }
