@@ -1558,6 +1558,27 @@ public class AdminController : ControllerBase
         return Ok(new { mode = "api", agent = id, model = rr.Model, ok = rr.Ok, error = rr.Error, reply = rr.Text, tokens = rr.Usage.Total });
     }
 
+    public record AgentRunReq(string? System, string? Task, string? Prompt);
+    /// <summary>Run a real PHASE prompt on a specific routed agent (used by the /mutate skill so a phase
+    /// routed to Groq actually runs on Groq via MAF, not faked as a Claude sub-agent). API-standard
+    /// agents (openai/groq/anthropic) run synchronously and return the reply + tokens. CLI agents
+    /// (claude-cli/cursor-cli) signal the caller to run the phase inline (the skill is itself a Claude
+    /// process, so a claude-cli phase just runs inline; cursor-cli likewise on the host).</summary>
+    [HttpPost("agent/{id}/run")]
+    [Authorize(Policy = Policies.CanAdmin)]
+    public async Task<ActionResult> RunAgent(string id, [FromBody] AgentRunReq req, CancellationToken ct)
+    {
+        var agent = _policy.Current.Admin.Agents.FirstOrDefault(a => a.Id == id);
+        if (agent is null) return NotFound(new { error = $"agent '{id}' not found" });
+        // CLI agents have no in-container runner — tell the skill to run this phase inline.
+        if (agent.Standard is "claude-cli" or "cursor-cli")
+            return Ok(new { mode = "inline", agent = id, standard = agent.Standard, ranOnAgent = false });
+        var rr = await _runner.RunAsync(agent, new Advisory.Api.Agents.AgentRunRequest(
+            req.Task ?? "phase", agent.Persona ?? "", req.System ?? "You are running one phase of a PR-only mutation cycle. Be precise and minimal.",
+            req.Prompt ?? ""), ct);
+        return Ok(new { mode = "api", agent = id, model = rr.Model, ok = rr.Ok, error = rr.Error, ranOnAgent = rr.Ok, reply = rr.Text, tokens = rr.Usage.Total });
+    }
+
     public record AgentTestResultReq(string Reply, bool Ok, string? Error);
     /// <summary>Worker posts a CLI agent-test result; dashboard polls GET to show it.</summary>
     [HttpPost("agent/{id}/test/result")]
