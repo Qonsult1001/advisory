@@ -1596,17 +1596,20 @@ public class AdminController : ControllerBase
     }
 
     public record CursorAuthReq(string? User);
-    /// <summary>Begin cursor-cli auth: queue a 'cursor-agent login' the local worker runs. Cursor prints
-    /// a browser URL for the user to accept the licence; the worker relays status back here.</summary>
+    /// <summary>Begin CLI agent auth: queue a login the local worker runs. For cursor-cli the worker
+    /// runs 'cursor-agent login'; for claude-cli it runs 'claude setup-token'. Both print a browser
+    /// URL the user opens to authenticate; the worker relays status (and, for claude, persists the
+    /// long-lived token) back here. Same endpoint for both so the dashboard flow is identical.</summary>
     [HttpPost("agent/{id}/cursor-auth")]
     [Authorize(Policy = Policies.CanAdmin)]
     public ActionResult CursorAuth(string id, [FromBody] CursorAuthReq? req)
     {
         var agent = _policy.Current.Admin.Agents.FirstOrDefault(a => a.Id == id);
         if (agent is null) return NotFound(new { error = $"agent '{id}' not found" });
-        if (agent.Standard != "cursor-cli") return BadRequest(new { error = "cursor-auth only applies to a cursor-cli agent" });
-        var (ok, detail) = _evo.QueueCursorAuth(id, req?.User ?? agent.CursorUser ?? "");
-        return Accepted(new { mode = "cli-queued", agent = id, ok, detail });
+        if (agent.Standard is not ("cursor-cli" or "claude-cli"))
+            return BadRequest(new { error = "browser auth only applies to a cursor-cli or claude-cli agent" });
+        var (ok, detail) = _evo.QueueCursorAuth(id, agent.Standard, req?.User ?? agent.CursorUser ?? "");
+        return Accepted(new { mode = "cli-queued", agent = id, standard = agent.Standard, ok, detail });
     }
     [HttpGet("agent/{id}/cursor-auth")]
     public ActionResult GetCursorAuth(string id) => Ok(_evo.GetCursorAuth(id));

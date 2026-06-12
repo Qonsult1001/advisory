@@ -3556,9 +3556,12 @@ function ModelSelect({ agent, onPick }) {
   );
 }
 
-// cursor-cli: enter the business-account user, Authenticate (worker runs cursor-agent login), then
-// accept the licence in the browser via the URL it returns.
+// Browser auth for CLI agents. cursor-cli: enter the business-account user, Authenticate (worker runs
+// cursor-agent login). claude-cli: just Authenticate (worker runs `claude setup-token`), accept in the
+// browser via the URL it returns; the worker captures + persists the long-lived token for all users.
 function CursorAuth({ agent, onUser }) {
+  const isClaude = agent.standard === "claude-cli";
+  const cmd = isClaude ? "claude setup-token" : "cursor-agent login";
   const [busy, setBusy] = useState(false);
   const [st, setSt] = useState(null);
   const auth = async () => {
@@ -3570,19 +3573,20 @@ function CursorAuth({ agent, onUser }) {
       else if (n > 20) { clearInterval(iv); setBusy(false); setSt({ status: "timeout" }); }
     }, 2000);
   };
+  const disabled = busy || (!isClaude && !agent.cursorUser);
   return (
     <div>
       <div style={{ display: "flex", gap: 6 }}>
-        <TextInput value={agent.cursorUser || ""} placeholder="cursor business account / email" onChange={(e) => onUser(e.target.value)} />
-        <button onClick={auth} disabled={busy || !agent.cursorUser} style={{ ...s.add, whiteSpace: "nowrap", opacity: (busy || !agent.cursorUser) ? 0.5 : 1 }}>{busy ? "…" : "Authenticate"}</button>
+        {!isClaude && <TextInput value={agent.cursorUser || ""} placeholder="cursor business account / email" onChange={(e) => onUser(e.target.value)} />}
+        <button onClick={auth} disabled={disabled} style={{ ...s.add, whiteSpace: "nowrap", opacity: disabled ? 0.5 : 1 }}>{busy ? "…" : "Authenticate"}</button>
       </div>
       {st && st.status === "browser-required" && st.url && (
-        <div style={{ fontSize: 11.5, marginTop: 6, color: C.warn }}>Accept the licence in your browser: <a href={st.url} target="_blank" rel="noreferrer" style={s.linkGreen}>{st.url}</a></div>
+        <div style={{ fontSize: 11.5, marginTop: 6, color: C.warn }}>Authenticate in your browser: <a href={st.url} target="_blank" rel="noreferrer" style={s.linkGreen}>{st.url}</a>{isClaude ? " — then it captures the token automatically" : ""}</div>
       )}
-      {st && st.status === "authenticated" && <div style={{ fontSize: 11.5, marginTop: 6, color: C.allow }}>✓ Cursor authenticated</div>}
-      {st && st.status === "error" && <div style={{ fontSize: 11.5, marginTop: 6, color: C.block }}>{st.message || "cursor-agent not available"}</div>}
-      {st && (st.status === "queued" || st.status === "pending") && <div style={{ fontSize: 11.5, marginTop: 6, color: C.sub }}>Running cursor-agent login on the worker…</div>}
-      {st && st.status === "timeout" && <div style={{ fontSize: 11.5, marginTop: 6, color: C.block }}>No response — is the worker running with cursor-agent installed?</div>}
+      {st && st.status === "authenticated" && <div style={{ fontSize: 11.5, marginTop: 6, color: C.allow }}>✓ {isClaude ? "Claude token captured & saved" : "Cursor authenticated"}</div>}
+      {st && st.status === "error" && <div style={{ fontSize: 11.5, marginTop: 6, color: C.block }}>{st.message || `${cmd} not available`}</div>}
+      {st && (st.status === "queued" || st.status === "pending") && <div style={{ fontSize: 11.5, marginTop: 6, color: C.sub }}>Running {cmd} on the worker…</div>}
+      {st && st.status === "timeout" && <div style={{ fontSize: 11.5, marginTop: 6, color: C.block }}>No response — is the worker running with {isClaude ? "claude" : "cursor-agent"} installed?</div>}
     </div>
   );
 }
@@ -3768,8 +3772,10 @@ function AdminCenter() {
             <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr", gap: 16 }}>
               {a.standard === "cursor-cli"
                 ? <Field label="Cursor user (business account) — then Authenticate & accept the licence in your browser"><CursorAuth agent={a} onUser={(u) => setAgent(i, { cursorUser: u })} /></Field>
+                : a.standard === "claude-cli" && a.id === "claude-cli-test"
+                ? <Field label="Auth"><div style={{ ...s.inputText, width: "100%", color: C.sub, background: C.bg2 }}>Local test agent — uses the worker host's Claude login (.env). Operator-only.</div></Field>
                 : a.standard === "claude-cli"
-                ? <Field label="Auth"><div style={{ ...s.inputText, width: "100%", color: C.sub, background: C.bg2 }}>Local Claude Code CLI — uses your existing login (worker)</div></Field>
+                ? <Field label="Auth — click Authenticate, then approve in your browser (runs claude setup-token on the worker)"><CursorAuth agent={a} onUser={() => {}} /></Field>
                 : <Field label="Endpoint"><TextInput value={a.endpoint || ""} placeholder="https://api.groq.com/openai/v1" onChange={(e) => setAgent(i, { endpoint: e.target.value })} mono /></Field>}
               {(a.standard === "openai" || a.standard === "anthropic")
                 ? <Field label={a.hasKey ? "API key — stored ✓ (blank keeps it)" : "API key"}>

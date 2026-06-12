@@ -124,14 +124,18 @@ public class EvolutionService
 
     // ---- cursor-cli authentication (runs on the host worker; user accepts the licence in a browser) ----
     private readonly ConcurrentDictionary<string, object> _cursorAuth = new();
-    public (bool ok, string detail) QueueCursorAuth(string agentId, string user)
+    public (bool ok, string detail) QueueCursorAuth(string agentId, string standard, string user)
     {
         try
         {
             Directory.CreateDirectory(QueueDir);
             _cursorAuth[agentId] = new { status = "queued", message = (string?)null, url = (string?)null, ok = (bool?)null, at = DateTimeOffset.UtcNow };
-            File.WriteAllText(Path.Combine(QueueDir, $"cursorauth-{agentId}.request"), $"{agentId}\n{user}\n{DateTimeOffset.UtcNow:o}\n");
-            return (true, $"queued cursor login for '{agentId}' — the worker will run 'cursor-agent login'; watch for a browser URL");
+            // request: line1=agentId, line2=standard, line3=user, line4=timestamp. The worker branches
+            // on standard — cursor-cli → 'cursor-agent login', claude-cli → 'claude setup-token'.
+            File.WriteAllText(Path.Combine(QueueDir, $"cursorauth-{agentId}.request"),
+                $"{agentId}\n{standard}\n{user}\n{DateTimeOffset.UtcNow:o}\n");
+            var cmd = standard == "claude-cli" ? "claude setup-token" : "cursor-agent login";
+            return (true, $"queued login for '{agentId}' — the worker will run '{cmd}'; watch for a browser URL to authenticate");
         }
         catch (Exception ex) { return (false, ex.Message); }
     }

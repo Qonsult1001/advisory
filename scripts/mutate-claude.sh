@@ -193,32 +193,71 @@ drain_agent_tests() {
   done
 }
 
-# Drain cursor-cli AUTH requests: run `cursor-agent login` for the agent's user. Cursor prints a
-# browser URL the user opens to accept the licence; we relay status + URL back to the dashboard.
+# Post an auth-flow result back to the dashboard for agent $1.
+_post_auth_result() { # id status message url ok
+  curl -s -m 10 -X POST "$API/admin/agent/$1/cursor-auth/result" -H "Content-Type: application/json" \
+    -d "$(printf '{"status":"%s","message":"%s","url":"%s","ok":%s}' "$2" "$3" "$4" "$5")" >/dev/null 2>&1 || true
+}
+
+# Persist a long-lived Claude token into .env so the worker (and the API key-mask layer) re-source it.
+# Replaces any existing CLAUDE_CODE_OAUTH_TOKEN line; appends if absent. .env is gitignored.
+_persist_claude_token() { # token
+  local tok="$1" env_file="./.env"   # worker runs from repo root; same file load_env sources
+  [ -n "$tok" ] || return 1
+  [ -f "$env_file" ] || : > "$env_file"
+  if grep -q '^CLAUDE_CODE_OAUTH_TOKEN=' "$env_file" 2>/dev/null; then
+    sed -i "s|^CLAUDE_CODE_OAUTH_TOKEN=.*|CLAUDE_CODE_OAUTH_TOKEN=$tok|" "$env_file"
+  else
+    printf 'CLAUDE_CODE_OAUTH_TOKEN=%s\n' "$tok" >> "$env_file"
+  fi
+  load_env   # re-source so the freshly captured token takes effect this tick
+}
+
+# Drain CLI AUTH requests for both cursor-cli and claude-cli. Each prints a browser URL the user opens
+# to authenticate; we relay status + URL back to the dashboard. For claude we also capture the
+# long-lived token from `claude setup-token` and persist it to .env so other users' agent works after.
 drain_cursor_auth() {
   [ -d "$QUEUE_DIR" ] || return 0
-  command -v cursor-agent >/dev/null 2>&1 || CURSOR_BIN="cursor-agent"
   for req in "$QUEUE_DIR"/cursorauth-*.request; do
     [ -e "$req" ] || continue
-    local id user out url ok status
+    local id standard user out url ok status msg tok
     id="$(sed -n '1p' "$req" 2>/dev/null | tr -d '[:space:]')"
-    user="$(sed -n '2p' "$req" 2>/dev/null)"
-    echo "[$(date '+%F %T')] cursor auth: $id (user=$user)"
+    standard="$(sed -n '2p' "$req" 2>/dev/null | tr -d '[:space:]')"
+    user="$(sed -n '3p' "$req" 2>/dev/null)"
+    echo "[$(date '+%F %T')] cli auth: $id (standard=$standard user=$user)"
     consume_request "$(basename "$req")"
-    if ! command -v cursor-agent >/dev/null 2>&1; then
-      curl -s -m 10 -X POST "$API/admin/agent/$id/cursor-auth/result" -H "Content-Type: application/json" \
-        -d '{"status":"error","message":"cursor-agent CLI not found on this machine — install Cursor CLI first","url":null,"ok":false}' >/dev/null 2>&1 || true
+
+    if [ "$standard" = "claude-cli" ]; then
+      if ! command -v claude >/dev/null 2>&1; then
+        _post_auth_result "$id" "error" "claude CLI not found on this machine" "" "false"; continue
+      fi
+      # `claude setup-token` prints a browser URL, then (after the user approves) the long-lived token.
+      out="$(timeout 30 claude setup-token 2>&1 || true)"
+      url="$(printf '%s' "$out" | grep -oE 'https?://[^ ]+' | head -1)"
+      tok="$(printf '%s' "$out" | grep -oE 'sk-ant-[A-Za-z0-9_-]+' | head -1)"
+      if [ -n "$tok" ]; then
+        _persist_claude_token "$tok"; status=authenticated; ok=true
+        msg="token captured and persisted to .env — claude-cli is now authenticated for all users"
+      elif [ -n "$url" ]; then status=browser-required; ok=false
+        msg="open this URL to authenticate, then re-run if no token is captured"
+      else status=pending; ok=false
+        msg="$(printf '%s' "$out" | tr -d '\r' | sed 's/\\/\\\\/g; s/"/\\"/g' | tr '\n' ' ' | cut -c1-300)"
+      fi
+      _post_auth_result "$id" "$status" "$msg" "$url" "$ok"
       continue
     fi
-    # cursor-agent login prints a URL to authenticate in the browser; capture it (timeout so we don't hang).
+
+    # cursor-cli
+    if ! command -v cursor-agent >/dev/null 2>&1; then
+      _post_auth_result "$id" "error" "cursor-agent CLI not found on this machine — install Cursor CLI first" "" "false"; continue
+    fi
     out="$(timeout 25 cursor-agent login 2>&1 || true)"
     url="$(printf '%s' "$out" | grep -oE 'https?://[^ ]+' | head -1)"
     if printf '%s' "$out" | grep -qiE 'logged in|authenticated|success'; then status=authenticated; ok=true
     elif [ -n "$url" ]; then status=browser-required; ok=false
     else status=pending; ok=false; fi
-    local msg; msg="$(printf '%s' "$out" | tr -d '\r' | sed 's/\\/\\\\/g; s/"/\\"/g' | tr '\n' ' ' | cut -c1-300)"
-    curl -s -m 10 -X POST "$API/admin/agent/$id/cursor-auth/result" -H "Content-Type: application/json" \
-      -d "$(printf '{"status":"%s","message":"%s","url":"%s","ok":%s}' "$status" "$msg" "$url" "$ok")" >/dev/null 2>&1 || true
+    msg="$(printf '%s' "$out" | tr -d '\r' | sed 's/\\/\\\\/g; s/"/\\"/g' | tr '\n' ' ' | cut -c1-300)"
+    _post_auth_result "$id" "$status" "$msg" "$url" "$ok"
   done
 }
 

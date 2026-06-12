@@ -272,7 +272,15 @@ public class AdminSettings
     // config). Operators can edit/add agents and route phases; out of the box everything runs on this.
     public List<AiAgent> Agents { get; set; } = new()
     {
-        new AiAgent { Id = "claude-cli", Name = "Claude Code (local CLI)", Standard = "claude-cli",
+        // OPERATOR TEST AGENT — authenticated via the worker host's CLAUDE_CODE_OAUTH_TOKEN in .env
+        // (Willie's local Claude Code login). Kept for hands-on testing; remove if it stops being useful.
+        new AiAgent { Id = "claude-cli-test", Name = "Claude Code (local test — Willie)", Standard = "claude-cli",
+            Model = "claude-opus-4-8", Enabled = true,
+            Persona = "You are Advisory's compliance-officer engineer. Map every change to a control, "
+                + "write the test first, keep the change minimal and PR-only, and never weaken a security control." },
+        // SHARED CLAUDE CLI — for other users. Authenticate from the dashboard (same browser flow as
+        // cursor-cli): the worker runs `claude setup-token`, relays the login URL, persists the token.
+        new AiAgent { Id = "claude-cli", Name = "Claude Code (CLI)", Standard = "claude-cli",
             Model = "claude-opus-4-8", Enabled = true,
             Persona = "You are Advisory's compliance-officer engineer. Map every change to a control, "
                 + "write the test first, keep the change minimal and PR-only, and never weaken a security control." },
@@ -282,11 +290,12 @@ public class AdminSettings
             Model = "openai/gpt-oss-120b", Endpoint = "https://api.groq.com/openai/v1", Enabled = true,
             Persona = "You are a precise senior .NET engineer. Implement the smallest correct change with a test." },
     };
-    // Default routing: Claude CLI plans/researches; Groq executes/documents — sequential. Retarget per phase.
+    // Default routing: the operator test agent plans/researches (it's already authenticated);
+    // Groq executes/documents — sequential. Retarget per phase in Admin.
     public TaskRouting MutationRouting { get; set; } = new()
-    { Research = "claude-cli", Planning = "claude-cli", Execution = "groq", Documentation = "groq", Mode = "sequential" };
+    { Research = "claude-cli-test", Planning = "claude-cli-test", Execution = "groq", Documentation = "groq", Mode = "sequential" };
     public TaskRouting EvolutionRouting { get; set; } = new()
-    { Research = "claude-cli", Planning = "claude-cli", Documentation = "groq", Mode = "sequential" };
+    { Research = "claude-cli-test", Planning = "claude-cli-test", Documentation = "groq", Mode = "sequential" };
     // Memory budget the agents may use (MB); 0 => engine default.
     public int MemoryMb { get; set; } = 0;
     // Container/runtime the platform deploys + creates temp test environments on.
