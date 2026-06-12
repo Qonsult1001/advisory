@@ -169,6 +169,27 @@ consume_request() {   # consume_request <basename>
   rm -f "$QUEUE_DIR/$1" 2>/dev/null || true   # best-effort; ignore permission errors
 }
 
+# Drain per-agent TEST requests for CLI agents (claude-cli/cursor-cli). The dashboard "Test" button
+# queues agenttest-<id>.request; we run the local Claude CLI and POST the reply back so each agent
+# is verifiable as its own module.
+drain_agent_tests() {
+  [ -d "$QUEUE_DIR" ] || return 0
+  for req in "$QUEUE_DIR"/agenttest-*.request; do
+    [ -e "$req" ] || continue
+    local id prompt reply rc
+    id="$(sed -n '1p' "$req" 2>/dev/null | tr -d '[:space:]')"
+    prompt="$(sed -n '2p' "$req" 2>/dev/null)"
+    echo "[$(date '+%F %T')] agent test: $id"
+    consume_request "$(basename "$req")"
+    reply="$(claude -p --dangerously-skip-permissions "$prompt" 2>&1)"; rc=$?
+    local ok=true; [ $rc -ne 0 ] && ok=false
+    # escape for JSON
+    local esc; esc="$(printf '%s' "$reply" | tr -d '\r' | sed 's/\\/\\\\/g; s/"/\\"/g' | tr '\n' ' ' | cut -c1-1500)"
+    curl -s -m 30 -X POST "$API/admin/agent/$id/test/result" -H "Content-Type: application/json" \
+      -d "$(printf '{"reply":"%s","ok":%s,"error":null}' "$esc" "$ok")" >/dev/null 2>&1 || true
+  done
+}
+
 drain_queue() {   # returns 0 if a request was found (work to do), 1 if none
   [ -d "$QUEUE_DIR" ] || return 1
   local found=1
@@ -290,6 +311,7 @@ run_cycle() {
 
 run_once() {
   heartbeat
+  drain_agent_tests   # answer any "Test agent" requests for CLI agents (fast, runs every tick)
   if drain_queue; then
     run_cycle
     stop_heartbeat   # cycle done — back to the foreground per-tick heartbeat
