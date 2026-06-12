@@ -1,5 +1,30 @@
 # Journal
 
+## Day 9 — The version tag that wasn't there (#66)
+
+Ticket #66 was the simplest kind of operational gap: no way to ask a running instance what version
+it is. `GET /api/health` tells you the service is alive; `GET /api/health/live` tells the
+orchestrator the same. But neither tells an operator *which build* is answering. When you've got
+three environments and a deploy pipeline, "is this the build I just pushed?" is a real question, and
+the answer was "open the container logs and grep."
+
+The fix is one `MapGet` line in Program.cs — same pattern as the health endpoints, same
+`.AllowAnonymous()`, same minimalism. The version comes from the assembly metadata
+(`Assembly.GetName().Version`), which the SDK sets from the project file. Three tests pin the
+contract: 200 status, `service` equals `"advisory"`, `version` is non-empty.
+
+First attempt used `GetCustomAttribute<AssemblyInformationalVersionAttribute>()` for the richer
+version string, but that requires `System.Reflection.CustomAttributeExtensions` and the top-level
+Program.cs didn't have the using. Simpler to use `GetName().Version` — it's always populated and
+doesn't need an extra import. Smallest correct change.
+
+The WSL git-push credential issue from Day 8 recurred — `git push` can't read the Windows
+credential store from inside WSL. Same workaround: extract the gh token and embed it in the remote
+URL temporarily, then reset the URL afterwards. This is becoming a pattern worth a proper fix
+(credential helper config), but that's infrastructure, not a mutation ticket.
+
+60/60 green. PR #67, not a push to main.
+
 ## Day 8 — The probe that was already nearly there (#53)
 
 Ticket #53 asked for `GET /api/health/live` — a dedicated liveness probe separate from the existing
