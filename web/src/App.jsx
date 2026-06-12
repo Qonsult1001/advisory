@@ -64,6 +64,7 @@ const api = {
   odsList: () => fetch(`${API}/ondemand/list`).then((r) => r.json()),
   odsScan: (pkg) => fetch(`${API}/ondemand/scan`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(pkg) }).then((r) => r.json()),
   adminSettings: () => fetch(`${API}/admin/settings`).then((r) => r.json()),
+  contextStats: () => fetch(`${API}/admin/context/stats`).then((r) => r.json()),
   saveAdminSettings: (body) => fetch(`${API}/admin/settings`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).then((r) => r.json()),
   getAiSettings: () => fetch(`${API}/ai/settings`).then((r) => r.json()),
   saveAiSettings: (body) => fetch(`${API}/ai/settings`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).then((r) => r.json()),
@@ -3458,6 +3459,78 @@ function ProgressBar({ pct, done, failed }) {
   );
 }
 // ── Admin Center — global platform config: AI agents, per-task routing, memory + DB/runtime ──
+// Compact number formatter (12,345 / 1.2M).
+function nfmt(n) {
+  if (n == null) return "—";
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + "M";
+  if (n >= 1e3) return (n / 1e3).toFixed(n >= 1e4 ? 0 : 1) + "k";
+  return String(n);
+}
+// A single stat tile for the memory panel.
+function StatTile({ value, label, sub, tone }) {
+  return (
+    <div style={{ background: C.surface, border: `1px solid ${C.line}`, borderRadius: 12, padding: "14px 16px", minWidth: 0 }}>
+      <div style={{ fontSize: 22, fontWeight: 800, color: tone || C.ink, lineHeight: 1.1, letterSpacing: -0.3 }}>{value}</div>
+      <div style={{ fontSize: 11, color: C.sub, textTransform: "uppercase", letterSpacing: 0.5, fontWeight: 600, marginTop: 4 }}>{label}</div>
+      {sub && <div style={{ fontSize: 11, color: C.dim, marginTop: 2 }}>{sub}</div>}
+    </div>
+  );
+}
+// Impressive Project-memory panel: live .said brain stats + tokens saved + what it gives.
+function MemoryPanel({ d, update }) {
+  const [st, setSt] = useState(null);
+  useEffect(() => { api.contextStats().then(setSt).catch(() => setSt({ built: false })); }, []);
+  const isSaid = (d.contextFormat || "said") === "said";
+  return (
+    <>
+      <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 12, flexWrap: "wrap" }}>
+        <Field label="Memory engine">
+          <select value={d.contextFormat || "said"} onChange={(e) => update({ contextFormat: e.target.value })} style={{ ...s.select, minWidth: 240 }}>
+            {(d.contextFormats || ["said", "md"]).map((x) => <option key={x} value={x}>{x === "said" ? ".said brain — semantic memory + recall" : ".md source map — plain tree"}</option>)}
+          </select>
+        </Field>
+        <div style={{ flex: 1 }} />
+        <a href={`${API}/admin/context/download`} style={{ ...s.add, background: C.surface2, color: C.ink, textDecoration: "none", border: `1px solid ${C.line}` }}>⬇ Download {isSaid ? "Advisory.said" : "PROJECT_CONTEXT.md"}</a>
+      </div>
+
+      {isSaid && st?.built && (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(6,1fr)", gap: 12, marginBottom: 14 }}>
+          <StatTile value={st.estPercentSaved + "%"} label="Tokens saved / recall" sub={`~${nfmt(st.estTokensSavedPerRecall)} vs ${nfmt(st.estCorpusTokens)} full`} tone={C.allow} />
+          <StatTile value={nfmt(st.frames)} label="Memories" sub="indexed frames" tone={C.accentDim} />
+          <StatTile value={nfmt(st.symbols)} label="Symbols" sub="classes / fns" />
+          <StatTile value={st.compressionRatio + "×"} label="Compression" sub={`${nfmt(st.fileBytes)}B file`} />
+          <StatTile value={nfmt(st.recalls)} label="Recalls" sub="queries served" tone={C.info} />
+          <StatTile value={nfmt(st.dreamCycles)} label="Dream cycles" sub="consolidations" />
+        </div>
+      )}
+      {isSaid && st && !st.built && (
+        <Callout>The <b>.said brain</b> hasn’t been built yet — it’s created on the next mutation cycle (or click a run). Then this fills with live stats.</Callout>
+      )}
+
+      <div style={{ ...s.card, padding: "18px 20px" }}>
+        <div style={{ fontSize: 12.5, color: C.ink, lineHeight: 1.6 }}>
+          {isSaid ? <>
+            <b>One shared brain, every agent.</b> The whole codebase is indexed (AST-aware) into a portable
+            <code style={s.code}>.said</code> file. Each routed agent — with its own persona — <b>recalls only what it needs</b>
+            (<code style={s.code}>said ask / sym / get</code>) instead of re-reading the repo, so context is full but the
+            prompt stays small. That’s the <b style={{ color: C.allow }}>{st?.built ? `~${st.estPercentSaved}% token saving` : "token saving"}</b> per recall.
+            Agents also <b>remember</b> what they learn (<code style={s.code}>said remember / session_end</code>) → memory
+            <b> compounds</b> across runs, so each cycle is smarter and cheaper than the last.
+          </> : <>A plain <b>PROJECT_CONTEXT.md</b> map (file tree + structure). Lighter and human-readable, but no
+            semantic recall, symbols, memory or token savings — switch to <b>.said</b> for the full brain.</>}
+        </div>
+        {isSaid && (
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 12 }}>
+            {["semantic recall (ask)", "symbol lookup (sym)", "episodic memory (remember)", "salience + surprise", "dream consolidation", "history / time-travel", "MCP server", "portable + offline"].map((f) => (
+              <span key={f} style={{ fontSize: 11, background: C.surface2, border: `1px solid ${C.line}`, borderRadius: 999, padding: "4px 11px", color: C.sub }}>{f}</span>
+            ))}
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
+
 function AdminCenter() {
   const [d, setD] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -3598,26 +3671,8 @@ function AdminCenter() {
         </Field>
       </div>
 
-      <SubHead>Project memory — context every agent gets</SubHead>
-      <div style={{ ...s.card, padding: "20px 22px" }}>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr", gap: 20, alignItems: "start" }}>
-          <Field label="Context format">
-            <select value={d.contextFormat || "said"} onChange={(e) => update({ contextFormat: e.target.value })} style={{ ...s.select, width: "100%" }}>
-              {(d.contextFormats || ["said", "md"]).map((x) => <option key={x} value={x}>{x === "said" ? ".said brain (semantic + symbols)" : ".md source map"}</option>)}
-            </select>
-          </Field>
-          <div style={{ fontSize: 12, color: C.sub, lineHeight: 1.6 }}>
-            {(d.contextFormat || "said") === "said"
-              ? <>The <b>.said brain</b> indexes the whole codebase (AST-aware) into a portable file agents query for
-                  full-project context — like Cursor. Built once on the next run; agents use <code style={s.code}>said ask/sym/grep</code>.
-                  It’s downloadable “memory as a service”.</>
-              : <>A plain <b>PROJECT_CONTEXT.md</b> map (file tree + structure). Lighter, human-readable, but no semantic/symbol search.</>}
-            <div style={{ marginTop: 8 }}>
-              <a href={`${API}/admin/context/download`} style={s.linkGreen} title="Download the current project brain">⬇ Download {(d.contextFormat || "said") === "said" ? "Advisory.said" : "PROJECT_CONTEXT.md"}</a>
-            </div>
-          </div>
-        </div>
-      </div>
+      <SubHead>Project memory — the brain every agent shares</SubHead>
+      <MemoryPanel d={d} update={update} />
 
       <div style={{ marginTop: 20, display: "flex", gap: 10, alignItems: "center" }}>
         <button style={{ ...s.add, opacity: busy ? 0.6 : 1 }} disabled={busy} onClick={save}>{busy ? "Saving…" : "Save Administration settings"}</button>

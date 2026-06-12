@@ -1514,7 +1514,14 @@ public class AdminController : ControllerBase
 {
     private readonly IPolicyStore _policy;
     private readonly Advisory.Api.Auth.ICurrentUser _user;
-    public AdminController(IPolicyStore policy, Advisory.Api.Auth.ICurrentUser user) { _policy = policy; _user = user; }
+    private readonly Advisory.Api.Evolution.EvolutionService _evo;
+    public AdminController(IPolicyStore policy, Advisory.Api.Auth.ICurrentUser user, Advisory.Api.Evolution.EvolutionService evo) { _policy = policy; _user = user; _evo = evo; }
+
+    /// <summary>Worker posts the live `said stats --json` (it can run said.exe; the container can't).</summary>
+    [HttpPost("context/stats")]
+    [Authorize(Policy = Policies.CanAdmin)]
+    public ActionResult PostBrainStats([FromBody] System.Text.Json.JsonElement body)
+    { _evo.SetBrainStats(body.GetRawText()); return Ok(new { ok = true }); }
 
     static object MaskAgent(Advisory.Api.Policy.AiAgent a) => new
     {
@@ -1597,6 +1604,65 @@ public class AdminController : ControllerBase
                 return PhysicalFile(Path.GetFullPath(p), "application/octet-stream", name);
         }
         return NotFound(new { error = $"{name} not built yet — run a mutation cycle (the worker builds it once) or rebuild context." });
+    }
+
+    /// <summary>Live stats of the project-memory brain (frames, symbols, compression, recalls) plus a
+    /// tokens-saved estimate — so the Admin panel shows what the .said memory actually delivers.</summary>
+    [HttpGet("context/stats")]
+    public ActionResult ContextStats()
+    {
+        // Locate Advisory.said (read-only repo mount in the container, or cwd).
+        string? brain = null;
+        foreach (var root in new[] { "/workspace", Directory.GetCurrentDirectory(), "." })
+        { var p = Path.Combine(root, "Advisory.said"); if (System.IO.File.Exists(p)) { brain = p; break; } }
+        if (brain is null) return Ok(new { built = false, hint = "Brain not built yet — runs on the next cycle." });
+
+        var fi = new FileInfo(brain);
+        long frames = 0, symbols = 0, indexDocs = 0; double ratio = 0; long uncompressed = 0;
+        long recalls = 0, dreamCycles = 0, boosted = 0;
+        // Prefer the worker-posted `said stats --json` (accurate; the worker can run said.exe).
+        if (!string.IsNullOrWhiteSpace(_evo.BrainStatsJson))
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(_evo.BrainStatsJson!);
+                var r = doc.RootElement;
+                frames = r.TryGetProperty("active_frames", out var f) ? f.GetInt64() : 0;
+                symbols = r.TryGetProperty("symbol_count", out var s) ? s.GetInt64() : 0;
+                indexDocs = r.TryGetProperty("index_docs", out var i) ? i.GetInt64() : 0;
+                ratio = r.TryGetProperty("compression_ratio", out var c) ? c.GetDouble() : 0;
+                uncompressed = r.TryGetProperty("uncompressed_bytes", out var u) ? u.GetInt64() : 0;
+                if (r.TryGetProperty("brain", out var b))
+                {
+                    recalls = b.TryGetProperty("total_recalls", out var tr) ? tr.GetInt64() : 0;
+                    dreamCycles = b.TryGetProperty("dream_cycles", out var dc) ? dc.GetInt64() : 0;
+                    boosted = b.TryGetProperty("boosted_docs", out var bd) ? bd.GetInt64() : 0;
+                }
+            }
+            catch { /* fall through to file-based estimate */ }
+        }
+        // Tokens-saved estimate: instead of stuffing the whole indexed corpus into a prompt every run,
+        // the agent recalls only the relevant ~top-k frames. ~4 chars/token; recall pulls ~8 frames vs
+        // the whole corpus. Conservative, clearly labelled as an estimate.
+        long corpusChars = uncompressed > 0 ? uncompressed : fi.Length * 6; // ~6.4x compression typical
+        long corpusTokens = corpusChars / 4;
+        long recalledFrames = frames > 0 ? Math.Min(frames, 8) : 8;
+        long recalledTokens = frames > 0 ? corpusTokens * recalledFrames / frames : corpusTokens / 50;
+        long savedPerRun = Math.Max(0, corpusTokens - recalledTokens);
+
+        return Ok(new
+        {
+            built = true,
+            fileBytes = fi.Length,
+            frames, symbols, indexDocs,
+            recalls, dreamCycles, boosted,
+            compressionRatio = Math.Round(ratio, 1),
+            estCorpusTokens = corpusTokens,
+            estRecalledTokens = recalledTokens,
+            estTokensSavedPerRecall = savedPerRun,
+            estPercentSaved = corpusTokens > 0 ? (int)(100 * savedPerRun / corpusTokens) : 0,
+            updatedAt = fi.LastWriteTimeUtc,
+        });
     }
 
     /// <summary>Resolved per-phase routing for the worker to consume: for a given cycle

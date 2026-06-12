@@ -94,6 +94,9 @@ build_context() {
       # SCA index so `ask` returns 'no match'. A single init = 671 frames, 506 symbols, ask works.
       "$SAID_BIN" init >/dev/null 2>&1 || true
     fi
+    # Push live brain stats to the dashboard (the worker can run said.exe; the container can't).
+    local st; st="$("$SAID_BIN" stats --json 2>/dev/null || echo '')"
+    [ -n "$st" ] && api_post "admin/context/stats" "$st"
   else
     # Markdown fallback: a file tree + per-file head, built once.
     if [ ! -f PROJECT_CONTEXT.md ] || [ "${FORCE_CONTEXT:-}" = "true" ]; then

@@ -98,6 +98,10 @@ public class EvolutionService
     // ---- worker heartbeat: the local mutate-claude.sh loop pings this so the dashboard can say
     //      whether a worker is actually draining the queue (vs "Queued" sitting forever). ----
     private DateTimeOffset? _workerSeen;
+    // Last `said stats --json` the worker posted (it can run said.exe; the container can't). Used by
+    // the Admin Project-memory panel for accurate live brain stats.
+    public string? BrainStatsJson { get; private set; }
+    public void SetBrainStats(string json) { BrainStatsJson = json; WorkerHeartbeat(); }
     public void WorkerHeartbeat() => _workerSeen = DateTimeOffset.UtcNow;
     public bool WorkerAlive => _workerSeen is { } t && (DateTimeOffset.UtcNow - t) < TimeSpan.FromSeconds(150);
 
