@@ -209,8 +209,11 @@ run_cycle() {
   # PRs that already existed before this run — so we only claim a PR the cycle actually created.
   local before; before="$(gh pr list --state open --json number --jq '[.[].number]|join(",")' 2>/dev/null || true)"
 
-  # PROJECT CONTEXT — give every agent full-codebase awareness (like Cursor). Build it ONCE if
-  # missing; reuse thereafter (set CONTEXT_FORMAT=said|md, default said). The /mutate skill reads it.
+  # PROJECT CONTEXT — give every agent full-codebase awareness (like Cursor). The operator's choice
+  # of format (.said brain or .md map) comes from the Admin Center; env CONTEXT_FORMAT still overrides.
+  # Built ONCE if missing.
+  local cfmt; cfmt="$(curl -s -m 5 "$API/admin/settings" 2>/dev/null | grep -oE '"contextFormat":"[a-z]+"' | head -1 | cut -d'"' -f4)"
+  [ -n "$cfmt" ] && CONTEXT_FORMAT="${CONTEXT_FORMAT:-$cfmt}"
   build_context
 
   # EPIC C — per-task agent routing. Fetch the operator's routing (which agent runs research /
