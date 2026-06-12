@@ -34,6 +34,24 @@ cd "$(git rev-parse --show-toplevel)"
 load_env() { [ -f .env ] && { set -a; . ./.env 2>/dev/null || true; set +a; }; }
 load_env
 
+# ---- Use the operator's INTERACTIVE Claude login when no valid .env token is set ----
+# The worker often runs under WSL, whose HOME differs from Windows — so a `claude` login done on
+# Windows is invisible to WSL ("Not logged in"), which is why we needed an explicit .env token. But
+# that token (a short-lived OAuth access token) EXPIRES and then every cycle fails 401. Durable answer
+# without copying secrets: point CLAUDE_CONFIG_DIR at the Windows .claude profile so WSL's claude reads
+# the SAME live credentials the operator's interactive `claude` already uses. Verified: with
+# CLAUDE_CONFIG_DIR=/mnt/c/Users/<user>/.claude, WSL claude authenticates with no token.
+# Only do this when there's no usable .env credential, and only if that profile actually exists.
+if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && [ -z "${ANTHROPIC_API_KEY:-}" ] && [ -z "${CLAUDE_CONFIG_DIR:-}" ]; then
+  for _cdir in "/mnt/c/Users/$USER/.claude" "/mnt/c/Users/Carter/.claude" "$HOME/.claude"; do
+    if [ -f "$_cdir/.credentials.json" ] || [ -f "$_cdir/settings.json" ]; then
+      export CLAUDE_CONFIG_DIR="$_cdir"
+      echo "[auth] no .env token — using interactive Claude login at $CLAUDE_CONFIG_DIR"
+      break
+    fi
+  done
+fi
+
 # IMPORTANT: do NOT override CLAUDE_CONFIG_DIR for the cycle. An isolated/empty config dir was tried
 # and it BROKE /mutate (claude produced zero output) — with a redirected config the project's skills
 # don't load the same way and the slash command dies silently. The operator's DEFAULT config correctly
