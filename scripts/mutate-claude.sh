@@ -339,6 +339,14 @@ run_cycle() {
   # ADVISORY_APPROVAL=required makes the skill park for Approve/Reject before implementing.
   export ADVISORY_RUN="$CUR_RUN" ADVISORY_API="$API" ADVISORY_APPROVAL="${ADVISORY_APPROVAL:-required}"
 
+  # CRITICAL: the /mutate skill's Step 1 runs `./scripts/mutate-ide.sh setup`, which has an HOUR GATE
+  # (MUTATE_HOURS, default 0,4,8,12,16,20) — off-hours it prints "SKIPPED — hour N not in schedule" and
+  # exits 0, so the skill finds NO WORK and produces no change. When a worker drains a queued ticket the
+  # operator clicked, that gate must not apply (they asked for it NOW). Export the bypass here so it is
+  # inherited by claude's subprocess Bash calls (the launcher's FORCE_RUN doesn't reliably propagate
+  # through `claude -p`). This was the real cause of every clicked cycle ending in "no change".
+  export FORCE_RUN=true MUTATE_HOURS="*"
+
   # RATE-LIMIT-AWARE retry. The /mutate cycle runs on the operator's Claude (Max) subscription, which
   # has a standard rate limit. If the account is rate-limited / out of credits for the window, claude
   # gets cut off and produces no usable cycle. Per operator policy: respect the model's standard limit,
