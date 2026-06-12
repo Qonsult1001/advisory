@@ -58,26 +58,37 @@ Then the task:
 Note the specific bug/gap each ticket describes. Do not invent work beyond the tickets, and never
 weaken a security control to make a test pass (see IDENTITY.md).
 
-## Step 2b: Agent routing (if configured)
+## Step 2b: Agent routing (if configured) — DISPATCH FOR REAL
 
 If `.evolve/routing.json` exists, the operator has assigned specific AI agents to phases
 (research / planning / execution / documentation) and a run **mode** (`sequential` or `parallel`).
-Each routed agent is a Task-tool subagent. **Every delegated subagent prompt MUST include, in order:**
+Each phase entry has an `id`, `standard`, `model`, and `persona`. **You MUST run each phase on the
+agent the operator chose — not silently on yourself.** There are two kinds of agent:
 
-1. **Persona** — the routed agent's `persona` from `routing.json` (its personality + strict
-   instructions), verbatim at the top. This is how each agent keeps its own character.
-2. **Full project context (not a summary)** — tell the subagent to RECALL from the shared `.said`
-   brain itself: `said ask "<what this phase needs>"`, `said sym <Name>`, `said get <doc_id>`. Every
-   agent has the *same* full-codebase memory — no degraded hand-off, no telephone game.
-3. **Prior-phase results** — the hand-off is via memory: when a phase finishes it `said.remember`s its
-   key findings, so the next agent recalls them with `said ask` ALONGSIDE the codebase. Execution thus
-   sees research's findings AND the real code, through its own persona — full context, every time.
-4. **The phase + the ticket text** — what to do and the issue.
+- **API agents** (`standard` = `openai`/`anthropic`, e.g. Groq): run the phase on that agent **for
+  real** by POSTing the phase prompt to the API and using the returned reply as that phase's result:
 
-Dispatch: `parallel` → independent phases (research + planning) in one message with multiple Task
-calls; `sequential` → one after another, each remembering before the next begins. A phase with no
-agent (or no routing file) runs inline. Keep PR-only, test-first discipline regardless of which agent
-did the work.
+  ```bash
+  curl -s -X POST "$ADVISORY_API/admin/agent/<id>/run" -H "Content-Type: application/json" \
+    -d "{\"task\":\"<phase>\",\"system\":\"<phase instructions>\",\"prompt\":\"<persona + recall + prior-phase findings + the ticket>\"}"
+  ```
+
+  The JSON reply has `ranOnAgent:true`, `model`, `reply`, `tokens`. **Use `reply` as the phase output**
+  and tell the operator in your report which phase ran on which agent+model+tokens. This is how a phase
+  routed to Groq ACTUALLY runs on Groq (via the Microsoft Agent Framework), not faked as a Claude task.
+- **CLI agents** (`standard` = `claude-cli`/`cursor-cli`): the call returns `mode:"inline"` — there is
+  no in-container runner, so **you run that phase inline yourself** (you are a Claude process). Still
+  apply that agent's persona for the phase.
+
+**Every phase prompt MUST include, in order:** (1) the routed agent's `persona` verbatim; (2) full
+project context — recall from the shared `.said` brain (`said ask/sym/get`); (3) prior-phase results
+(each phase `said.remember`s its findings so the next recalls them); (4) the phase + the ticket text.
+
+Dispatch by **mode**: `parallel` → fire independent phases (research + planning) together; `sequential`
+→ one after another, each remembering before the next. A phase with no agent (or no routing file) runs
+inline. **Whichever agent runs a phase, you (Claude) remain responsible for the actual edits, build,
+tests, and PR** — an API agent returns text/guidance; you apply it with test-first, PR-only discipline.
+Record in your final report: phase → agent → model → tokens, so routing is provably honored.
 
 ## Step 3: Plan
 
