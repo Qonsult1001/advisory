@@ -28,8 +28,11 @@ cd "$(git rev-parse --show-toplevel)"
 # the worker uses an EXPLICIT credential from the environment / .env:
 #   • CLAUDE_CODE_OAUTH_TOKEN — from `claude setup-token` (1-year token, subscription plans), or
 #   • ANTHROPIC_API_KEY       — a standard API key.
-# Source .env (gitignored) so the key set there flows through to the claude CLI.
-if [ -f .env ]; then set -a; . ./.env 2>/dev/null || true; set +a; fi
+# Source .env (gitignored) so the key set there flows through to the claude CLI. Re-sourced every
+# tick (load_env in run_once) so a refreshed CLAUDE_CODE_OAUTH_TOKEN takes effect WITHOUT a restart
+# — the OAuth access token is short-lived; setup-token gives a durable 1-year one.
+load_env() { [ -f .env ] && { set -a; . ./.env 2>/dev/null || true; set +a; }; }
+load_env
 
 # ---- Tool resolution (works in Git-Bash AND WSL) ----
 # The worker itself calls `gh` (PR detection) and may report `dotnet`. In WSL those Linux binaries
@@ -310,6 +313,7 @@ run_cycle() {
 }
 
 run_once() {
+  load_env            # pick up a refreshed token without needing a worker restart
   heartbeat
   drain_agent_tests   # answer any "Test agent" requests for CLI agents (fast, runs every tick)
   if drain_queue; then
