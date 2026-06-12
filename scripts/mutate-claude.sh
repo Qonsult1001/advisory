@@ -346,13 +346,26 @@ run_cycle() {
   # reset the run (so it returns to a clean queueable state), and exit this cycle. We do NOT hammer the
   # API. A "rate-limited" run is detected by the stream's rate_limit/out_of_credits markers (or an
   # empty cycle that the result event flags), NOT by normal no-PR outcomes.
-  local out rc tmp; tmp="$(mktemp 2>/dev/null || echo /tmp/mutate-out.$$)"
+  # NOTE: in the worker's WSL login shell `mktemp` can succeed (exit 0) yet print NOTHING (empty
+  # TMPDIR), so `$(mktemp || echo …)` leaves $tmp empty → `tee ""` writes nowhere → out="" and EVERY
+  # cycle looked like "no output / no change" even though claude ran fine. Use mktemp's value only if
+  # non-empty; otherwise a deterministic writable path. This was the real cause of the empty cycles.
+  local out rc tmp; tmp="$(mktemp 2>/dev/null)"; [ -n "$tmp" ] || tmp="${TMPDIR:-/tmp}/mutate-out.$$"
+  : > "$tmp" 2>/dev/null || tmp="./.evolve/mutate-out.$$"   # last-resort: repo-local (always writable)
   local attempt=0; local -a backoffs=(30 60); local rate_limited=0
   while : ; do
     : > "$tmp"
-    claude -p --dangerously-skip-permissions --verbose --output-format stream-json "/mutate" 2>&1 \
-      | stream_activity | tee "$tmp"; rc=${PIPESTATUS[0]}
+    # Capture claude's RAW stream to $tmp FIRST (tee at the source, before stream_activity), so a
+    # crash/no-python in the activity parser can never blackhole the output we rely on for outcome
+    # detection. stream_activity only drives the live dashboard log; the file is the source of truth.
+    # IMPORTANT: redirect stdin from /dev/null. `claude -p` at the head of a pipe inherits the worker's
+    # (absent) stdin and blocks ~3s "waiting for stdin", which makes prompt delivery unreliable and can
+    # yield an empty cycle. `< /dev/null` tells it there's no piped input so it runs the prompt cleanly.
+    claude -p --dangerously-skip-permissions --verbose --output-format stream-json "/mutate" < /dev/null 2>&1 \
+      | tee "$tmp" | stream_activity >/dev/null; rc=${PIPESTATUS[0]}
     out="$(cat "$tmp" 2>/dev/null)"
+    # Diagnostic: prove whether claude produced output and what exit code it returned.
+    echo "[$(date '+%F %T')]   ↳ cycle capture: rc=$rc bytes=$(wc -c < "$tmp" 2>/dev/null | tr -d ' ') tmp=$tmp"
     # Rate-limit / out-of-credits markers from the Claude stream-json (rate_limit_event, result errors).
     if printf '%s' "$out" | grep -qiE 'out_of_credits|"overageStatus":"rejected"|rate.?limit.*(exceeded|reached)|usage limit|too many requests|429|"status":"rejected"'; then
       rate_limited=1
