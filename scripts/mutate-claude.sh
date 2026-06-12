@@ -193,6 +193,35 @@ drain_agent_tests() {
   done
 }
 
+# Drain cursor-cli AUTH requests: run `cursor-agent login` for the agent's user. Cursor prints a
+# browser URL the user opens to accept the licence; we relay status + URL back to the dashboard.
+drain_cursor_auth() {
+  [ -d "$QUEUE_DIR" ] || return 0
+  command -v cursor-agent >/dev/null 2>&1 || CURSOR_BIN="cursor-agent"
+  for req in "$QUEUE_DIR"/cursorauth-*.request; do
+    [ -e "$req" ] || continue
+    local id user out url ok status
+    id="$(sed -n '1p' "$req" 2>/dev/null | tr -d '[:space:]')"
+    user="$(sed -n '2p' "$req" 2>/dev/null)"
+    echo "[$(date '+%F %T')] cursor auth: $id (user=$user)"
+    consume_request "$(basename "$req")"
+    if ! command -v cursor-agent >/dev/null 2>&1; then
+      curl -s -m 10 -X POST "$API/admin/agent/$id/cursor-auth/result" -H "Content-Type: application/json" \
+        -d '{"status":"error","message":"cursor-agent CLI not found on this machine — install Cursor CLI first","url":null,"ok":false}' >/dev/null 2>&1 || true
+      continue
+    fi
+    # cursor-agent login prints a URL to authenticate in the browser; capture it (timeout so we don't hang).
+    out="$(timeout 25 cursor-agent login 2>&1 || true)"
+    url="$(printf '%s' "$out" | grep -oE 'https?://[^ ]+' | head -1)"
+    if printf '%s' "$out" | grep -qiE 'logged in|authenticated|success'; then status=authenticated; ok=true
+    elif [ -n "$url" ]; then status=browser-required; ok=false
+    else status=pending; ok=false; fi
+    local msg; msg="$(printf '%s' "$out" | tr -d '\r' | sed 's/\\/\\\\/g; s/"/\\"/g' | tr '\n' ' ' | cut -c1-300)"
+    curl -s -m 10 -X POST "$API/admin/agent/$id/cursor-auth/result" -H "Content-Type: application/json" \
+      -d "$(printf '{"status":"%s","message":"%s","url":"%s","ok":%s}' "$status" "$msg" "$url" "$ok")" >/dev/null 2>&1 || true
+  done
+}
+
 drain_queue() {   # returns 0 if a request was found (work to do), 1 if none
   [ -d "$QUEUE_DIR" ] || return 1
   local found=1
@@ -316,6 +345,7 @@ run_once() {
   load_env            # pick up a refreshed token without needing a worker restart
   heartbeat
   drain_agent_tests   # answer any "Test agent" requests for CLI agents (fast, runs every tick)
+  drain_cursor_auth   # run cursor-agent login for any queued cursor-cli auth requests
   if drain_queue; then
     run_cycle
     stop_heartbeat   # cycle done — back to the foreground per-tick heartbeat

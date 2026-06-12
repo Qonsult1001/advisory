@@ -276,12 +276,17 @@ public class AdminSettings
             Model = "claude-opus-4-8", Enabled = true,
             Persona = "You are Advisory's compliance-officer engineer. Map every change to a control, "
                 + "write the test first, keep the change minimal and PR-only, and never weaken a security control." },
+        // Groq is pre-wired (OpenAI-standard) — add your key in Admin to enable it. Runs via the
+        // Microsoft Agent Framework. gpt-oss-120b for execution, gpt-oss-20b is a cheaper option.
+        new AiAgent { Id = "groq", Name = "Groq (gpt-oss-120b)", Standard = "openai",
+            Model = "openai/gpt-oss-120b", Endpoint = "https://api.groq.com/openai/v1", Enabled = true,
+            Persona = "You are a precise senior .NET engineer. Implement the smallest correct change with a test." },
     };
-    // Default routing: every phase on the local Claude CLI, run sequentially. Operators retarget per phase.
+    // Default routing: Claude CLI plans/researches; Groq executes/documents — sequential. Retarget per phase.
     public TaskRouting MutationRouting { get; set; } = new()
-    { Research = "claude-cli", Planning = "claude-cli", Execution = "claude-cli", Documentation = "claude-cli", Mode = "sequential" };
+    { Research = "claude-cli", Planning = "claude-cli", Execution = "groq", Documentation = "groq", Mode = "sequential" };
     public TaskRouting EvolutionRouting { get; set; } = new()
-    { Research = "claude-cli", Planning = "claude-cli", Documentation = "claude-cli", Mode = "sequential" };
+    { Research = "claude-cli", Planning = "claude-cli", Documentation = "groq", Mode = "sequential" };
     // Memory budget the agents may use (MB); 0 => engine default.
     public int MemoryMb { get; set; } = 0;
     // Container/runtime the platform deploys + creates temp test environments on.

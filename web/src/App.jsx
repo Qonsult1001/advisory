@@ -68,6 +68,9 @@ const api = {
   testAgent: (id, prompt) => fetch(`${API}/admin/agent/${id}/test`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt }) }).then((r) => r.json()),
   getAgentTest: (id) => fetch(`${API}/admin/agent/${id}/test`).then((r) => r.json()),
   orchestrate: (cycle, ticket) => fetch(`${API}/admin/orchestrate/${cycle}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ticket }) }).then((r) => r.json()),
+  agentModels: (standard, endpoint, agentId) => fetch(`${API}/admin/agent/models?standard=${encodeURIComponent(standard)}&endpoint=${encodeURIComponent(endpoint || "")}&agentId=${encodeURIComponent(agentId || "")}`).then((r) => r.json()),
+  cursorAuth: (id, user) => fetch(`${API}/admin/agent/${id}/cursor-auth`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ user }) }).then((r) => r.json()),
+  getCursorAuth: (id) => fetch(`${API}/admin/agent/${id}/cursor-auth`).then((r) => r.json()),
   saveAdminSettings: (body) => fetch(`${API}/admin/settings`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).then((r) => r.json()),
   getAiSettings: () => fetch(`${API}/ai/settings`).then((r) => r.json()),
   saveAiSettings: (body) => fetch(`${API}/ai/settings`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).then((r) => r.json()),
@@ -3496,18 +3499,17 @@ function MemoryPanel({ d, update }) {
         <a href={`${API}/admin/context/download`} style={{ ...s.add, background: C.surface2, color: C.ink, textDecoration: "none", border: `1px solid ${C.line}` }}>⬇ Download {isSaid ? "Advisory.said" : "PROJECT_CONTEXT.md"}</a>
       </div>
 
-      {isSaid && st?.built && (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(6,1fr)", gap: 12, marginBottom: 14 }}>
-          <StatTile value={st.estPercentSaved + "%"} label="Tokens saved / recall" sub={`~${nfmt(st.estTokensSavedPerRecall)} vs ${nfmt(st.estCorpusTokens)} full`} tone={C.allow} />
-          <StatTile value={nfmt(st.frames)} label="Memories" sub="indexed frames" tone={C.accentDim} />
-          <StatTile value={nfmt(st.symbols)} label="Symbols" sub="classes / fns" />
-          <StatTile value={st.compressionRatio + "×"} label="Compression" sub={`${nfmt(st.fileBytes)}B file`} />
+      {isSaid && st?.built && st.frames > 0 && (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 12, marginBottom: 14 }}>
+          <StatTile value={st.estPercentSaved + "%"} label="Tokens saved / recall" sub={`recall ~${nfmt(st.estRecalledTokens)} vs ${nfmt(st.estCorpusTokens)} whole-repo`} tone={C.allow} />
+          <StatTile value={nfmt(st.frames)} label="Memories" sub="indexed code + notes" tone={C.accentDim} />
+          <StatTile value={nfmt(st.symbols)} label="Symbols" sub="classes / methods" />
           <StatTile value={nfmt(st.recalls)} label="Recalls" sub="queries served" tone={C.info} />
-          <StatTile value={nfmt(st.dreamCycles)} label="Dream cycles" sub="consolidations" />
+          <StatTile value={nfmt(st.dreamCycles)} label="Consolidations" sub="memory merges" />
         </div>
       )}
-      {isSaid && st && !st.built && (
-        <Callout>The <b>.said brain</b> hasn’t been built yet — it’s created on the next mutation cycle (or click a run). Then this fills with live stats.</Callout>
+      {isSaid && st && (!st.built || !st.frames) && (
+        <Callout>The <b>.said brain</b> isn’t built yet (or stats not posted) — it’s created/refreshed on the next worker run. Then this fills with live stats.</Callout>
       )}
 
       <div style={{ ...s.card, padding: "18px 20px" }}>
@@ -3531,6 +3533,57 @@ function MemoryPanel({ d, update }) {
         )}
       </div>
     </>
+  );
+}
+
+// Model dropdown — live list from the provider (Groq/OpenAI /models) or curated (claude/cursor).
+function ModelSelect({ agent, onPick }) {
+  const [models, setModels] = useState(null);
+  const [live, setLive] = useState(false);
+  const reload = () => api.agentModels(agent.standard, agent.endpoint, agent.id).then((r) => { setModels(r.models || []); setLive(!!r.live); }).catch(() => setModels([]));
+  useEffect(() => { reload(); }, [agent.standard, agent.endpoint, agent.hasKey]);
+  const opts = models || [];
+  const has = agent.model && opts.includes(agent.model);
+  return (
+    <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+      <select value={agent.model || ""} onChange={(e) => onPick(e.target.value)} style={{ ...s.select, width: "100%", fontFamily: C.mono }}>
+        <option value="">— pick a model —</option>
+        {!has && agent.model && <option value={agent.model}>{agent.model} (current)</option>}
+        {opts.map((m) => <option key={m} value={m}>{m}</option>)}
+      </select>
+      <span title={live ? "live from provider" : "common models (no live key)"} style={{ fontSize: 13, color: live ? C.allow : C.dim }}>{live ? "●" : "○"}</span>
+    </div>
+  );
+}
+
+// cursor-cli: enter the business-account user, Authenticate (worker runs cursor-agent login), then
+// accept the licence in the browser via the URL it returns.
+function CursorAuth({ agent, onUser }) {
+  const [busy, setBusy] = useState(false);
+  const [st, setSt] = useState(null);
+  const auth = async () => {
+    setBusy(true); setSt({ status: "queued" });
+    await api.cursorAuth(agent.id, agent.cursorUser || "").catch(() => {});
+    let n = 0; const iv = setInterval(async () => {
+      n++; const g = await api.getCursorAuth(agent.id).catch(() => ({ status: "none" }));
+      if (g.status && g.status !== "queued" && g.status !== "none") { clearInterval(iv); setSt(g); setBusy(false); }
+      else if (n > 20) { clearInterval(iv); setBusy(false); setSt({ status: "timeout" }); }
+    }, 2000);
+  };
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 6 }}>
+        <TextInput value={agent.cursorUser || ""} placeholder="cursor business account / email" onChange={(e) => onUser(e.target.value)} />
+        <button onClick={auth} disabled={busy || !agent.cursorUser} style={{ ...s.add, whiteSpace: "nowrap", opacity: (busy || !agent.cursorUser) ? 0.5 : 1 }}>{busy ? "…" : "Authenticate"}</button>
+      </div>
+      {st && st.status === "browser-required" && st.url && (
+        <div style={{ fontSize: 11.5, marginTop: 6, color: C.warn }}>Accept the licence in your browser: <a href={st.url} target="_blank" rel="noreferrer" style={s.linkGreen}>{st.url}</a></div>
+      )}
+      {st && st.status === "authenticated" && <div style={{ fontSize: 11.5, marginTop: 6, color: C.allow }}>✓ Cursor authenticated</div>}
+      {st && st.status === "error" && <div style={{ fontSize: 11.5, marginTop: 6, color: C.block }}>{st.message || "cursor-agent not available"}</div>}
+      {st && (st.status === "queued" || st.status === "pending") && <div style={{ fontSize: 11.5, marginTop: 6, color: C.sub }}>Running cursor-agent login on the worker…</div>}
+      {st && st.status === "timeout" && <div style={{ fontSize: 11.5, marginTop: 6, color: C.block }}>No response — is the worker running with cursor-agent installed?</div>}
+    </div>
   );
 }
 
@@ -3690,7 +3743,10 @@ function AdminCenter() {
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                 <span style={{ fontSize: 13, fontWeight: 700, color: C.ink }}>{a.name || "Untitled agent"}</span>
                 <Tag tone={a.enabled ? C.accentDim : C.sub}>{a.standard}</Tag>
-                {a.hasKey && <Tag tone={C.info}>key set</Tag>}
+                {(a.standard === "openai" || a.standard === "anthropic")
+                  ? <Tag tone={C.info}>⚙ Agent Framework</Tag>
+                  : <Tag tone={C.warn}>⌂ local CLI (worker)</Tag>}
+                {a.hasKey && <Tag tone={C.sub}>key set</Tag>}
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
                 <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5, color: C.sub, cursor: "pointer" }}>
@@ -3707,13 +3763,13 @@ function AdminCenter() {
                   {(d.standards || []).map((x) => <option key={x} value={x}>{x}</option>)}
                 </select>
               </Field>
-              <Field label="Model"><TextInput value={a.model} placeholder="e.g. claude-opus-4-6 · openai/gpt-oss-120b" onChange={(e) => setAgent(i, { model: e.target.value })} mono /></Field>
+              <Field label="Model"><ModelSelect agent={a} onPick={(m) => setAgent(i, { model: m })} /></Field>
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr", gap: 16 }}>
               {a.standard === "cursor-cli"
-                ? <Field label="Cursor user — uses your Cursor login, no API key"><TextInput value={a.cursorUser || ""} placeholder="cursor account / email" onChange={(e) => setAgent(i, { cursorUser: e.target.value })} /></Field>
+                ? <Field label="Cursor user (business account) — then Authenticate & accept the licence in your browser"><CursorAuth agent={a} onUser={(u) => setAgent(i, { cursorUser: u })} /></Field>
                 : a.standard === "claude-cli"
-                ? <Field label="Auth"><div style={{ ...s.inputText, width: "100%", color: C.sub, background: C.bg2 }}>Local Claude Code CLI — uses your existing login</div></Field>
+                ? <Field label="Auth"><div style={{ ...s.inputText, width: "100%", color: C.sub, background: C.bg2 }}>Local Claude Code CLI — uses your existing login (worker)</div></Field>
                 : <Field label="Endpoint"><TextInput value={a.endpoint || ""} placeholder="https://api.groq.com/openai/v1" onChange={(e) => setAgent(i, { endpoint: e.target.value })} mono /></Field>}
               {(a.standard === "openai" || a.standard === "anthropic")
                 ? <Field label={a.hasKey ? "API key — stored ✓ (blank keeps it)" : "API key"}>
