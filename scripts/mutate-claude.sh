@@ -34,6 +34,23 @@ cd "$(git rev-parse --show-toplevel)"
 load_env() { [ -f .env ] && { set -a; . ./.env 2>/dev/null || true; set +a; }; }
 load_env
 
+# ---- ISOLATED Claude config for the headless cycle (the other key lesson) ----
+# The cycle's `claude -p "/mutate"` was producing ZERO output in the worker while running fine in a
+# bare shell. Cause: the worker's shell loads the operator's personal ~/.claude config, which has many
+# plugins enabled (superpowers, feature-dev, …) whose SessionStart hooks inject large preambles and
+# extra tooling. Combined with the heavy /mutate skill (+ said MCP), that interferes with skill
+# execution so claude finishes its session producing no usable cycle output.
+# Fix: point the headless worker at its OWN minimal CLAUDE_CONFIG_DIR — no personal plugins/hooks —
+# so /mutate runs clean and deterministic. The PROJECT .mcp.json (the `said` brain) still loads (it's
+# project-scoped), and auth still comes from CLAUDE_CODE_OAUTH_TOKEN in .env. The dir is gitignored.
+export CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$PWD/.claude-worker}"
+mkdir -p "$CLAUDE_CONFIG_DIR" 2>/dev/null || true
+if [ ! -f "$CLAUDE_CONFIG_DIR/settings.json" ]; then
+  # Minimal settings: no plugins, no autoupdater. Hooks/plugins from the personal config are excluded
+  # by virtue of pointing CLAUDE_CONFIG_DIR elsewhere.
+  printf '{\n  "env": { "DISABLE_AUTOUPDATER": "1" },\n  "enabledPlugins": {}\n}\n' > "$CLAUDE_CONFIG_DIR/settings.json" 2>/dev/null || true
+fi
+
 # ---- Tool resolution (works in Git-Bash AND WSL) ----
 # The worker itself calls `gh` (PR detection) and may report `dotnet`. In WSL those Linux binaries
 # don't exist — only the Windows .exe (via /mnt/c). Bare `gh` then fails SILENTLY, which is why the

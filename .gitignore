@@ -61,3 +61,4 @@ PROJECT_CONTEXT.md
 # said.exe is a 44MB compiled binary — build it locally, do not commit (see tools/said/README.md)
 tools/said/said.exe
 tools/said/said-mcp.exe
+.claude-worker/
