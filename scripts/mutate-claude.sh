@@ -393,9 +393,18 @@ run_cycle() {
     # IMPORTANT: redirect stdin from /dev/null. `claude -p` at the head of a pipe inherits the worker's
     # (absent) stdin and blocks ~3s "waiting for stdin", which makes prompt delivery unreliable and can
     # yield an empty cycle. `< /dev/null` tells it there's no piped input so it runs the prompt cleanly.
-    claude -p --dangerously-skip-permissions --verbose --output-format stream-json "/mutate" < /dev/null 2>&1 \
-      | tee "$tmp" | stream_activity >/dev/null; rc=${PIPESTATUS[0]}
+    # DECOUPLE capture from the live parser. Previously: `claude | tee $tmp | stream_activity`. The
+    # parser POSTs every line to the API (urllib); if those POSTs are slow/block (WSL→localhost
+    # latency), the pipe backpressures, `tee` STALLS, and $tmp ends up EMPTY even though claude is
+    # producing output — exactly the 0-byte symptom we kept seeing. Fix: write claude's stream STRAIGHT
+    # to $tmp with no downstream consumer that can stall it (capture is now guaranteed), then drive the
+    # dashboard activity log FROM the captured file afterwards (best-effort; can't affect capture).
+    claude -p --dangerously-skip-permissions --verbose --output-format stream-json "/mutate" < /dev/null > "$tmp" 2>&1
+    rc=$?
     out="$(cat "$tmp" 2>/dev/null)"
+    # Replay the captured stream through the activity parser for the dashboard log (non-blocking to
+    # capture; if the API POSTs are slow it only delays the log, never the cycle outcome).
+    stream_activity < "$tmp" >/dev/null 2>&1 &
     # Diagnostic: prove whether claude produced output and what exit code it returned.
     echo "[$(date '+%F %T')]   ↳ cycle capture: rc=$rc bytes=$(wc -c < "$tmp" 2>/dev/null | tr -d ' ') tmp=$tmp"
     # Rate-limit / out-of-credits markers from the Claude stream-json (rate_limit_event, result errors).
