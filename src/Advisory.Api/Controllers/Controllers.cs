@@ -1516,8 +1516,43 @@ public class AdminController : ControllerBase
     private readonly Advisory.Api.Auth.ICurrentUser _user;
     private readonly Advisory.Api.Evolution.EvolutionService _evo;
     private readonly Advisory.Api.Agents.PhaseOrchestrator _orchestrator;
-    public AdminController(IPolicyStore policy, Advisory.Api.Auth.ICurrentUser user, Advisory.Api.Evolution.EvolutionService evo, Advisory.Api.Agents.PhaseOrchestrator orchestrator)
-    { _policy = policy; _user = user; _evo = evo; _orchestrator = orchestrator; }
+    private readonly Advisory.Api.Agents.IAgentRunner _runner;
+    public AdminController(IPolicyStore policy, Advisory.Api.Auth.ICurrentUser user, Advisory.Api.Evolution.EvolutionService evo, Advisory.Api.Agents.PhaseOrchestrator orchestrator, Advisory.Api.Agents.IAgentRunner runner)
+    { _policy = policy; _user = user; _evo = evo; _orchestrator = orchestrator; _runner = runner; }
+
+    public record AgentTestReq(string? Prompt);
+
+    /// <summary>Test ONE configured agent in isolation — each provider as its own module.
+    /// API-standard agents (openai/groq/anthropic) run synchronously via MAF and return reply + tokens.
+    /// CLI agents (claude-cli/cursor-cli) can't be called from the container, so we QUEUE a test the
+    /// local worker drains and answers (poll GET /agent/{id}/test for the result).</summary>
+    [HttpPost("agent/{id}/test")]
+    [Authorize(Policy = Policies.CanAdmin)]
+    public async Task<ActionResult> TestAgent(string id, [FromBody] AgentTestReq? req, CancellationToken ct)
+    {
+        var agent = _policy.Current.Admin.Agents.FirstOrDefault(a => a.Id == id);
+        if (agent is null) return NotFound(new { error = $"agent '{id}' not found" });
+        var prompt = string.IsNullOrWhiteSpace(req?.Prompt) ? "Reply in one sentence: confirm you are reachable and state your model." : req!.Prompt!;
+
+        if (agent.Standard is "claude-cli" or "cursor-cli")
+        {
+            var (ok, detail) = _evo.QueueAgentTest(id, prompt);
+            return Accepted(new { mode = "cli-queued", agent = id, ok, detail });
+        }
+
+        var rr = await _runner.RunAsync(agent, new Advisory.Api.Agents.AgentRunRequest("test", agent.Persona ?? "", "Answer concisely.", prompt), ct);
+        return Ok(new { mode = "api", agent = id, model = rr.Model, ok = rr.Ok, error = rr.Error, reply = rr.Text, tokens = rr.Usage.Total });
+    }
+
+    public record AgentTestResultReq(string Reply, bool Ok, string? Error);
+    /// <summary>Worker posts a CLI agent-test result; dashboard polls GET to show it.</summary>
+    [HttpPost("agent/{id}/test/result")]
+    [Authorize(Policy = Policies.CanAdmin)]
+    public ActionResult PostAgentTestResult(string id, [FromBody] AgentTestResultReq r)
+    { _evo.SetAgentTestResult(id, r.Reply, r.Ok, r.Error); return Ok(new { ok = true }); }
+
+    [HttpGet("agent/{id}/test")]
+    public ActionResult GetAgentTest(string id) => Ok(_evo.GetAgentTest(id));
 
     public record OrchestrateReq(string Ticket);
 

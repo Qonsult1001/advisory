@@ -65,6 +65,9 @@ const api = {
   odsScan: (pkg) => fetch(`${API}/ondemand/scan`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(pkg) }).then((r) => r.json()),
   adminSettings: () => fetch(`${API}/admin/settings`).then((r) => r.json()),
   contextStats: () => fetch(`${API}/admin/context/stats`).then((r) => r.json()),
+  testAgent: (id, prompt) => fetch(`${API}/admin/agent/${id}/test`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt }) }).then((r) => r.json()),
+  getAgentTest: (id) => fetch(`${API}/admin/agent/${id}/test`).then((r) => r.json()),
+  orchestrate: (cycle, ticket) => fetch(`${API}/admin/orchestrate/${cycle}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ticket }) }).then((r) => r.json()),
   saveAdminSettings: (body) => fetch(`${API}/admin/settings`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).then((r) => r.json()),
   getAiSettings: () => fetch(`${API}/ai/settings`).then((r) => r.json()),
   saveAiSettings: (body) => fetch(`${API}/ai/settings`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).then((r) => r.json()),
@@ -3531,6 +3534,88 @@ function MemoryPanel({ d, update }) {
   );
 }
 
+// Per-agent test — each provider as its own module. API agents (groq/openai/anthropic) reply now via
+// MAF; CLI agents (claude-cli/cursor-cli) queue for the worker and we poll the result.
+function AgentTestButton({ agent }) {
+  const [r, setR] = useState(null);   // {state, reply, tokens, ok}
+  const [open, setOpen] = useState(false);
+  const isCli = agent.standard === "claude-cli" || agent.standard === "cursor-cli";
+  const run = async () => {
+    setOpen(true); setR({ state: "running" });
+    const resp = await api.testAgent(agent.id, "").catch(() => ({ ok: false, error: "request failed" }));
+    if (resp.mode === "cli-queued") {
+      setR({ state: "queued" });
+      // poll the worker's result
+      let n = 0; const iv = setInterval(async () => {
+        n++; const g = await api.getAgentTest(agent.id).catch(() => ({ status: "none" }));
+        if (g.status === "done") { clearInterval(iv); setR({ state: "done", reply: g.reply, ok: g.ok }); }
+        else if (n > 30) { clearInterval(iv); setR({ state: "timeout" }); }
+      }, 2000);
+    } else {
+      setR({ state: "done", reply: resp.reply, tokens: resp.tokens, ok: resp.ok, error: resp.error });
+    }
+  };
+  return (
+    <>
+      <button onClick={run} title={isCli ? "Run via local worker (CLI)" : "Run via Microsoft Agent Framework"}
+        style={{ background: C.surface2, border: `1px solid ${C.line}`, borderRadius: 6, color: C.ink, cursor: "pointer", fontSize: 12, padding: "4px 12px", fontWeight: 600 }}>
+        ▸ Test
+      </button>
+      {open && r && (
+        <div style={{ position: "absolute", marginTop: 70, marginLeft: -260, width: 360, zIndex: 20, background: C.surface, border: `1px solid ${C.line}`, borderRadius: 10, boxShadow: "0 8px 28px rgba(15,39,72,.16)", padding: "12px 14px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+            <span style={{ fontSize: 12, fontWeight: 700 }}>{agent.name} · {isCli ? "CLI" : "MAF"}</span>
+            <span style={{ fontSize: 16, color: C.sub, cursor: "pointer" }} onClick={() => setOpen(false)}>×</span>
+          </div>
+          {r.state === "running" && <div style={{ fontSize: 12, color: C.sub }}>Calling agent…</div>}
+          {r.state === "queued" && <div style={{ fontSize: 12, color: C.warn }}>Queued for the local worker — start it if it isn't running. Waiting for reply…</div>}
+          {r.state === "timeout" && <div style={{ fontSize: 12, color: C.block }}>No reply yet — is the worker running?</div>}
+          {r.state === "done" && <>
+            <div style={{ fontSize: 11.5, color: r.ok ? C.allow : C.block, fontWeight: 600, marginBottom: 4 }}>
+              {r.ok ? "✓ reachable" : "✕ failed"}{r.tokens != null ? ` · ${r.tokens} tokens` : ""}</div>
+            <div style={{ fontSize: 12, color: C.ink, lineHeight: 1.5, maxHeight: 160, overflow: "auto", whiteSpace: "pre-wrap", background: C.bg2, borderRadius: 6, padding: "8px 10px" }}>{r.reply || r.error || "(empty)"}</div>
+          </>}
+        </div>
+      )}
+    </>
+  );
+}
+
+// Runs the MAF agent graph for a cycle and shows each phase's agent + tokens + output. Proves the
+// orchestration: API agents (Groq) reply with real token counts; CLI agents show as worker-routed.
+function OrchestrationRunner() {
+  const [ticket, setTicket] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [res, setRes] = useState(null);
+  const run = async () => { setBusy(true); setRes(null); const r = await api.orchestrate("mutation", ticket || "demo").catch(() => null); setRes(r); setBusy(false); };
+  return (
+    <div style={{ ...s.card, padding: "18px 20px" }}>
+      <div style={{ display: "flex", gap: 10, alignItems: "flex-end", marginBottom: res ? 14 : 0 }}>
+        <Field label="Ticket (the graph runs each phase on its routed agent)"><TextInput value={ticket} onChange={(e) => setTicket(e.target.value)} placeholder="e.g. 44" /></Field>
+        <button style={{ ...s.add, opacity: busy ? 0.6 : 1 }} disabled={busy} onClick={run}>{busy ? "Running graph…" : "▸ Run orchestration"}</button>
+      </div>
+      {res && (
+        <div>
+          <div style={{ fontSize: 12, color: C.sub, marginBottom: 8 }}>
+            <b>{res.cycle}</b> · mode <b>{res.mode}</b> · <b style={{ color: C.allow }}>{res.totalUsage?.total ?? 0} tokens</b> total</div>
+          <table style={s.table}><thead><tr>
+            {["Phase", "Agent", "Tokens", "Output"].map((c) => <th key={c} style={s.th}>{c}</th>)}
+          </tr></thead><tbody>
+            {(res.phases || []).map((p) => (
+              <tr key={p.phase} style={s.tr}>
+                <td style={{ ...s.td, fontWeight: 600, textTransform: "capitalize" }}>{p.phase}</td>
+                <td style={s.td}><Tag tone={p.agentId.includes("cli") || p.agentId.includes("default") ? C.sub : C.accentDim}>{p.agentId}</Tag></td>
+                <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11.5 }}>{p.usage?.total ?? 0}</td>
+                <td style={{ ...s.td, fontSize: 11.5, color: C.sub, maxWidth: 420, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} title={p.text}>{p.ok ? (p.text || "(routed to worker CLI)") : <span style={{ color: C.block }}>✕ {p.error}</span>}</td>
+              </tr>
+            ))}
+          </tbody></table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AdminCenter() {
   const [d, setD] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -3611,6 +3696,7 @@ function AdminCenter() {
                 <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5, color: C.sub, cursor: "pointer" }}>
                   <Switch on={a.enabled} onChange={(v) => setAgent(i, { enabled: v })} /> enabled
                 </label>
+                <AgentTestButton agent={a} />
                 <button onClick={() => removeAgent(i)} title="Remove agent" style={{ background: "transparent", border: `1px solid ${C.line}`, borderRadius: 6, color: C.sub, cursor: "pointer", fontSize: 12, padding: "4px 10px" }}>Remove</button>
               </div>
             </div>
@@ -3655,6 +3741,9 @@ function AdminCenter() {
         <div style={{ fontSize: 11.5, color: C.dim, marginTop: 6, lineHeight: 1.5 }}>
           Leave a phase on <b>default engine</b> to use the worker’s built-in Claude. Example: research → Claude (Cursor) Opus, execution → Groq gpt-oss-120b, documentation → gpt-oss-20b.</div>
       </div>
+
+      <SubHead>Orchestration — run the agent graph (Microsoft Agent Framework)</SubHead>
+      <OrchestrationRunner />
 
       <SubHead>Platform</SubHead>
       <div style={{ ...s.card, padding: "20px 22px", display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 20 }}>

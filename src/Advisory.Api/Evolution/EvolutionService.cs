@@ -103,6 +103,24 @@ public class EvolutionService
     public string? BrainStatsJson { get; private set; }
     public void SetBrainStats(string json) { BrainStatsJson = json; WorkerHeartbeat(); }
     public void WorkerHeartbeat() => _workerSeen = DateTimeOffset.UtcNow;
+
+    // ---- Per-agent CLI test (claude-cli/cursor-cli run on the host worker, not the container) ----
+    // The dashboard queues a test; the worker drains it, runs the CLI, and posts the reply back.
+    private readonly ConcurrentDictionary<string, object> _agentTests = new();
+    public (bool ok, string detail) QueueAgentTest(string agentId, string prompt)
+    {
+        try
+        {
+            Directory.CreateDirectory(QueueDir);
+            _agentTests[agentId] = new { status = "queued", reply = (string?)null, ok = (bool?)null, error = (string?)null, at = DateTimeOffset.UtcNow };
+            File.WriteAllText(Path.Combine(QueueDir, $"agenttest-{agentId}.request"), $"{agentId}\n{prompt}\n{DateTimeOffset.UtcNow:o}\n");
+            return (true, $"queued test for agent '{agentId}' — the local worker will run it");
+        }
+        catch (Exception ex) { return (false, ex.Message); }
+    }
+    public void SetAgentTestResult(string agentId, string reply, bool ok, string? error)
+    { _agentTests[agentId] = new { status = "done", reply, ok, error, at = DateTimeOffset.UtcNow }; WorkerHeartbeat(); }
+    public object GetAgentTest(string agentId) => _agentTests.TryGetValue(agentId, out var r) ? r : new { status = "none" };
     public bool WorkerAlive => _workerSeen is { } t && (DateTimeOffset.UtcNow - t) < TimeSpan.FromSeconds(150);
 
     public object Status() => new
