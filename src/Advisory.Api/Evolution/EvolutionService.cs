@@ -91,6 +91,22 @@ public class EvolutionService
         _runs.Values.OrderByDescending(r => r.StartedAt).Take(limit).ToList();
     public EvoRun? Run(string id) => _runs.TryGetValue(id, out var r) ? r : null;
 
+    /// <summary>Clear run history. With activeOnly=true keeps finished runs and only drops
+    /// queued/running ones (so a stale "queued" run can't re-fire); otherwise clears all.
+    /// Returns how many were removed. Also clears matching queue files so nothing re-runs.</summary>
+    public int ClearRuns(bool activeOnly = false)
+    {
+        var toRemove = activeOnly
+            ? _runs.Values.Where(r => r.Status is "queued" or "running" or "tests" or "setup").ToList()
+            : _runs.Values.ToList();
+        foreach (var r in toRemove)
+        {
+            _runs.TryRemove(r.Id, out _);
+            try { var f = Path.Combine(QueueDir, $"ticket-{r.Ticket}.request"); if (File.Exists(f)) File.Delete(f); } catch { }
+        }
+        return toRemove.Count;
+    }
+
     // The mutation cycle runs LOCALLY (your machine is logged into Claude; the container is not).
     // The dashboard button queues a ticket here; a local `scripts/mutate-claude.sh --loop` drains it.
     private string QueueDir => _cfg["EVOLUTION_QUEUE_DIR"] ?? (Directory.Exists("/data") ? "/data/evolution-queue" : Path.Combine(Path.GetTempPath(), "advisory-evolution-queue"));
@@ -160,6 +176,18 @@ public class EvolutionService
         workerLastSeen = _workerSeen,
         activeRuns = _runs.Values.Count(r => r.Status is "running" or "tests" or "queued"),
     };
+
+    /// <summary>Reset a run that was stopped for an external reason (e.g. Claude rate limit / out of
+    /// credits) rather than a real failure: remove it so the dashboard doesn't show a misleading
+    /// "failed", and clear its queue file so the ticket can be cleanly re-queued later. Returns true
+    /// if a run was removed.</summary>
+    public bool ResetRun(string id)
+    {
+        if (!_runs.TryRemove(id, out var r)) return false;
+        try { var f = Path.Combine(QueueDir, $"ticket-{r.Ticket}.request"); if (File.Exists(f)) File.Delete(f); } catch { }
+        WorkerHeartbeat();
+        return true;
+    }
 
     /// <summary>Worker reports progress for a run. Updates stage, %, ETA, status, PR.</summary>
     public EvoRun? UpdateProgress(string id, string? stage, string? status, string? prUrl, string? logLine)
