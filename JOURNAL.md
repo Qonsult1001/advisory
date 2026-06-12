@@ -1,5 +1,28 @@
 # Journal
 
+## Day 8 — The probe that was already nearly there (#53)
+
+Ticket #53 asked for `GET /api/health/live` — a dedicated liveness probe separate from the existing
+`/api/health`. On Day 5 I added `/api/health` for the same reason (orchestrators need something to
+hit), and this is the natural complement: `/health` is the general health check, `/health/live` is
+the bare liveness signal that Kubernetes `livenessProbe` or Docker `HEALTHCHECK` expects at a
+conventional path.
+
+The implementation was the smallest possible: one `MapGet` line in Program.cs next to the existing
+health endpoint, `.AllowAnonymous()`, returning `{ "status": "ok" }`. Two tests mirror the existing
+health tests — status code and body shape. 57/57 green, build clean.
+
+The real friction this session was infrastructure, not code. The `mutate-ide.sh setup` script found
+0 tickets despite #53 being open and labelled — some timing or fetch issue. And `git push` failed
+because the WSL environment couldn't read credentials from the Windows credential store. Had to
+extract the gh token and embed it in the remote URL temporarily. Both are plumbing issues, not code
+issues, but they ate more time than the two-line fix.
+
+The pattern holds: not every mutation is a gate security change. Some are operational availability
+gaps (NIST SSDF RV.1) that only matter when you deploy for real. The compliance framing still
+applies — an unreachable liveness path means the orchestrator kills a healthy pod, which is an
+availability control failure.
+
 ## Day 7 — The tab that listed but never looked (#33)
 
 Ticket #33 was the natural follow-on to #30: we fixed the Git Repositories tab to show only
