@@ -34,22 +34,11 @@ cd "$(git rev-parse --show-toplevel)"
 load_env() { [ -f .env ] && { set -a; . ./.env 2>/dev/null || true; set +a; }; }
 load_env
 
-# ---- ISOLATED Claude config for the headless cycle (the other key lesson) ----
-# The cycle's `claude -p "/mutate"` was producing ZERO output in the worker while running fine in a
-# bare shell. Cause: the worker's shell loads the operator's personal ~/.claude config, which has many
-# plugins enabled (superpowers, feature-dev, …) whose SessionStart hooks inject large preambles and
-# extra tooling. Combined with the heavy /mutate skill (+ said MCP), that interferes with skill
-# execution so claude finishes its session producing no usable cycle output.
-# Fix: point the headless worker at its OWN minimal CLAUDE_CONFIG_DIR — no personal plugins/hooks —
-# so /mutate runs clean and deterministic. The PROJECT .mcp.json (the `said` brain) still loads (it's
-# project-scoped), and auth still comes from CLAUDE_CODE_OAUTH_TOKEN in .env. The dir is gitignored.
-export CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$PWD/.claude-worker}"
-mkdir -p "$CLAUDE_CONFIG_DIR" 2>/dev/null || true
-if [ ! -f "$CLAUDE_CONFIG_DIR/settings.json" ]; then
-  # Minimal settings: no plugins, no autoupdater. Hooks/plugins from the personal config are excluded
-  # by virtue of pointing CLAUDE_CONFIG_DIR elsewhere.
-  printf '{\n  "env": { "DISABLE_AUTOUPDATER": "1" },\n  "enabledPlugins": {}\n}\n' > "$CLAUDE_CONFIG_DIR/settings.json" 2>/dev/null || true
-fi
+# IMPORTANT: do NOT override CLAUDE_CONFIG_DIR for the cycle. An isolated/empty config dir was tried
+# and it BROKE /mutate (claude produced zero output) — with a redirected config the project's skills
+# don't load the same way and the slash command dies silently. The operator's DEFAULT config correctly
+# exposes the /mutate skill ("skills":[…,"mutate"]) and runs the cycle. We rely on the default config;
+# auth still comes from CLAUDE_CODE_OAUTH_TOKEN in .env.
 
 # ---- Tool resolution (works in Git-Bash AND WSL) ----
 # The worker itself calls `gh` (PR detection) and may report `dotnet`. In WSL those Linux binaries
@@ -377,6 +366,24 @@ run_cycle() {
   # non-empty; otherwise a deterministic writable path. This was the real cause of the empty cycles.
   local out rc tmp; tmp="$(mktemp 2>/dev/null)"; [ -n "$tmp" ] || tmp="${TMPDIR:-/tmp}/mutate-out.$$"
   : > "$tmp" 2>/dev/null || tmp="./.evolve/mutate-out.$$"   # last-resort: repo-local (always writable)
+  # ONE-SHOT ENVIRONMENT DIAGNOSTIC — dump exactly what the LIVE worker sees, so we stop guessing from
+  # fresh-shell reproductions. Writes to .evolve/worker-env.txt and echoes a summary to the log.
+  {
+    echo "=== worker env @ $(date '+%F %T') ==="
+    echo "shell: $0  BASH_VERSION=${BASH_VERSION:-?}  interactive=${-}"
+    echo "uname: $(uname -a 2>/dev/null)"
+    echo "claude bin: $(command -v claude 2>/dev/null)  ->  $(readlink -f "$(command -v claude 2>/dev/null)" 2>/dev/null)"
+    echo "CLAUDE_CONFIG_DIR=${CLAUDE_CONFIG_DIR:-<unset>}  exists=$( [ -d "${CLAUDE_CONFIG_DIR:-/nonexist}" ] && echo yes || echo no )"
+    echo "HOME=$HOME  PWD=$PWD"
+    echo "token set: $( [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && echo CLAUDE_CODE_OAUTH_TOKEN || ([ -n "${ANTHROPIC_API_KEY:-}" ] && echo ANTHROPIC_API_KEY || echo NONE) )"
+    echo "ADVISORY_APPROVAL=${ADVISORY_APPROVAL:-} FORCE_RUN=${FORCE_RUN:-} MUTATE_HOURS=${MUTATE_HOURS:-}"
+    echo "--- self-test: claude -p 'say SELFTEST' (no skill) ---"
+    st="$(claude -p --verbose --output-format stream-json "say SELFTEST" < /dev/null 2>&1)"
+    echo "selftest bytes=${#st}  has_text=$(printf '%s' "$st" | grep -c '"type":"text"')  has_hook=$(printf '%s' "$st" | grep -c hook_started)"
+    printf '%s' "$st" | grep -oE '"(error|message)":"[^"]{0,120}"' | head -3
+  } > ./.evolve/worker-env.txt 2>&1
+  echo "[$(date '+%F %T')]   ↳ ENV DIAG: $(grep -E 'selftest bytes|claude bin|CLAUDE_CONFIG_DIR|interactive' ./.evolve/worker-env.txt 2>/dev/null | tr '\n' ' | ')"
+
   local attempt=0; local -a backoffs=(30 60); local rate_limited=0
   while : ; do
     : > "$tmp"
