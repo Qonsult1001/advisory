@@ -30,4 +30,21 @@ public class HealthTests : IClassFixture<WebApplicationFactory<Program>>
         Assert.True(doc.RootElement.TryGetProperty("status", out var status));
         Assert.Equal("ok", status.GetString());
     }
+
+    [Fact]
+    public async Task HealthLive_returns_200()
+    {
+        var resp = await _client.GetAsync("/api/health/live");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task HealthLive_returns_status_ok()
+    {
+        var resp = await _client.GetAsync("/api/health/live");
+        resp.EnsureSuccessStatusCode();
+        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        Assert.True(doc.RootElement.TryGetProperty("status", out var status));
+        Assert.Equal("ok", status.GetString());
+    }
 }
