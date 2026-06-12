@@ -170,11 +170,17 @@ $(tail -40 "$EVO/checks.log" 2>/dev/null)
       [ -n "$PR" ] || die "no PR for the current branch — pass a PR number: release <N>"
     fi
 
-    # Safety gate: only release an OPEN PR. Gate on .state ALONE — `.mergeable` is often null right
-    # after a PR is created/updated (GitHub computes it async), and `.state + "/" + .mergeable` then
-    # yields an EMPTY string in jq (null breaks string concat), which used to make this wrongly report
-    # "PR is not OPEN ()" and skip the release. Read state robustly; treat null mergeable as UNKNOWN.
-    STATE="$(gh pr view "$PR" --repo "$REPO" --json state --jq '.state' 2>/dev/null)"
+    # Safety gate: only release an OPEN PR. Two GitHub-lag traps here, both fixed:
+    #  1) `.mergeable` is null right after creation → don't gate on it (display only).
+    #  2) Even `.state` can come back EMPTY for a few seconds right after a PR is created (the release
+    #     runs immediately after `finish` opens the PR). So RETRY the state read briefly instead of
+    #     bailing on the first empty result.
+    STATE=""
+    for _try in 1 2 3 4 5 6; do
+      STATE="$(gh pr view "$PR" --repo "$REPO" --json state --jq '.state' 2>/dev/null)"
+      [ -n "$STATE" ] && break
+      echo "→ PR #$PR state not ready yet (try $_try) — waiting 3s…"; sleep 3
+    done
     MERGEABLE="$(gh pr view "$PR" --repo "$REPO" --json mergeable --jq '.mergeable // "UNKNOWN"' 2>/dev/null)"
     echo "→ PR #$PR state: ${STATE:-<unknown>} (mergeable: ${MERGEABLE:-UNKNOWN})"
     [ "$STATE" = "OPEN" ] || die "PR #$PR is not OPEN (state=${STATE:-<empty>}) — nothing to release"
