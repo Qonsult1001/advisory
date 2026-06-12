@@ -43,11 +43,16 @@ Then the task:
 - Read `.evolve/ISSUES_TODAY.md` (the tickets + tester comments to address).
 - Read `CLAUDE.md` and the relevant source under `src/Advisory.Api/` and `web/src/`.
 - **Project memory (RECALL — saves tokens, gives full-codebase awareness):** the `said` MCP server
-  is the project brain (`.mcp.json`). **Recall before reading blindly:**
-  - `said.ask("<the ticket / what you need to know>")` — fused semantic + symbol + grep recall of the
-    relevant code AND any past learnings. Prefer this over reading whole files.
-  - `said.sym("<ClassOrFn>")`, `said.get(<doc_id>)`, `said.history("<name>")` for specifics.
-  Only open files the brain points you to. (CLI fallback: `./tools/said/said.exe ask "..."`.)
+  is the project brain (`.mcp.json`). **Recall before reading blindly — pick the right tool:**
+  - **Know the name?** Use `said.sym("<ClassOrMethod>")` for the exact symbol (returns the file:line
+    range), then `said.get(<doc_id>)` for the **complete current code body** to edit. This is exact —
+    use it for a named class/method/endpoint.
+  - **Know an exact string?** Use `said.grep("<text>")` (e.g. an endpoint path `api/health`, a route,
+    an error message). Exact substring search — best for pinpointing a specific site.
+  - **Only a concept?** Use `said.ask("<what you need>")` — fused semantic recall + past learnings.
+    Great for "where do we X"; for a *specific* named thing prefer sym/grep (semantic can be fuzzy).
+  Always `said.get` the doc_id before editing so you have the real, current body (not a stale guess).
+  Only open files the brain points you to. (CLI fallback: `./tools/said/said.exe sym|grep|ask|get …`.)
   If neither the MCP nor `Advisory.said` is available, read `PROJECT_CONTEXT.md` or the source directly.
 
 Note the specific bug/gap each ticket describes. Do not invent work beyond the tickets, and never
