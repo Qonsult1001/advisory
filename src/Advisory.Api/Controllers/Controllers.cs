@@ -1554,6 +1554,70 @@ public class AdminController : ControllerBase
     [HttpGet("agent/{id}/test")]
     public ActionResult GetAgentTest(string id) => Ok(_evo.GetAgentTest(id));
 
+    /// <summary>Models for an agent's provider — populates the UI dropdown instead of free-text.
+    /// openai/anthropic → live GET {endpoint}/models with the key; claude-cli/cursor-cli → curated.</summary>
+    [HttpGet("agent/models")]
+    public async Task<ActionResult> AgentModels([FromQuery] string standard, [FromQuery] string? endpoint, [FromQuery] string? agentId, CancellationToken ct)
+    {
+        string[] Curated() => standard switch
+        {
+            "claude-cli" => new[] { "claude-opus-4-8", "claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5-20251001" },
+            "cursor-cli" => new[] { "auto", "claude-opus-4-8", "claude-sonnet-4-6", "gpt-5", "gpt-4o" },
+            "anthropic"  => new[] { "claude-opus-4-8", "claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5-20251001" },
+            _            => new[] { "openai/gpt-oss-120b", "openai/gpt-oss-20b", "gpt-4o", "gpt-4o-mini" },
+        };
+        if (standard is not ("openai" or "anthropic"))
+            return Ok(new { live = false, models = Curated() });
+
+        string? key = !string.IsNullOrWhiteSpace(agentId)
+            ? _policy.Current.Admin.Agents.FirstOrDefault(a => a.Id == agentId)?.ApiKey : null;
+        var icfg = HttpContext.RequestServices.GetService<IConfiguration>();
+        key ??= icfg?["GROQ_API_KEY"] ?? icfg?["PKGFW_GROQ_API_KEY"];
+        var baseUrl = string.IsNullOrWhiteSpace(endpoint)
+            ? (standard == "anthropic" ? "https://api.anthropic.com/v1" : "https://api.openai.com/v1")
+            : endpoint!.TrimEnd('/');
+        if (string.IsNullOrWhiteSpace(key))
+            return Ok(new { live = false, models = Curated(), note = "no key — showing common models" });
+        try
+        {
+            using var http = HttpContext.RequestServices.GetRequiredService<IHttpClientFactory>().CreateClient();
+            http.Timeout = TimeSpan.FromSeconds(8);
+            var reqMsg = new HttpRequestMessage(HttpMethod.Get, $"{baseUrl}/models");
+            reqMsg.Headers.Add("Authorization", $"Bearer {key}");
+            var resp = await http.SendAsync(reqMsg, ct);
+            if (!resp.IsSuccessStatusCode) return Ok(new { live = false, models = Curated(), note = $"provider returned {(int)resp.StatusCode}" });
+            using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
+            var ids = doc.RootElement.TryGetProperty("data", out var data)
+                ? data.EnumerateArray().Select(m => m.GetProperty("id").GetString()).Where(x => !string.IsNullOrWhiteSpace(x)).OrderBy(x => x).ToArray()
+                : Array.Empty<string?>();
+            return Ok(new { live = ids.Length > 0, models = ids.Length > 0 ? ids : Curated() });
+        }
+        catch { return Ok(new { live = false, models = Curated(), note = "could not reach provider" }); }
+    }
+
+    public record CursorAuthReq(string? User);
+    /// <summary>Begin cursor-cli auth: queue a 'cursor-agent login' the local worker runs. Cursor prints
+    /// a browser URL for the user to accept the licence; the worker relays status back here.</summary>
+    [HttpPost("agent/{id}/cursor-auth")]
+    [Authorize(Policy = Policies.CanAdmin)]
+    public ActionResult CursorAuth(string id, [FromBody] CursorAuthReq? req)
+    {
+        var agent = _policy.Current.Admin.Agents.FirstOrDefault(a => a.Id == id);
+        if (agent is null) return NotFound(new { error = $"agent '{id}' not found" });
+        if (agent.Standard != "cursor-cli") return BadRequest(new { error = "cursor-auth only applies to a cursor-cli agent" });
+        var (ok, detail) = _evo.QueueCursorAuth(id, req?.User ?? agent.CursorUser ?? "");
+        return Accepted(new { mode = "cli-queued", agent = id, ok, detail });
+    }
+    [HttpGet("agent/{id}/cursor-auth")]
+    public ActionResult GetCursorAuth(string id) => Ok(_evo.GetCursorAuth(id));
+
+    public record CursorAuthResultReq(string Status, string? Message, string? Url, bool Ok);
+    /// <summary>Worker relays cursor login status (e.g. a browser URL to accept, or 'authenticated').</summary>
+    [HttpPost("agent/{id}/cursor-auth/result")]
+    [Authorize(Policy = Policies.CanAdmin)]
+    public ActionResult PostCursorAuthResult(string id, [FromBody] CursorAuthResultReq r)
+    { _evo.SetCursorAuthResult(id, r.Status, r.Message, r.Url, r.Ok); return Ok(new { ok = true }); }
+
     public record OrchestrateReq(string Ticket);
 
     /// <summary>Run the Microsoft-Agent-Framework graph for a cycle ("mutation"|"evolution"): each phase

@@ -121,6 +121,23 @@ public class EvolutionService
     public void SetAgentTestResult(string agentId, string reply, bool ok, string? error)
     { _agentTests[agentId] = new { status = "done", reply, ok, error, at = DateTimeOffset.UtcNow }; WorkerHeartbeat(); }
     public object GetAgentTest(string agentId) => _agentTests.TryGetValue(agentId, out var r) ? r : new { status = "none" };
+
+    // ---- cursor-cli authentication (runs on the host worker; user accepts the licence in a browser) ----
+    private readonly ConcurrentDictionary<string, object> _cursorAuth = new();
+    public (bool ok, string detail) QueueCursorAuth(string agentId, string user)
+    {
+        try
+        {
+            Directory.CreateDirectory(QueueDir);
+            _cursorAuth[agentId] = new { status = "queued", message = (string?)null, url = (string?)null, ok = (bool?)null, at = DateTimeOffset.UtcNow };
+            File.WriteAllText(Path.Combine(QueueDir, $"cursorauth-{agentId}.request"), $"{agentId}\n{user}\n{DateTimeOffset.UtcNow:o}\n");
+            return (true, $"queued cursor login for '{agentId}' — the worker will run 'cursor-agent login'; watch for a browser URL");
+        }
+        catch (Exception ex) { return (false, ex.Message); }
+    }
+    public void SetCursorAuthResult(string agentId, string status, string? message, string? url, bool ok)
+    { _cursorAuth[agentId] = new { status, message, url, ok, at = DateTimeOffset.UtcNow }; WorkerHeartbeat(); }
+    public object GetCursorAuth(string agentId) => _cursorAuth.TryGetValue(agentId, out var r) ? r : new { status = "none" };
     public bool WorkerAlive => _workerSeen is { } t && (DateTimeOffset.UtcNow - t) < TimeSpan.FromSeconds(150);
 
     public object Status() => new
