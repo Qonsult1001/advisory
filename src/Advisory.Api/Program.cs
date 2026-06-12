@@ -74,6 +74,9 @@ builder.Services.AddSingleton<Advisory.Api.Scan.GitRepoScanService>();
 builder.Services.AddSingleton<Advisory.Api.Catalog.ConsumedModelStore>();
 builder.Services.AddSingleton<Advisory.Api.Evolution.EvolutionService>();
 builder.Services.AddSingleton<Advisory.Api.Research.ResearchService>();
+// Microsoft Agent Framework orchestration (clean-architecture: contract + impl + graph executor).
+builder.Services.AddSingleton<Advisory.Api.Agents.IAgentRunner, Advisory.Api.Agents.MafAgentRunner>();
+builder.Services.AddSingleton<Advisory.Api.Agents.PhaseOrchestrator>();
 builder.Services.AddSingleton<Advisory.Api.Catalog.AiCatalogService>();
 builder.Services.AddSingleton<Advisory.Api.Catalog.WeightVerifier>();
 builder.Services.AddSingleton<Advisory.Api.Catalog.VerificationJobService>();

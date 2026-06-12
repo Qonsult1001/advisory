@@ -8,5 +8,8 @@
     <PackageReference Include="Swashbuckle.AspNetCore" Version="10.2.1" />
     <PackageReference Include="Microsoft.Data.SqlClient" Version="7.0.1" />
     <PackageReference Include="Microsoft.Identity.Web" Version="4.10.0" />
+    <!-- Microsoft Agent Framework — native multi-agent orchestration (mirrors BeapiGlobalAiService) -->
+    <PackageReference Include="Microsoft.Agents.AI" Version="1.9.0" />
+    <PackageReference Include="Microsoft.Extensions.AI.OpenAI" Version="10.6.0" />
   </ItemGroup>
 </Project>
