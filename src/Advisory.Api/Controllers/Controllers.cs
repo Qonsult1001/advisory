@@ -1515,7 +1515,23 @@ public class AdminController : ControllerBase
     private readonly IPolicyStore _policy;
     private readonly Advisory.Api.Auth.ICurrentUser _user;
     private readonly Advisory.Api.Evolution.EvolutionService _evo;
-    public AdminController(IPolicyStore policy, Advisory.Api.Auth.ICurrentUser user, Advisory.Api.Evolution.EvolutionService evo) { _policy = policy; _user = user; _evo = evo; }
+    private readonly Advisory.Api.Agents.PhaseOrchestrator _orchestrator;
+    public AdminController(IPolicyStore policy, Advisory.Api.Auth.ICurrentUser user, Advisory.Api.Evolution.EvolutionService evo, Advisory.Api.Agents.PhaseOrchestrator orchestrator)
+    { _policy = policy; _user = user; _evo = evo; _orchestrator = orchestrator; }
+
+    public record OrchestrateReq(string Ticket);
+
+    /// <summary>Run the Microsoft-Agent-Framework graph for a cycle ("mutation"|"evolution"): each phase
+    /// (research/planning/execution/documentation) runs on its routed agent (persona as Instructions),
+    /// sequentially or in parallel per the routing. Returns per-phase output + token usage. This is the
+    /// native C# orchestration (claude-cli/cursor-cli phases are run by the local worker CLI instead).</summary>
+    [HttpPost("orchestrate/{cycle}")]
+    [Authorize(Policy = Policies.CanAdmin)]
+    public async Task<ActionResult> Orchestrate(string cycle, [FromBody] OrchestrateReq req, CancellationToken ct)
+    {
+        var r = await _orchestrator.RunAsync(cycle, req.Ticket ?? "", ct);
+        return Ok(r);
+    }
 
     /// <summary>Worker posts the live `said stats --json` (it can run said.exe; the container can't).</summary>
     [HttpPost("context/stats")]
