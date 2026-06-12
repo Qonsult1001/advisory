@@ -413,13 +413,21 @@ run_cycle() {
     stream_activity < "$tmp" >/dev/null 2>&1 &
     # Diagnostic: prove whether claude produced output and what exit code it returned.
     echo "[$(date '+%F %T')]   ↳ cycle capture: rc=$rc bytes=$(wc -c < "$tmp" 2>/dev/null | tr -d ' ') tmp=$tmp"
-    # Rate-limit / out-of-credits markers from the Claude stream-json (rate_limit_event, result errors).
-    if printf '%s' "$out" | grep -qiE 'out_of_credits|"overageStatus":"rejected"|rate.?limit.*(exceeded|reached)|usage limit|too many requests|429|"status":"rejected"'; then
+    # Rate-limit detection — BUT ONLY when the cycle actually FAILED to do work. Every Claude stream
+    # carries a routine `rate_limit_event` whose info includes `overageStatus:rejected` /
+    # `out_of_credits` as plan metadata — that is NOT a failure and appears even on fully successful
+    # 78KB cycles. Previously we retried on the marker alone, which wrongly backed off on good runs.
+    # Real rate-limiting looks like: an ERROR result (429 / "rate limit exceeded" / "usage limit")
+    # OR a near-empty cycle (no assistant turns). So: require an actual error signal AND little work.
+    local assistant_turns; assistant_turns="$(printf '%s' "$out" | grep -c '"type":"assistant"')"
+    local hard_limit=0
+    printf '%s' "$out" | grep -qiE 'rate.?limit.{0,40}(exceeded|reached)|usage limit reached|"type":"error"[^}]*(429|rate|overloaded)|too many requests|http 429' && hard_limit=1
+    if [ "$hard_limit" = "1" ] && [ "$assistant_turns" -lt 2 ]; then
       rate_limited=1
       if [ "$attempt" -lt "${#backoffs[@]}" ]; then
         local wait="${backoffs[$attempt]}"; attempt=$((attempt+1))
         progress "plan" "running" "" "Claude rate limit hit — backing off ${wait}s then retrying (attempt $attempt/${#backoffs[@]})"
-        echo "[$(date '+%F %T')]   ↳ rate limit / out-of-credits — waiting ${wait}s before retry (attempt $attempt/${#backoffs[@]})"
+        echo "[$(date '+%F %T')]   ↳ rate limit (error + no work) — waiting ${wait}s before retry (attempt $attempt/${#backoffs[@]})"
         sleep "$wait"; rate_limited=0; continue
       fi
       # Exhausted backoff and still rate-limited: report, reset the run, exit cleanly.
