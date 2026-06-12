@@ -89,10 +89,10 @@ build_context() {
     if [ ! -f Advisory.said ] || [ "${FORCE_CONTEXT:-}" = "true" ]; then
       echo "[$(date '+%F %T')] building project context (.said brain)…"
       [ "${FORCE_CONTEXT:-}" = "true" ] && rm -f Advisory.said 2>/dev/null
+      # `init` already recurses the whole repo (AST-aware via the 'code' feature) and builds the full
+      # semantic + symbol + trigram index. Do NOT also `add --dir` — that double-adds and corrupts the
+      # SCA index so `ask` returns 'no match'. A single init = 671 frames, 506 symbols, ask works.
       "$SAID_BIN" init >/dev/null 2>&1 || true
-      "$SAID_BIN" add --dir src >/dev/null 2>&1 || true
-      "$SAID_BIN" add --dir web/src >/dev/null 2>&1 || true
-      "$SAID_BIN" add --dir tests >/dev/null 2>&1 || true
     fi
   else
     # Markdown fallback: a file tree + per-file head, built once.
