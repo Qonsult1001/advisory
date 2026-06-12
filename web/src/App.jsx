@@ -49,6 +49,7 @@ const api = {
   evoStatus: () => fetch(`${API}/evolution/status`).then((r) => r.json()),
   evoTickets: () => fetch(`${API}/evolution/tickets`).then((r) => r.json()),
   evoRuns: () => fetch(`${API}/evolution/runs`).then((r) => r.json()),
+  clearRuns: (activeOnly) => fetch(`${API}/evolution/runs?activeOnly=${activeOnly ? "true" : "false"}`, { method: "DELETE" }).then((r) => r.json()),
   evoRun: (id) => fetch(`${API}/evolution/run/${id}`).then((r) => r.json()),
   evolve: (ticket) => fetch(`${API}/evolution/evolve`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ticket }) }).then((r) => r.json()),
   evoDecision: (id, decision, subIssue) => fetch(`${API}/evolution/run/${id}/decision`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ decision, subIssue }) }).then((r) => r.json()),
@@ -3960,7 +3961,17 @@ function Evolution() {
         </div>
       </>)}
 
-      <SubHead>Mutation runs</SubHead>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <SubHead>Mutation runs</SubHead>
+        {runs.length > 0 && (
+          <button
+            onClick={async () => { await api.clearRuns(false).catch(() => {}); load(); }}
+            style={{ ...s.remove, fontSize: 12, padding: "5px 12px" }}
+            title="Remove all run history (and any stale queued runs) so you can test from scratch">
+            Clear runs
+          </button>
+        )}
+      </div>
       <div style={s.card}>
         <table style={s.table}><thead><tr>
           {["Run", "Ticket", "Status", "Progress", "Tests", "PR", "Elapsed"].map((c) => <th key={c} style={s.th}>{c}</th>)}

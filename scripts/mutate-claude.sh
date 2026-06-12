@@ -121,6 +121,14 @@ progress() {   # progress <stage> [status] [prUrl] [logline]
     "$(printf '{"stage":"%s","status":"%s","prUrl":"%s","log":"%s"}' "$stage" "$status" "$pr" "$log")"
 }
 
+# Reset a run to a clean state — used when a cycle is stopped for an external reason (rate limit /
+# out of credits) rather than a real failure, so the dashboard doesn't show a misleading "failed" and
+# the ticket can simply be re-queued later. Best-effort; ignores errors.
+reset_run() {   # reset_run <runId>
+  [ -n "$1" ] || return 0
+  api_post "evolution/run/$1/reset" '{}' 2>/dev/null || true
+}
+
 # Translate claude's stream-json (stdin) into readable activity lines POSTed to the run log live, so
 # the dashboard shows WHAT the engine is doing (reading/editing files, running commands) — not just a %.
 # Echoes raw output too (worker window still shows everything). Falls back to passthrough if no python.
@@ -330,18 +338,52 @@ run_cycle() {
   # Export run context so the /mutate skill can post its plan and poll for approval (EPIC A).
   # ADVISORY_APPROVAL=required makes the skill park for Approve/Reject before implementing.
   export ADVISORY_RUN="$CUR_RUN" ADVISORY_API="$API" ADVISORY_APPROVAL="${ADVISORY_APPROVAL:-required}"
+
+  # RATE-LIMIT-AWARE retry. The /mutate cycle runs on the operator's Claude (Max) subscription, which
+  # has a standard rate limit. If the account is rate-limited / out of credits for the window, claude
+  # gets cut off and produces no usable cycle. Per operator policy: respect the model's standard limit,
+  # and on a hit retry with backoff — wait 30s, then 60s — and if it STILL fails, report clearly,
+  # reset the run (so it returns to a clean queueable state), and exit this cycle. We do NOT hammer the
+  # API. A "rate-limited" run is detected by the stream's rate_limit/out_of_credits markers (or an
+  # empty cycle that the result event flags), NOT by normal no-PR outcomes.
   local out rc tmp; tmp="$(mktemp 2>/dev/null || echo /tmp/mutate-out.$$)"
-  claude -p --dangerously-skip-permissions --verbose --output-format stream-json "/mutate" 2>&1 \
-    | stream_activity | tee "$tmp"; rc=${PIPESTATUS[0]}
-  out="$(cat "$tmp" 2>/dev/null)"; rm -f "$tmp" 2>/dev/null
+  local attempt=0; local -a backoffs=(30 60); local rate_limited=0
+  while : ; do
+    : > "$tmp"
+    claude -p --dangerously-skip-permissions --verbose --output-format stream-json "/mutate" 2>&1 \
+      | stream_activity | tee "$tmp"; rc=${PIPESTATUS[0]}
+    out="$(cat "$tmp" 2>/dev/null)"
+    # Rate-limit / out-of-credits markers from the Claude stream-json (rate_limit_event, result errors).
+    if printf '%s' "$out" | grep -qiE 'out_of_credits|"overageStatus":"rejected"|rate.?limit.*(exceeded|reached)|usage limit|too many requests|429|"status":"rejected"'; then
+      rate_limited=1
+      if [ "$attempt" -lt "${#backoffs[@]}" ]; then
+        local wait="${backoffs[$attempt]}"; attempt=$((attempt+1))
+        progress "plan" "running" "" "Claude rate limit hit — backing off ${wait}s then retrying (attempt $attempt/${#backoffs[@]})"
+        echo "[$(date '+%F %T')]   ↳ rate limit / out-of-credits — waiting ${wait}s before retry (attempt $attempt/${#backoffs[@]})"
+        sleep "$wait"; rate_limited=0; continue
+      fi
+      # Exhausted backoff and still rate-limited: report, reset the run, exit cleanly.
+      rm -f "$tmp" 2>/dev/null
+      progress "fix" "rate-limited" "" "Claude account is rate-limited / out of credits for this window — run reset; re-queue this ticket after the limit resets"
+      echo "[$(date '+%F %T')] /mutate cycle STOPPED — Claude rate-limited after $attempt retries. Resetting run so the ticket can be cleanly re-queued later."
+      reset_run "$CUR_RUN"
+      CUR_RUN=""; return 0
+    fi
+    break   # not rate-limited — proceed to normal outcome detection
+  done
+  rm -f "$tmp" 2>/dev/null
 
   # HONEST outcome detection — do NOT claim success just because claude exited 0.
   if [ $rc -ne 0 ] || printf '%s' "$out" | grep -qiE "unknown skill|not logged in|please run /login|no such (command|skill)"; then
     local why="cycle failed"
     printf '%s' "$out" | grep -qi "unknown skill" && why="the /mutate skill was not found (.claude/skills/mutate)"
     printf '%s' "$out" | grep -qiE "not logged in|/login" && why="Claude is not logged in for the worker shell"
-    progress "fix" "failed" "" "$why — see worker log"
-    echo "[$(date '+%F %T')] /mutate cycle FAILED — $why"; CUR_RUN=""; return 0
+    # Surface the REAL reason: show the last lines of the cycle output so 'cycle failed' is never a
+    # black box. The tail usually carries the actual error (build break, no edit, skill abort, etc.).
+    local tail_out; tail_out="$(printf '%s' "$out" | tail -n 6 | tr -d '\r' | sed 's/[[:space:]]\+/ /g')"
+    [ -n "$tail_out" ] && echo "[$(date '+%F %T')]   ↳ last output: $tail_out"
+    progress "fix" "failed" "" "$why (rc=$rc) — ${tail_out:-see worker log}"
+    echo "[$(date '+%F %T')] /mutate cycle FAILED — $why (rc=$rc)"; CUR_RUN=""; return 0
   fi
 
   # Require an actual NEW open PR before claiming pr-open.
@@ -374,7 +416,15 @@ run_cycle() {
       rm -f /tmp/release.$$ 2>/dev/null
     fi
   else
-    progress "pr" "skipped" "" "cycle ran but opened no PR (no change / no work)"
+    # "No change" is the most confusing outcome — the skill ran but produced no PR. Surface WHY by
+    # echoing the tail of its output (what it actually said it did/couldn't do), and check whether it
+    # even reached the approval checkpoint or made any commits on a session branch.
+    local tail_out; tail_out="$(printf '%s' "$out" | tail -n 8 | tr -d '\r' | sed 's/[[:space:]]\+/ /g')"
+    local branch_commits; branch_commits="$(git log --oneline origin/main..HEAD 2>/dev/null | head -3 | tr '\n' ' ')"
+    echo "[$(date '+%F %T')]   ↳ no-change diagnostics:"
+    echo "[$(date '+%F %T')]     last output: ${tail_out:-<empty — skill produced no text>}"
+    [ -n "$branch_commits" ] && echo "[$(date '+%F %T')]     uncommitted-to-main commits: $branch_commits"
+    progress "pr" "skipped" "" "no PR — ${tail_out:-skill produced no output; see worker log}"
     echo "[$(date '+%F %T')] /mutate cycle complete — no PR opened (no change)"
   fi
   CUR_RUN=""

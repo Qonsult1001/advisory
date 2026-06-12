@@ -1208,6 +1208,13 @@ public class EvolutionController : ControllerBase
     [HttpGet("runs")]
     public ActionResult Runs([FromQuery] int limit = 50) => Ok(new { runs = _svc.Runs(limit) });
 
+    /// <summary>Clear mutation run history (the dashboard "Clear runs" action). activeOnly=true keeps
+    /// finished runs and only drops queued/running ones so a stale queued run can't re-fire.</summary>
+    [HttpDelete("runs")]
+    [Authorize(Policy = Policies.CanAdmin)]
+    public ActionResult ClearRuns([FromQuery] bool activeOnly = false)
+        => Ok(new { cleared = _svc.ClearRuns(activeOnly) });
+
     [HttpGet("run/{id}")]
     public ActionResult Run(string id)
         => _svc.Run(id) is { } r ? Ok(r) : NotFound(new { error = "run not found" });
@@ -1239,6 +1246,13 @@ public class EvolutionController : ControllerBase
     public ActionResult Progress(string id, [FromBody] ProgressReq req)
         => _svc.UpdateProgress(id, req.Stage, req.Status, req.PrUrl, req.Log) is { } r
             ? Ok(r) : NotFound(new { error = "run not found" });
+
+    /// <summary>Worker resets a run stopped for an external reason (e.g. Claude rate limit / out of
+    /// credits) — drops it so the dashboard shows no misleading failure and the ticket can be
+    /// re-queued later. Idempotent.</summary>
+    [HttpPost("run/{id}/reset")]
+    [Authorize(Policy = Policies.CanAdmin)]
+    public ActionResult ResetRun(string id) => Ok(new { reset = _svc.ResetRun(id) });
 
     // ---- Interactive run control (EPIC A) ----
     public record PlanReq(string Plan);
