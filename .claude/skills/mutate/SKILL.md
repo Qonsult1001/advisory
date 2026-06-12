@@ -56,14 +56,23 @@ weaken a security control to make a test pass (see IDENTITY.md).
 ## Step 2b: Agent routing (if configured)
 
 If `.evolve/routing.json` exists, the operator has assigned specific AI agents to phases
-(research / planning / execution / documentation) and a run **mode** (`sequential` or `parallel`):
-- For each phase, if an agent is named, **delegate that phase to it** using the Task tool (spawn a
-  subagent whose prompt states the phase, the agent's model/standard, and the ticket). When the mode
-  is `parallel`, dispatch the independent phases (research + planning) **concurrently** in a single
-  message with multiple Task calls; when `sequential`, run them one after another.
-- A phase with no agent (or no routing file) runs inline as normal.
-This is how "different tasks to different agents, sometimes parallel" works. Keep the PR-only,
-test-first discipline regardless of which agent did the work.
+(research / planning / execution / documentation) and a run **mode** (`sequential` or `parallel`).
+Each routed agent is a Task-tool subagent. **Every delegated subagent prompt MUST include, in order:**
+
+1. **Persona** — the routed agent's `persona` from `routing.json` (its personality + strict
+   instructions), verbatim at the top. This is how each agent keeps its own character.
+2. **Full project context (not a summary)** — tell the subagent to RECALL from the shared `.said`
+   brain itself: `said ask "<what this phase needs>"`, `said sym <Name>`, `said get <doc_id>`. Every
+   agent has the *same* full-codebase memory — no degraded hand-off, no telephone game.
+3. **Prior-phase results** — the hand-off is via memory: when a phase finishes it `said.remember`s its
+   key findings, so the next agent recalls them with `said ask` ALONGSIDE the codebase. Execution thus
+   sees research's findings AND the real code, through its own persona — full context, every time.
+4. **The phase + the ticket text** — what to do and the issue.
+
+Dispatch: `parallel` → independent phases (research + planning) in one message with multiple Task
+calls; `sequential` → one after another, each remembering before the next begins. A phase with no
+agent (or no routing file) runs inline. Keep PR-only, test-first discipline regardless of which agent
+did the work.
 
 ## Step 3: Plan
 
