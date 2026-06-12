@@ -47,4 +47,33 @@ public class HealthTests : IClassFixture<WebApplicationFactory<Program>>
         Assert.True(doc.RootElement.TryGetProperty("status", out var status));
         Assert.Equal("ok", status.GetString());
     }
+
+    // --- Issue #66: GET /api/version ---
+
+    [Fact]
+    public async Task Version_returns_200()
+    {
+        var resp = await _client.GetAsync("/api/version");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Version_returns_service_advisory()
+    {
+        var resp = await _client.GetAsync("/api/version");
+        resp.EnsureSuccessStatusCode();
+        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        Assert.True(doc.RootElement.TryGetProperty("service", out var svc));
+        Assert.Equal("advisory", svc.GetString());
+    }
+
+    [Fact]
+    public async Task Version_returns_nonempty_version()
+    {
+        var resp = await _client.GetAsync("/api/version");
+        resp.EnsureSuccessStatusCode();
+        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        Assert.True(doc.RootElement.TryGetProperty("version", out var ver));
+        Assert.False(string.IsNullOrEmpty(ver.GetString()), "version must be non-empty");
+    }
 }

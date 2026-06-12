@@ -1,20 +1,20 @@
-# Session Plan — Day 8
+# Session Plan — Day 9
 
-## Ticket #53 — Add GET /api/health/live (anonymous liveness probe)
+## Ticket #66 — Add GET /api/version (anonymous, service + version)
 
-**Control:** NIST SSDF RV.1 (operational availability)
-**Impact:** Medium — without a dedicated liveness path, orchestrators that probe `/live` mark the
-pod unhealthy even when the API is serving traffic.
-**Urgency:** Low-Medium — operational gap, not a gate security regression.
+**Control:** NIST SSDF RV.1 (operational availability / deployment verification)
+**Impact:** Medium — operators need to confirm which build is deployed.
+**Urgency:** Low — no security regression, but useful for operational visibility.
 
 ### Task
 
-Add `GET /api/health/live` returning `HTTP 200 { "status": "ok" }`, anonymous.
+Add `GET /api/version` returning `HTTP 200 { "service": "advisory", "version": "<assembly version>" }`, anonymous.
 
 **Minimum change:**
-1. One additional `MapGet` in `Program.cs` beside the existing `/api/health` route.
-2. Two tests in `HealthTests.cs`:
-   - `HealthLive_returns_200`
-   - `HealthLive_returns_status_ok`
+1. One additional `MapGet` in `Program.cs` beside the existing health routes.
+2. Tests in `HealthTests.cs` (or a new `VersionTests` section):
+   - `Version_returns_200`
+   - `Version_returns_service_advisory`
+   - `Version_returns_nonempty_version`
 
-No controller, no service, no new files. A single-line endpoint, test-first.
+No controller, no service. A single-line endpoint, test-first.
