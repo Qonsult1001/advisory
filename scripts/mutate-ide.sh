@@ -170,13 +170,14 @@ $(tail -40 "$EVO/checks.log" 2>/dev/null)
       [ -n "$PR" ] || die "no PR for the current branch — pass a PR number: release <N>"
     fi
 
-    # Safety gate: refuse to merge a PR whose checks aren't clean (mirrors PR-only discipline).
-    STATE="$(gh pr view "$PR" --repo "$REPO" --json mergeable,state --jq '.state + "/" + .mergeable' 2>/dev/null)"
-    echo "→ PR #$PR state: $STATE"
-    case "$STATE" in
-      OPEN/*) : ;;
-      *) die "PR #$PR is not OPEN ($STATE) — nothing to release" ;;
-    esac
+    # Safety gate: only release an OPEN PR. Gate on .state ALONE — `.mergeable` is often null right
+    # after a PR is created/updated (GitHub computes it async), and `.state + "/" + .mergeable` then
+    # yields an EMPTY string in jq (null breaks string concat), which used to make this wrongly report
+    # "PR is not OPEN ()" and skip the release. Read state robustly; treat null mergeable as UNKNOWN.
+    STATE="$(gh pr view "$PR" --repo "$REPO" --json state --jq '.state' 2>/dev/null)"
+    MERGEABLE="$(gh pr view "$PR" --repo "$REPO" --json mergeable --jq '.mergeable // "UNKNOWN"' 2>/dev/null)"
+    echo "→ PR #$PR state: ${STATE:-<unknown>} (mergeable: ${MERGEABLE:-UNKNOWN})"
+    [ "$STATE" = "OPEN" ] || die "PR #$PR is not OPEN (state=${STATE:-<empty>}) — nothing to release"
 
     echo "→ merging PR #$PR (squash, delete branch)"
     gh pr merge "$PR" --repo "$REPO" --squash --delete-branch || die "merge failed (conflicts? checks? perms?)"
