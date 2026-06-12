@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "said": {
+      "command": "tools/said/said-mcp.exe",
+      "args": ["--said", "Advisory.said"],
+      "description": "Project memory — the .said brain. Tools: ask (semantic+symbol recall), remember (store a learning), sym, get, session_end (flush an episodic summary), journal, history. Agents recall relevant code/learnings instead of re-reading the repo, and write back what they learn so memory compounds across runs."
+    }
+  }
+}

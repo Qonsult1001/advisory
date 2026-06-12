@@ -42,11 +42,13 @@ Continuity first — read these so you act with memory, not from scratch:
 Then the task:
 - Read `.evolve/ISSUES_TODAY.md` (the tickets + tester comments to address).
 - Read `CLAUDE.md` and the relevant source under `src/Advisory.Api/` and `web/src/`.
-- **Project context (full-codebase awareness):** if `Advisory.said` exists, query the project brain
-  for context instead of reading blindly — `./tools/said/said.exe ask "<question>"`,
-  `said sym <Name>` (find a class/function), or `said grep <text>`. If only
-  `PROJECT_CONTEXT.md` exists, read it for the source map. This gives you Cursor-style awareness of
-  the whole project when reasoning about an issue.
+- **Project memory (RECALL — saves tokens, gives full-codebase awareness):** the `said` MCP server
+  is the project brain (`.mcp.json`). **Recall before reading blindly:**
+  - `said.ask("<the ticket / what you need to know>")` — fused semantic + symbol + grep recall of the
+    relevant code AND any past learnings. Prefer this over reading whole files.
+  - `said.sym("<ClassOrFn>")`, `said.get(<doc_id>)`, `said.history("<name>")` for specifics.
+  Only open files the brain points you to. (CLI fallback: `./tools/said/said.exe ask "..."`.)
+  If neither the MCP nor `Advisory.said` is available, read `PROJECT_CONTEXT.md` or the source directly.
 
 Note the specific bug/gap each ticket describes. Do not invent work beyond the tickets, and never
 weaken a security control to make a test pass (see IDENTITY.md).
@@ -124,6 +126,13 @@ session branch.
 2. **Research gap** (always consider): if this session revealed something you didn't understand or
    couldn't handle well, append a `### [ ]` entry to `RESEARCH.md` with a Goal. If you closed a gap,
    check its box. Commit `RESEARCH.md` and any memory changes onto the session branch.
+3. **Project memory (REMEMBER — make the brain smarter for next time):** write back what you learned
+   to the `said` brain so future cycles recall it instead of rediscovering it:
+   - `said.remember("<concise learning>: <where + why>")` — store the fix/gotcha/decision (salience +
+     surprise are scored automatically). One or two high-value memories, not a transcript.
+   - `said.session_end("<1-2 line summary of this cycle>")` — flush an episodic summary of the run.
+   This is the compounding-memory loop: recall at Step 2, remember here. (CLI fallback:
+   `./tools/said/said.exe add --title "<t>" "<learning>"`.)
 
 ## Step 8: Report
 
