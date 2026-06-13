@@ -3851,17 +3851,20 @@ function ApprovalPanel({ run, onDecided }) {
         <span style={{ fontSize: 13, fontWeight: 700, color: C.warn }}>⏸ Plan needs your approval</span>
         <span style={{ fontSize: 11.5, color: C.sub }}>#{run.ticket} · the engine paused before writing any code</span>
       </div>
-      <pre style={{ ...s.codeBlock, maxHeight: 320, whiteSpace: "pre-wrap", margin: "0 0 12px", background: C.surface }}>{run.plan || "(no plan posted yet — waiting for the worker)"}</pre>
-      <Field label="Sub-issue / correction (optional — refine the plan before it implements)">
+      {run.plan
+        ? <pre style={{ ...s.codeBlock, maxHeight: 360, whiteSpace: "pre-wrap", margin: "0 0 12px", background: C.surface }}>{run.plan}</pre>
+        : <div style={{ ...s.codeBlock, margin: "0 0 12px", background: C.surface, color: C.sub, fontStyle: "italic" }}>Waiting for the engine to post its plan… (this panel stays open — it will fill in within a few seconds)</div>}
+      <Field label="Recommendation / correction — required to Reject (amends the ticket and restarts), optional to Refine">
         <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2}
-          placeholder="e.g. don't touch the gate; also add a test for the unconfigured case"
+          placeholder="e.g. don't touch the gate; add a test for the unconfigured case; use a Stopwatch not DateTime"
           style={{ ...s.inputText, width: "100%", resize: "vertical", marginBottom: 10 }} />
       </Field>
       <div style={{ display: "flex", gap: 10 }}>
-        <button onClick={() => decide("approve")} disabled={busy} style={{ ...s.add, background: C.allow }}>{busy === "approve" ? "Approving…" : "✓ Approve & implement"}</button>
+        <button onClick={() => decide("approve")} disabled={busy || !run.plan} style={{ ...s.add, background: C.allow, opacity: run.plan ? 1 : 0.5 }}>{busy === "approve" ? "Approving…" : "✓ Approve & implement"}</button>
         <button onClick={() => decide("refine")} disabled={busy || !note} style={{ ...s.add, background: C.info, opacity: note ? 1 : 0.5 }}>{busy === "refine" ? "Refining…" : "↺ Refine with note"}</button>
-        <button onClick={() => decide("reject")} disabled={busy} style={{ ...s.btnGhost, color: C.block, borderColor: C.block }}>{busy === "reject" ? "Rejecting…" : "✕ Reject"}</button>
+        <button onClick={() => decide("reject")} disabled={busy || !note} style={{ ...s.btnGhost, color: C.block, borderColor: C.block, opacity: note ? 1 : 0.5 }} title={note ? "Reject: amend the ticket with your recommendation and restart the cycle" : "Add a recommendation above to reject"}>{busy === "reject" ? "Rejecting…" : "✕ Reject & amend ticket"}</button>
       </div>
+      <div style={{ fontSize: 11, color: C.sub, marginTop: 8 }}>Reject posts your recommendation to the ticket and restarts the cycle so the engine re-plans with your feedback.</div>
     </div>
   );
 }
