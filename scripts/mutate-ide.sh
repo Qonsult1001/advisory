@@ -81,11 +81,24 @@ case "${1:-}" in
     timer_gate || exit 0
     echo "Repo: $REPO | Label: $LABEL | Session branch: $BRANCH"
 
-    # Fetch open tickets with the evolve label, plus their comments (tester replies).
-    gh issue list --repo "$REPO" --state open --label "$LABEL" \
-      --json number,title,body,author,comments \
-      --jq '.[] | "## Issue #\(.number): \(.title)\nby @\(.author.login)\n\n\(.body)\n" + (if (.comments|length)>0 then "\n### Tester comments:\n" + (.comments|map("- @\(.author.login): \(.body)")|join("\n")) + "\n" else "" end)' \
-      > "$EVO/ISSUES_TODAY.md" 2>/dev/null || echo "" > "$EVO/ISSUES_TODAY.md"
+    # Fetch the ticket(s) to work, plus their comments (tester replies / operator recommendations).
+    # IMPORTANT: when the worker dispatched a SPECIFIC ticket (MUTATE_TICKET), fetch it BY NUMBER —
+    # `gh issue view N` is immediate, whereas `gh issue list --label` hits GitHub's SEARCH INDEX which
+    # lags several seconds after a label is added, so a just-created ticket showed "0 tickets" and the
+    # cycle did nothing. Fetching by number eliminates that race entirely. Fall back to the label list
+    # only when no specific ticket was given.
+    if [ -n "${MUTATE_TICKET:-}" ]; then
+      echo "Fetching ticket #$MUTATE_TICKET directly (by number — no search-index lag)."
+      gh issue view "$MUTATE_TICKET" --repo "$REPO" \
+        --json number,title,body,author,comments \
+        --jq '"## Issue #\(.number): \(.title)\nby @\(.author.login)\n\n\(.body)\n" + (if (.comments|length)>0 then "\n### Tester comments:\n" + (.comments|map("- @\(.author.login): \(.body)")|join("\n")) + "\n" else "" end)' \
+        > "$EVO/ISSUES_TODAY.md" 2>/dev/null || echo "" > "$EVO/ISSUES_TODAY.md"
+    else
+      gh issue list --repo "$REPO" --state open --label "$LABEL" \
+        --json number,title,body,author,comments \
+        --jq '.[] | "## Issue #\(.number): \(.title)\nby @\(.author.login)\n\n\(.body)\n" + (if (.comments|length)>0 then "\n### Tester comments:\n" + (.comments|map("- @\(.author.login): \(.body)")|join("\n")) + "\n" else "" end)' \
+        > "$EVO/ISSUES_TODAY.md" 2>/dev/null || echo "" > "$EVO/ISSUES_TODAY.md"
+    fi
 
     if [ ! -s "$EVO/ISSUES_TODAY.md" ]; then
       echo "NO WORK — no open issues labelled '$LABEL'."

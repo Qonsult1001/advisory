@@ -401,6 +401,9 @@ run_cycle() {
   # inherited by claude's subprocess Bash calls (the launcher's FORCE_RUN doesn't reliably propagate
   # through `claude -p`). This was the real cause of every clicked cycle ending in "no change".
   export FORCE_RUN=true MUTATE_HOURS="*"
+  # Pass the EXACT ticket so setup fetches it by number (immediate) instead of the lagging label search
+  # — this is what fixed the recurring "SETUP OK — 0 ticket(s)" right after a ticket was queued.
+  [ -n "$CUR_TICKET" ] && export MUTATE_TICKET="$CUR_TICKET"
 
   # RATE-LIMIT-AWARE retry. The /mutate cycle runs on the operator's Claude (Max) subscription, which
   # has a standard rate limit. If the account is rate-limited / out of credits for the window, claude
