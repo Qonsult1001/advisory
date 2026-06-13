@@ -58,6 +58,13 @@ fi
 # exposes the /mutate skill ("skills":[…,"mutate"]) and runs the cycle. We rely on the default config;
 # auth still comes from CLAUDE_CODE_OAUTH_TOKEN in .env.
 
+# ---- PATH: include user-local bin so non-login shells find CLI tools ----
+# cursor-agent (and similar) install to ~/.local/bin, which is added to PATH by ~/.bashrc/~/.profile
+# — but those only run in LOGIN/interactive shells. The worker's subprocess calls (drain_cursor_auth,
+# the cycle) run in non-login shells where ~/.local/bin is NOT on PATH, so `command -v cursor-agent`
+# returned "not found" even though it's installed. Add the common user-bin dirs explicitly.
+export PATH="$HOME/.local/bin:$HOME/bin:$PATH"
+
 # ---- Tool resolution (works in Git-Bash AND WSL) ----
 # The worker itself calls `gh` (PR detection) and may report `dotnet`. In WSL those Linux binaries
 # don't exist — only the Windows .exe (via /mnt/c). Bare `gh` then fails SILENTLY, which is why the
@@ -279,17 +286,37 @@ drain_cursor_auth() {
       continue
     fi
 
-    # cursor-cli
+    # cursor-cli — TWO-PHASE login: cursor-agent login prints a browser URL, then WAITS for the user to
+    # approve in the browser. A short `timeout` killed the process before approval, so it never
+    # persisted. Instead: run login in the background to a temp log, post the URL as soon as it appears
+    # (dashboard shows it), then keep the process alive up to ~3 min waiting for approval, polling the
+    # log for success and posting the final authenticated status.
     if ! command -v cursor-agent >/dev/null 2>&1; then
       _post_auth_result "$id" "error" "cursor-agent CLI not found on this machine — install Cursor CLI first" "" "false"; continue
     fi
-    out="$(timeout 25 cursor-agent login 2>&1 || true)"
-    url="$(printf '%s' "$out" | grep -oE 'https?://[^ ]+' | head -1)"
-    if printf '%s' "$out" | grep -qiE 'logged in|authenticated|success'; then status=authenticated; ok=true
-    elif [ -n "$url" ]; then status=browser-required; ok=false
-    else status=pending; ok=false; fi
-    msg="$(printf '%s' "$out" | tr -d '\r' | sed 's/\\/\\\\/g; s/"/\\"/g' | tr '\n' ' ' | cut -c1-300)"
+    local clog; clog="${TMPDIR:-/tmp}/cursorlogin-$id.$$"; : > "$clog"
+    NO_OPEN_BROWSER=1 cursor-agent login > "$clog" 2>&1 &
+    local cpid=$!
+    local url="" posted_url=0 n=0 status=pending ok=false
+    while kill -0 "$cpid" 2>/dev/null && [ "$n" -lt 90 ]; do   # up to ~180s for the browser step
+      sleep 2; n=$((n+1))
+      if [ "$posted_url" = "0" ]; then
+        url="$(grep -oE 'https?://[^ ]+' "$clog" 2>/dev/null | head -1)"
+        if [ -n "$url" ]; then
+          _post_auth_result "$id" "browser-required" "Open the link to authenticate, then it completes automatically." "$url" "false"
+          echo "[$(date '+%F %T')] cursor login URL posted — awaiting browser approval"; posted_url=1
+        fi
+      fi
+      grep -qiE 'logged in|authenticated|success' "$clog" 2>/dev/null && { status=authenticated; ok=true; break; }
+    done
+    kill "$cpid" 2>/dev/null
+    # Final truth: ask cursor-agent directly rather than trust the log.
+    if cursor-agent status 2>/dev/null | grep -qiE 'logged in|authenticated|^Logged in'; then status=authenticated; ok=true; fi
+    local msg; msg="$(tail -c 300 "$clog" 2>/dev/null | tr -d '\r' | sed 's/\\/\\\\/g; s/"/\\"/g' | tr '\n' ' ')"
+    [ "$ok" = "true" ] && msg="cursor-agent authenticated ✔"
     _post_auth_result "$id" "$status" "$msg" "$url" "$ok"
+    rm -f "$clog" 2>/dev/null
+    echo "[$(date '+%F %T')] cursor login result: status=$status"
   done
 }
 
