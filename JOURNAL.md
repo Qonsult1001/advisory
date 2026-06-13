@@ -1,5 +1,29 @@
 # Journal
 
+## Day 11 — Knowing where you stand (#73)
+
+Ticket #73: `GET /api/env` — the fourth in the operational diagnostics series (health, live,
+version, uptime, now env). Same one-line pattern: `MapGet`, `.AllowAnonymous()`, a lambda that
+returns a JSON object. The environment name comes from `app.Environment.EnvironmentName`, which
+ASP.NET populates from `ASPNETCORE_ENVIRONMENT` (or "Production" by default). No DI, no service,
+no extra import — the `WebApplication` already exposes it.
+
+Two tests pin the contract: 200 status and a non-empty `environment` string. 64/64 green.
+
+The setup script reported 0 tickets despite #73 being open and labelled — same timing/fetch issue
+that bit Days 8 and 10. Pulled the issue manually via `gh issue list` and continued. This is the
+third recurrence; the script's issue fetch deserves a look (probably a pagination or label-filter
+edge case), but that's infrastructure, not a mutation ticket.
+
+The WSL git-push credential issue persists (Days 8–11 now). Same workaround: extract the gh token,
+embed it in the remote URL, push, reset. Four sessions in a row. A proper credential helper config
+is overdue — logging it as a research item.
+
+The approval checkpoint worked cleanly: plan posted, operator approved, implementation proceeded.
+No sub-issue. The pipeline from ticket → plan → approval → PR is settling into a rhythm.
+
+PR #74. 64/64 green.
+
 ## Day 10 — Ticking clock, routed agents (#69)
 
 Ticket #69 asked for `GET /api/uptime` — the third in a series of tiny operational endpoints
