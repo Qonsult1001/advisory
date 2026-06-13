@@ -1,26 +1,23 @@
-# Session Plan — Day 10
+# Session Plan — Day 11
 
-## Ticket #69 — Add GET /api/uptime (uptimeSeconds, anonymous)
+## Ticket #73 — Add GET /api/env (environment name, anonymous)
 
-**Control:** NIST SSDF RV.1 (operational availability — monitors need to know how long the API has been running)
-**Impact:** Medium — enables uptime monitoring and restart detection.
-**Urgency:** Low — no security regression, but operationally useful.
+**Control:** NIST SSDF RV.1 (operational diagnostics — operators need to confirm which environment a running instance belongs to)
+**Impact:** Medium — enables environment identification for diagnostics and deployment verification.
+**Urgency:** Low — no security regression, but operationally useful for multi-environment deployments.
 
 ### Task
 
-Add `GET /api/uptime` returning `HTTP 200 { "uptimeSeconds": <double >= 0> }`, anonymous.
+Add `GET /api/env` returning `HTTP 200 { "environment": "<non-empty string>" }` (e.g. "Production"/"Development"), anonymous.
 
 **Minimum change:**
-1. Add a `System.Diagnostics.Stopwatch` started at app boot in `Program.cs`.
-2. One additional `MapGet("/api/uptime", ...)` in `Program.cs` beside the existing health/version routes.
+1. One additional `MapGet("/api/env", ...)` in `Program.cs` beside the existing health/version/uptime routes.
+2. Read the environment name from `IWebHostEnvironment.EnvironmentName` (already available on `app` as `app.Environment.EnvironmentName`).
 3. Tests in `HealthTests.cs`:
-   - `Uptime_returns_200`
-   - `Uptime_returns_nonnegative_uptimeSeconds`
+   - `Env_returns_200`
+   - `Env_returns_nonempty_environment`
 
-No controller, no service. A static Stopwatch + a single-line endpoint, test-first.
+No controller, no service. A single-line endpoint accessing the built-in environment name, test-first.
 
 ### Routing
-- Research phase: Groq (openai/gpt-oss-120b) — 635 tokens
-- Planning phase: Groq (openai/gpt-oss-120b) — 1580 tokens
-- Execution phase: Claude (inline) — applies the edits
-- Documentation phase: Claude (inline)
+- All phases: Cursor CLI (inline) — all edits and documentation by this agent.

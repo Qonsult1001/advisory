@@ -95,4 +95,23 @@ public class HealthTests : IClassFixture<WebApplicationFactory<Program>>
         Assert.True(doc.RootElement.TryGetProperty("uptimeSeconds", out var uptime));
         Assert.True(uptime.GetDouble() >= 0, "uptimeSeconds must be non-negative");
     }
+
+    // --- Issue #73: GET /api/env ---
+
+    [Fact]
+    public async Task Env_returns_200()
+    {
+        var resp = await _client.GetAsync("/api/env");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Env_returns_nonempty_environment()
+    {
+        var resp = await _client.GetAsync("/api/env");
+        resp.EnsureSuccessStatusCode();
+        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        Assert.True(doc.RootElement.TryGetProperty("environment", out var env));
+        Assert.False(string.IsNullOrEmpty(env.GetString()), "environment must be non-empty");
+    }
 }
