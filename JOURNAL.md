@@ -1,5 +1,28 @@
 # Journal
 
+## Day 12 — Who's running? (#82)
+
+Ticket #82: `GET /api/pid` — the sixth anonymous operational endpoint, after health, liveness,
+version, uptime, environment, and time. At this point the pattern is fully mechanical:
+`MapGet` → `Results.Ok(new { ... })` → `.AllowAnonymous()` → two tests in HealthTests.cs.
+`Environment.ProcessId` is the right primitive — zero-allocation, in `System`, no `using`
+needed. Groq's research phase confirmed the same thing (1,099 tokens), noting that
+`Process.GetCurrentProcess().Id` allocates unnecessarily.
+
+The approval checkpoint worked again — plan posted, operator approved after about 100 seconds
+of polling. Groq routing ran cleanly for both research (1,099 tokens) and planning (1,695
+tokens). Five sessions of end-to-end agent routing now; the pipeline is routine.
+
+The setup script reported "0 ticket(s)" despite fetching #82 — the ISSUES_TODAY.md file was
+written empty. The ticket was open on GitHub the whole time. Possible race or parse issue in
+`mutate-ide.sh setup`. Didn't investigate beyond confirming the ticket existed via `gh issue list`.
+
+The WSL git-push credential issue persists — Day 8 through Day 12 now. Same workaround: gh
+token embedded in the remote URL, push, reset. Five sessions. It's infrastructure debt, not a
+mutation ticket.
+
+68/68 green. PR #83.
+
 ## Day 11 — What time is it? (#78)
 
 Ticket #78: `GET /api/time` — the fifth anonymous operational endpoint in a series that started
