@@ -17,10 +17,14 @@ cd "$(git rev-parse --show-toplevel)"
 # cycle reported "0 tickets" and a RED build. Wrapper functions fall back to the Windows .exe when the
 # native binary is absent, so the bare call sites below work unchanged in either shell.
 _find_exe() {  # _find_exe <name> <path1> [path2...]
-  command -v "$1" >/dev/null 2>&1 && { echo "$1"; return; }
-  command -v "$1.exe" >/dev/null 2>&1 && { echo "$1.exe"; return; }
+  # Prefer an EXPLICIT full path first. `command -v gh.exe` can succeed in a login shell (PATH has the
+  # GitHub CLI dir) yet the bare "gh.exe" then fails in a non-login SUBPROCESS (e.g. release) where that
+  # PATH entry is absent → empty output → release wrongly reports "PR not OPEN". Full path is
+  # PATH-independent and always runs, so check the known install locations BEFORE the PATH name.
   local n="$1"; shift
   for p in "$@"; do [ -x "$p" ] && { echo "$p"; return; }; done
+  command -v "$n" >/dev/null 2>&1 && { echo "$n"; return; }
+  command -v "$n.exe" >/dev/null 2>&1 && { echo "$n.exe"; return; }
   echo "$n"
 }
 DOTNET_BIN="$(_find_exe dotnet "/mnt/c/Program Files/dotnet/dotnet.exe" "/c/Program Files/dotnet/dotnet.exe")"

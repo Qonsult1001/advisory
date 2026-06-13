@@ -71,10 +71,13 @@ export PATH="$HOME/.local/bin:$HOME/bin:$PATH"
 # worker reported "no change" even after a real PR was opened. Wrapper functions fall back to the
 # .exe so every gh/dotnet call works in either shell. (Same approach as scripts/mutate-ide.sh.)
 _find_exe() {  # _find_exe <name> <path1> [path2...]
-  command -v "$1" >/dev/null 2>&1 && { echo "$1"; return; }
-  command -v "$1.exe" >/dev/null 2>&1 && { echo "$1.exe"; return; }
+  # Prefer the EXPLICIT full path first (PATH-independent). `command -v gh.exe` can succeed in this
+  # login shell but the bare "gh.exe" then fails in a non-login subprocess (e.g. mutate-ide.sh release)
+  # where the GitHub CLI PATH entry is absent → empty output. A full path always runs.
   local n="$1"; shift
   for p in "$@"; do [ -x "$p" ] && { echo "$p"; return; }; done
+  command -v "$n" >/dev/null 2>&1 && { echo "$n"; return; }
+  command -v "$n.exe" >/dev/null 2>&1 && { echo "$n.exe"; return; }
   echo "$n"
 }
 GH_BIN="$(_find_exe gh "/mnt/c/Program Files/GitHub CLI/gh.exe" "/c/Program Files/GitHub CLI/gh.exe")"
