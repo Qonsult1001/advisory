@@ -3428,6 +3428,7 @@ const EVO_STATUS = {
   queued: { c: "#6e7479", t: "Queued" }, running: { c: "#1f7fd1", t: "Running" },
   "awaiting-approval": { c: "#d99016", t: "Needs approval" },
   tests: { c: "#1f7fd1", t: "Testing" }, "pr-open": { c: "#40be46", t: "PR open" },
+  released: { c: "#2f9e44", t: "Released ✔" },
   skipped: { c: "#6e7479", t: "No change" }, failed: { c: "#d63649", t: "Failed" }, rejected: { c: "#d63649", t: "Rejected" },
 };
 // Live elapsed since a run was picked up by the worker (mm:ss).
@@ -3979,7 +3980,7 @@ function Evolution() {
           {runs.length === 0 && <tr><td colSpan={7} style={{ padding: "36px 20px", textAlign: "center", color: C.sub }}>No runs yet.</td></tr>}
           {runs.map((r) => {
             const st = EVO_STATUS[r.status] || { c: C.sub, t: r.status };
-            const done = r.status === "pr-open", failed = r.status === "failed";
+            const done = r.status === "pr-open" || r.status === "released", failed = r.status === "failed";
             const active = r.status === "queued" || r.status === "running" || r.status === "tests";
             const waiting = r.status === "queued";
             return (
