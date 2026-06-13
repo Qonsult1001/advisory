@@ -150,6 +150,8 @@ app.MapGet("/api/version", () => Results.Ok(new
    .AllowAnonymous();
 app.MapGet("/api/uptime", () => Results.Ok(new { uptimeSeconds = appUptime.Elapsed.TotalSeconds }))
    .AllowAnonymous();
+app.MapGet("/api/env", () => Results.Ok(new { environment = app.Environment.EnvironmentName }))
+   .AllowAnonymous();
 app.Run();
 
 public partial class Program { }
