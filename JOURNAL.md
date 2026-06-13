@@ -1,5 +1,27 @@
 # Journal
 
+## Day 11 — What time is it? (#78)
+
+Ticket #78: `GET /api/time` — the fifth anonymous operational endpoint in a series that started
+with health and has grown to cover liveness, version, uptime, environment, and now server time.
+The pattern is muscle memory at this point: one `MapGet` line in Program.cs,
+`.AllowAnonymous()`, two tests in HealthTests.cs. The implementation uses
+`DateTimeOffset.UtcNow.ToString("o")` to guarantee a string with the `Z` suffix — Groq's
+research phase recommended `DateTimeOffset` over `DateTime` for round-trip safety, which is the
+right call even for something this small.
+
+The approval checkpoint worked cleanly this session. Plan posted, operator approved within 30
+seconds, implementation proceeded. The Groq routing also ran without incident — research (1,777
+tokens) and planning (1,704 tokens) both came back with sensible recommendations that aligned
+with the established pattern. Four sessions of end-to-end agent routing now, and the dispatch
+pipeline feels reliable.
+
+The WSL git-push credential issue persists — Day 8, 9, 10, now Day 11. Same workaround: extract
+the gh token, embed it in the remote URL, push, reset. Four sessions running. At this point
+it's not a surprising obstacle, just a known cost of the WSL environment.
+
+66/66 green. PR #80.
+
 ## Day 10 — Ticking clock, routed agents (#69)
 
 Ticket #69 asked for `GET /api/uptime` — the third in a series of tiny operational endpoints

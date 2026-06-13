@@ -3840,11 +3840,19 @@ function AdminCenter() {
 function ApprovalPanel({ run, onDecided }) {
   const [busy, setBusy] = useState(null);
   const [note, setNote] = useState("");
+  const [done, setDone] = useState(null);
   const decide = async (decision) => {
     setBusy(decision);
-    await api.evoDecision(run.id, decision, note || null).catch(() => {});
-    setBusy(null); onDecided && onDecided();
+    const r = await api.evoDecision(run.id, decision, note || null).catch(() => ({ error: true }));
+    setBusy(null);
+    setDone(decision === "approve" ? "✓ Approved — the engine is implementing now (watch the status above go to PR open)."
+      : decision === "refine" ? "↺ Refining with your note — implementing now."
+      : "✕ Rejected — your recommendation was posted to the ticket and a fresh cycle is restarting.");
+    onDecided && onDecided();
   };
+  if (done) return (
+    <div style={{ background: "#f0fbf2", borderTop: `1px solid ${C.allow}`, borderBottom: `1px solid ${C.allow}`, padding: "14px 20px", color: C.allowDark || "#1c7a2e", fontSize: 13, fontWeight: 600 }}>{done}</div>
+  );
   return (
     <div style={{ background: "#fffaf0", borderTop: `1px solid ${C.warn}`, borderBottom: `1px solid ${C.warn}`, padding: "16px 20px" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
@@ -3852,8 +3860,8 @@ function ApprovalPanel({ run, onDecided }) {
         <span style={{ fontSize: 11.5, color: C.sub }}>#{run.ticket} · the engine paused before writing any code</span>
       </div>
       {run.plan
-        ? <pre style={{ ...s.codeBlock, maxHeight: 360, whiteSpace: "pre-wrap", margin: "0 0 12px", background: C.surface }}>{run.plan}</pre>
-        : <div style={{ ...s.codeBlock, margin: "0 0 12px", background: C.surface, color: C.sub, fontStyle: "italic" }}>Waiting for the engine to post its plan… (this panel stays open — it will fill in within a few seconds)</div>}
+        ? <pre style={{ ...s.codeBlock, maxHeight: 360, whiteSpace: "pre-wrap", margin: "0 0 12px", fontSize: 12.5, lineHeight: 1.5 }}>{run.plan}</pre>
+        : <div style={{ ...s.codeBlock, margin: "0 0 12px", color: "#aebdd0", fontStyle: "italic" }}>Waiting for the engine to post its plan… (this panel stays open — it will fill in within a few seconds)</div>}
       <Field label="Recommendation / correction — required to Reject (amends the ticket and restarts), optional to Refine">
         <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2}
           placeholder="e.g. don't touch the gate; add a test for the unconfigured case; use a Stopwatch not DateTime"
