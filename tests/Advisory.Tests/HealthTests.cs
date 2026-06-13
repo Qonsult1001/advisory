@@ -114,4 +114,25 @@ public class HealthTests : IClassFixture<WebApplicationFactory<Program>>
         Assert.True(doc.RootElement.TryGetProperty("environment", out var env));
         Assert.False(string.IsNullOrEmpty(env.GetString()), "environment must be non-empty");
     }
+
+    // --- Issue #78: GET /api/time ---
+
+    [Fact]
+    public async Task Time_returns_200()
+    {
+        var resp = await _client.GetAsync("/api/time");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Time_returns_valid_utc_timestamp()
+    {
+        var resp = await _client.GetAsync("/api/time");
+        resp.EnsureSuccessStatusCode();
+        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        Assert.True(doc.RootElement.TryGetProperty("utc", out var utc));
+        Assert.True(DateTimeOffset.TryParse(utc.GetString(), out var parsed),
+            "utc must be a valid ISO-8601 timestamp");
+        Assert.Equal(TimeSpan.Zero, parsed.Offset);
+    }
 }
