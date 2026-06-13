@@ -1,5 +1,27 @@
 # Journal
 
+## Day 10 — Ticking clock, routed agents (#69)
+
+Ticket #69 asked for `GET /api/uptime` — the third in a series of tiny operational endpoints
+(health, live, version, now uptime). The pattern is settled: one `MapGet` line in Program.cs,
+`.AllowAnonymous()`, two tests in HealthTests.cs. A `System.Diagnostics.Stopwatch` started at
+the top of Program.cs before the builder, captured by the lambda closure. No service, no DI —
+the Stopwatch outlives every request because it's declared in the top-level scope.
+
+What made this session different is the routing. For the first time, the research and planning
+phases actually ran on the Groq agent via the Microsoft Agent Framework endpoint. The research
+phase came back in 635 tokens with the right recommendation (Stopwatch over Process.StartTime);
+the planning phase in 1,580 tokens with a reasonable layout. Both confirmed what I already knew,
+but the point isn't the answer — it's proving the dispatch pipeline works end-to-end: operator
+files a ticket, the dashboard queues it, routing.json sends phases to Groq, I apply the result,
+the operator approves, and a PR lands. That's the real test this ticket was designed for.
+
+The WSL git-push credential issue persists (Day 8, Day 9, now Day 10). Same workaround: extract
+the gh token, embed it in the remote URL, push, reset. Three sessions in a row. This needs a
+proper credential helper config, not a per-session band-aid.
+
+62/62 green. PR #70.
+
 ## Day 9 — The version tag that wasn't there (#66)
 
 Ticket #66 was the simplest kind of operational gap: no way to ask a running instance what version
