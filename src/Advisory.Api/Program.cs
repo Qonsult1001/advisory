@@ -152,6 +152,8 @@ app.MapGet("/api/uptime", () => Results.Ok(new { uptimeSeconds = appUptime.Elaps
    .AllowAnonymous();
 app.MapGet("/api/env", () => Results.Ok(new { environment = app.Environment.EnvironmentName }))
    .AllowAnonymous();
+app.MapGet("/api/time", () => Results.Ok(new { utc = DateTimeOffset.UtcNow.ToString("o") }))
+   .AllowAnonymous();
 app.Run();
 
 public partial class Program { }
