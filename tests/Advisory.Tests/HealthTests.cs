@@ -135,4 +135,23 @@ public class HealthTests : IClassFixture<WebApplicationFactory<Program>>
             "utc must be a valid ISO-8601 timestamp");
         Assert.Equal(TimeSpan.Zero, parsed.Offset);
     }
+
+    // --- Issue #82: GET /api/pid ---
+
+    [Fact]
+    public async Task Pid_returns_200()
+    {
+        var resp = await _client.GetAsync("/api/pid");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Pid_returns_positive_integer()
+    {
+        var resp = await _client.GetAsync("/api/pid");
+        resp.EnsureSuccessStatusCode();
+        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        Assert.True(doc.RootElement.TryGetProperty("pid", out var pid));
+        Assert.True(pid.GetInt32() > 0, "pid must be a positive integer");
+    }
 }

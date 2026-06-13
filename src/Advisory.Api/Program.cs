@@ -154,6 +154,8 @@ app.MapGet("/api/env", () => Results.Ok(new { environment = app.Environment.Envi
    .AllowAnonymous();
 app.MapGet("/api/time", () => Results.Ok(new { utc = DateTimeOffset.UtcNow.ToString("o") }))
    .AllowAnonymous();
+app.MapGet("/api/pid", () => Results.Ok(new { pid = Environment.ProcessId }))
+   .AllowAnonymous();
 app.Run();
 
 public partial class Program { }
