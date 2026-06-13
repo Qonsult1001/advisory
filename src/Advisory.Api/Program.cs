@@ -11,6 +11,7 @@ using Advisory.Api.Research;
 using Advisory.Api.Resolve;
 using Advisory.Api.VulnSources;
 
+var appUptime = System.Diagnostics.Stopwatch.StartNew();
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddControllers()
@@ -146,6 +147,8 @@ app.MapGet("/api/version", () => Results.Ok(new
         service = "advisory",
         version = typeof(Program).Assembly.GetName().Version?.ToString() ?? "0.0.0"
     }))
+   .AllowAnonymous();
+app.MapGet("/api/uptime", () => Results.Ok(new { uptimeSeconds = appUptime.Elapsed.TotalSeconds }))
    .AllowAnonymous();
 app.Run();
 

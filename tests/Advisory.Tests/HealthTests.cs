@@ -76,4 +76,23 @@ public class HealthTests : IClassFixture<WebApplicationFactory<Program>>
         Assert.True(doc.RootElement.TryGetProperty("version", out var ver));
         Assert.False(string.IsNullOrEmpty(ver.GetString()), "version must be non-empty");
     }
+
+    // --- Issue #69: GET /api/uptime ---
+
+    [Fact]
+    public async Task Uptime_returns_200()
+    {
+        var resp = await _client.GetAsync("/api/uptime");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Uptime_returns_nonnegative_uptimeSeconds()
+    {
+        var resp = await _client.GetAsync("/api/uptime");
+        resp.EnsureSuccessStatusCode();
+        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        Assert.True(doc.RootElement.TryGetProperty("uptimeSeconds", out var uptime));
+        Assert.True(uptime.GetDouble() >= 0, "uptimeSeconds must be non-negative");
+    }
 }
