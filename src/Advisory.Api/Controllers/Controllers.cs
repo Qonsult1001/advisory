@@ -1264,11 +1264,23 @@ public class EvolutionController : ControllerBase
     public ActionResult SubmitPlan(string id, [FromBody] PlanReq req)
         => _svc.SubmitPlan(id, req.Plan ?? "") is { } r ? Ok(r) : NotFound(new { error = "run not found" });
 
-    /// <summary>Operator approves / rejects / refines a parked plan (from the dashboard).</summary>
+    /// <summary>Operator approves / rejects / refines a parked plan (from the dashboard). On REJECT with
+    /// a recommendation, the ticket is amended (the recommendation is posted as a comment) and the cycle
+    /// RESTARTS automatically so the engine re-plans with the feedback. Approve/refine proceed in place.</summary>
     [HttpPost("run/{id}/decision")]
     [Authorize(Policy = Policies.CanApprove)]
-    public ActionResult Decide(string id, [FromBody] DecisionReq req)
-        => _svc.Decide(id, req.Decision ?? "approve", req.SubIssue) is { } r ? Ok(r) : NotFound(new { error = "run not found" });
+    public async Task<ActionResult> Decide(string id, [FromBody] DecisionReq req, CancellationToken ct)
+    {
+        if ((req.Decision ?? "") == "reject")
+        {
+            // Reject → amend the ticket with the operator's recommendation → restart the cycle.
+            var restarted = await _svc.RejectAndAmendAsync(id, req.SubIssue ?? "", ct);
+            return restarted is { } nr
+                ? Ok(new { rejected = id, restarted = nr.Id, ticket = nr.Ticket, status = nr.Status, stage = nr.Stage })
+                : NotFound(new { error = "run not found" });
+        }
+        return _svc.Decide(id, req.Decision ?? "approve", req.SubIssue) is { } r ? Ok(r) : NotFound(new { error = "run not found" });
+    }
 
     /// <summary>Worker polls the operator's decision on a parked plan.</summary>
     [HttpGet("run/{id}/decision")]

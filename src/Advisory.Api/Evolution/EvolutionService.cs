@@ -237,6 +237,31 @@ public class EvolutionService
     public object? Decision(string id)
         => _runs.TryGetValue(id, out var r) ? new { approval = r.Approval, subIssue = r.SubIssue } : null;
 
+    /// <summary>Reject a parked plan AND amend the ticket with the operator's recommendation, then
+    /// restart the cycle: post the recommendation as a GitHub comment on the ticket (so the next run's
+    /// setup picks it up as a tester comment), mark this run rejected, and queue a fresh run for the
+    /// same ticket. Returns the new run (or null if it couldn't restart).</summary>
+    public async Task<EvoRun?> RejectAndAmendAsync(string id, string recommendation, CancellationToken ct)
+    {
+        if (!_runs.TryGetValue(id, out var rejected)) return null;
+        rejected.Approval = "rejected"; rejected.Status = "rejected"; rejected.FinishedAt = DateTimeOffset.UtcNow;
+        rejected.EtaSeconds = 0; rejected.Append("[plan] REJECTED by operator. Recommendation: " + recommendation);
+        var ticket = rejected.Ticket;
+        // Amend the ticket: the recommendation becomes a comment the next cycle's setup reads as a
+        // tester comment, so the new plan incorporates it.
+        if (!string.IsNullOrWhiteSpace(Repo) && !string.IsNullOrWhiteSpace(recommendation))
+            await GhAsync(new[] { "issue", "comment", ticket.ToString(), "--repo", Repo!,
+                "--body", "Plan rejected by operator. Please incorporate this and try again:\n\n" + recommendation }, null, ct);
+        // Restart: fresh run + re-queue for the worker.
+        var fresh = NewRun(new EvoTicket(ticket, rejected.TicketTitle, "", "", "open", new(), 0, DateTimeOffset.UtcNow, ""));
+        fresh.Status = "queued"; fresh.Stage = "restarting with your recommendation"; fresh.Pct = 0;
+        fresh.EtaSeconds = MutateStages.TotalSecs;
+        fresh.Append($"[restart] re-queued #{ticket} with operator recommendation after plan rejection.");
+        var (ok, detail) = await DispatchWorkflowAsync(ticket, fresh.Id, ct);
+        if (!ok) { fresh.Status = "failed"; fresh.Stage = "restart-failed"; fresh.Append("[error] " + detail); }
+        return fresh;
+    }
+
     /// <summary>The most recent run still waiting/working — what the worker should pick up next.</summary>
     public EvoRun? NextQueued() => _runs.Values
         .Where(r => r.Status is "queued")
