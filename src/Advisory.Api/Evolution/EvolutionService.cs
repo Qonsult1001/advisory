@@ -15,7 +15,7 @@ public class EvoRun
     public string Id { get; set; } = Guid.NewGuid().ToString("n")[..10];
     public int Ticket { get; set; }
     public string TicketTitle { get; set; } = "";
-    public string Status { get; set; } = "queued";   // queued | running | awaiting-approval | tests | pr-open | failed | skipped | rejected
+    public string Status { get; set; } = "queued";   // queued | running | awaiting-approval | tests | pr-open | released | failed | skipped | rejected
     public string Stage { get; set; } = "";
     public int Pct { get; set; }                      // 0-100 progress for the bar
     public int? EtaSeconds { get; set; }              // calibrated estimate to finish (null = unknown)
@@ -205,7 +205,7 @@ public class EvolutionService
         if (!string.IsNullOrWhiteSpace(status)) r.Status = status!;
         if (!string.IsNullOrWhiteSpace(prUrl)) r.PrUrl = prUrl;
         if (!string.IsNullOrWhiteSpace(logLine)) r.Append(logLine!);
-        if (status is "pr-open" or "failed" or "skipped" or "rejected") { r.FinishedAt = DateTimeOffset.UtcNow; r.Pct = status == "pr-open" ? 100 : r.Pct; r.EtaSeconds = 0; }
+        if (status is "pr-open" or "released" or "failed" or "skipped" or "rejected") { r.FinishedAt = DateTimeOffset.UtcNow; r.Pct = status is "pr-open" or "released" ? 100 : r.Pct; r.EtaSeconds = 0; }
         return r;
     }
 

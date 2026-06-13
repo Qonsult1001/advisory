@@ -476,7 +476,7 @@ run_cycle() {
           gh issue close "$CUR_TICKET" --repo "$REPO" \
             --comment "Fixed and released via PR #$newnum (merged to main, recompiled + redeployed). Closing." 2>/dev/null || true
         fi
-        progress "pr" "pr-open" "$newpr" "AUTO: merged #$newnum, closed #${CUR_TICKET}, redeployed ✔"
+        progress "pr" "released" "$newpr" "AUTO: merged #$newnum, closed #${CUR_TICKET}, redeployed ✔"
         echo "[$(date '+%F %T')] AUTO_RELEASE done for #$newnum (closed #${CUR_TICKET})"
       else
         progress "pr" "pr-open" "$newpr" "AUTO release failed — PR #$newnum is open, release manually"
