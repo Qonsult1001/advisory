@@ -12,7 +12,12 @@ COPY tools/reachability/package.json ./
 RUN npm install --omit=dev
 COPY tools/reachability/ ./
 
-FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
+# Runtime image based on the SDK (not the aspnet runtime) so the in-container Groq cycle can
+# `dotnet build` + `dotnet test` the change it generates IN THE CLONE before opening a PR. Without the
+# SDK the cycle couldn't self-verify and opened drafts that looked fine but could be non-compiling
+# (a bad surgical anchor once split Program.cs). With the SDK, a change that doesn't build/test can
+# never reach a mergeable PR. The SDK image is larger but that's the price of trustworthy autonomy.
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS runtime
 # Node runtime for the contextual-analysis (reachability) helper, plus git + the GitHub CLI (gh)
 # so the Evolution dashboard can read tickets and dispatch the evolution workflow.
 RUN apt-get update && apt-get install -y --no-install-recommends nodejs git curl ca-certificates \
