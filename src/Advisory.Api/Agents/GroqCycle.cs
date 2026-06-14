@@ -70,7 +70,9 @@ public sealed class GroqCycle(IAgentRunner runner, IPolicyStore policy, Evolutio
     static readonly HashSet<string> ValidModes = new()
     {
         "insert-after-text", "insert-before-text", "replace-text",
-        "insert-after-symbol", "insert-before-symbol", "replace-symbol", "delete-symbol"
+        "insert-after-symbol", "insert-before-symbol", "replace-symbol", "delete-symbol",
+        "append-into-symbol",
+        "insert-after-context", "insert-before-context", "replace-context"
     };
 
     /// <summary>Resolve the agent assigned to the execution phase (must be an API agent, not CLI).</summary>
@@ -100,12 +102,13 @@ public sealed class GroqCycle(IAgentRunner runner, IPolicyStore policy, Evolutio
     public async Task<ChangeSet?> ProduceChangeAsync(AiAgent agent, int ticket, string title, string body,
         string plan, CancellationToken ct, string? priorFailure = null, ChangeSet? priorAttempt = null)
     {
-        // RECALL the EXACT anchor text from .said + the valid test-class anchors (--explain) so the model
-        // picks the right move on the FIRST try (the v0.6.0 success-rate lever).
+        // RECALL the EXACT endpoint-anchor text from .said. (We do NOT run `said edit --explain` here:
+        // it reads the on-disk source file, which doesn't exist next to the baked brain at /app — only
+        // the clone has the source. The prompt already directs append-into-symbol for the test, and the
+        // in-clone repair step parses valid_anchors when source IS present, so --explain isn't needed here.)
         var routeCtx = SaidRecall("grep", "MapGet");
         if (string.IsNullOrWhiteSpace(routeCtx))
             routeCtx = SaidRecall("ask", "where are minimal-api GET endpoints registered in Program.cs");
-        var testAnchors = SaidExplain(SaidFile, "tests/Advisory.Tests/HealthTests.cs", "HealthTests");
 
         var sys =
             "You implement ONE minimal change for the Advisory .NET 10 API, test-first, as SURGICAL EDITS. " +
@@ -131,12 +134,27 @@ public sealed class GroqCycle(IAgentRunner runner, IPolicyStore policy, Evolutio
                 "inside a multi-line statement (pick a complete line ending in `;`), a duplicate definition, or a missing using.";
         var user =
             $"Ticket #{ticket}: {title}\n\n{body}\n\nApproved plan:\n{plan}\n\n" +
-            $"=== .said recall: existing endpoint registrations (copy a COMPLETE .AllowAnonymous(); line as the endpoint anchor) ===\n{Trim(routeCtx, 4000)}\n\n" +
-            $"=== .said --explain: valid anchors for adding to the test class HealthTests (use append-into-symbol HealthTests) ===\n{Trim(testAnchors, 1200)}\n" + repair;
-        var rr = await runner.RunAsync(agent, new AgentRunRequest("execution", agent.Persona ?? "", sys, user), ct);
-        if (!rr.Ok) { log.LogWarning("Groq execution failed: {err}", rr.Error); return null; }
-        var cs = ParseChangeSet(rr.Text);
-        if (cs is not null && string.IsNullOrWhiteSpace(priorFailure)) SaidRemember($"Groq cycle #{ticket}: {cs.summary}");
+            // Keep the injected context SMALL — a large recalled blob made gpt-oss emit longer, less
+            // reliable JSON (unescaped chars). A few hundred chars is enough to show one anchor pattern.
+            $"=== .said recall: an existing endpoint line to anchor after (copy a COMPLETE .AllowAnonymous(); line) ===\n{Trim(routeCtx, 700)}\n" + repair;
+        // JsonObject=true → provider is forced to emit valid JSON (json_object mode). This is the real
+        // fix for the flaky parsing: stop hoping the model returns clean JSON, make the API guarantee it.
+        var rr = await runner.RunAsync(agent, new AgentRunRequest("execution", agent.Persona ?? "", sys, user, JsonObject: true), ct);
+        if (!rr.Ok) { log.LogWarning("Groq execution call failed: {err}", rr.Error); return null; }
+        var raw = rr.Text ?? "";
+        // Write the EXACT bytes we are about to parse, BEFORE parsing, and log the first chars so file and
+        // parse can't diverge. Decisive instrumentation.
+        try { File.WriteAllText("/tmp/groq-raw.txt", raw); } catch { }
+        log.LogWarning("Groq exec raw: len={len} c0={c0} c1={c1} c2={c2}", raw.Length,
+            raw.Length > 0 ? (int)raw[0] : -1, raw.Length > 1 ? (int)raw[1] : -1, raw.Length > 2 ? (int)raw[2] : -1);
+        var cs = ParseChangeSet(raw, out var note);
+        if (cs is null)
+        {
+            try { File.WriteAllText("/tmp/groq-unparseable.txt", rr.Text ?? ""); } catch { }
+            log.LogWarning("Groq execution UNPARSEABLE. ok={ok} len={len} reason={note} (full at /tmp/groq-unparseable.txt)",
+                rr.Ok, rr.Text?.Length ?? 0, note);
+        }
+        else if (string.IsNullOrWhiteSpace(priorFailure)) SaidRemember($"Groq cycle #{ticket}: {cs.summary}");
         return cs;
     }
 
@@ -150,33 +168,106 @@ public sealed class GroqCycle(IAgentRunner runner, IPolicyStore policy, Evolutio
         return string.Join("\n", lines.Skip(Math.Max(0, lines.Length - n)));
     }
 
-    static ChangeSet? ParseChangeSet(string text)
+    static ChangeSet? ParseChangeSet(string text, out string note)
     {
-        if (string.IsNullOrWhiteSpace(text)) return null;
+        note = "";
+        if (string.IsNullOrWhiteSpace(text)) { note = "empty reply"; return null; }
         var opts = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
-        // Strip a ```json fence if present.
         var t = text.Trim();
+        // FAST PATH: json_object mode returns a clean object — try the raw text directly first.
+        try
+        {
+            var direct = JsonSerializer.Deserialize<ChangeSet>(t, opts);
+            if (direct is not { edits: not null } || direct.edits.Count == 0) note = "direct: deserialized but edits null/empty";
+            else
+            {
+                var bad = direct.edits.FirstOrDefault(e => string.IsNullOrWhiteSpace(e.file) || !ValidModes.Contains(e.mode ?? "")
+                                       || e.content is null
+                                       || (string.IsNullOrWhiteSpace(e.anchor) && string.IsNullOrWhiteSpace(e.symbol)));
+                if (bad is null) return direct;
+                note = $"direct: validation rejected mode='{bad.mode}' file='{bad.file}' anchorEmpty={string.IsNullOrWhiteSpace(bad.anchor)} symbolEmpty={string.IsNullOrWhiteSpace(bad.symbol)} contentNull={bad.content is null}";
+                return null;  // don't fall through to escapers and lose the real reason
+            }
+        }
+        catch (Exception ex) { note = "direct parse threw: " + ex.Message[..Math.Min(80, ex.Message.Length)]; }
+        // Strip a ```json fence if present, then try candidate extractions.
         if (t.StartsWith("```"))
         {
             int nl = t.IndexOf('\n'); if (nl > 0) t = t[(nl + 1)..];
             int fence = t.LastIndexOf("```"); if (fence > 0) t = t[..fence];
         }
-        // Try the whole thing, then the outermost {...}. Models may prepend reasoning text, so scan for
-        // the first '{' and walk braces to find a balanced object containing "files".
-        foreach (var cand in CandidateJsons(t))
+        foreach (var cand0 in CandidateJsons(t))
         {
-            try
+            // With json_object mode the provider returns valid JSON; the unescape/escape variants are
+            // belt-and-suspenders for any odd model. Try each; first valid+validated change set wins.
+            foreach (var cand in new[] { cand0, MaybeUnescape(cand0), EscapeRawControlCharsInStrings(cand0) })
             {
-                var cs = JsonSerializer.Deserialize<ChangeSet>(cand, opts);
-                if (cs is { edits: not null } && cs.edits.Count > 0 &&
-                    cs.edits.All(e => !string.IsNullOrWhiteSpace(e.file) && ValidModes.Contains(e.mode ?? "")
-                                      && e.content is not null
-                                      && (!string.IsNullOrWhiteSpace(e.anchor) || !string.IsNullOrWhiteSpace(e.symbol))))
-                    return cs;
+                try
+                {
+                    var cs = JsonSerializer.Deserialize<ChangeSet>(cand, opts);
+                    if (cs is not { edits: not null } || cs.edits.Count == 0) { note = "deserialized but no edits"; continue; }
+                    var bad = cs.edits.FirstOrDefault(e => string.IsNullOrWhiteSpace(e.file) || !ValidModes.Contains(e.mode ?? "")
+                                          || e.content is null
+                                          || (string.IsNullOrWhiteSpace(e.anchor) && string.IsNullOrWhiteSpace(e.symbol)));
+                    if (bad is null) return cs;
+                    note = $"validation rejected edit: mode={bad.mode} file={bad.file} anchorEmpty={string.IsNullOrWhiteSpace(bad.anchor)} symbolEmpty={string.IsNullOrWhiteSpace(bad.symbol)} contentNull={bad.content is null}";
+                }
+                catch (Exception ex) { note = "deserialize threw: " + ex.Message[..Math.Min(120, ex.Message.Length)]; }
             }
-            catch { /* try next candidate */ }
         }
         return null;
+    }
+
+    /// <summary>Some responses come back as ESCAPED JSON text (literal `\n`, `\"` sequences) — i.e. a
+    /// JSON-string-encoded object rather than a raw object (STJ then errors "'\' is an invalid start of
+    /// a property name"). If the candidate contains `\"` (escaped quotes) but isn't already a quoted
+    /// string, JSON-unescape the backslash sequences so it becomes a real object.</summary>
+    static string MaybeUnescape(string s)
+    {
+        if (!s.Contains("\\\"") && !s.Contains("\\n")) return s;   // nothing escaped
+        // Single left-to-right pass so we don't re-interpret characters produced by an earlier replace.
+        var sb = new StringBuilder(s.Length);
+        for (int i = 0; i < s.Length; i++)
+        {
+            if (s[i] == '\\' && i + 1 < s.Length)
+            {
+                char n = s[++i];
+                sb.Append(n switch { 'n' => '\n', 'r' => '\r', 't' => '\t', '"' => '"', '\\' => '\\', _ => n });
+            }
+            else sb.Append(s[i]);
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>Escape raw newlines/tabs/CRs that appear INSIDE JSON string values (LLMs emit them
+    /// unescaped, which is invalid JSON). Walks the text tracking string context; control chars inside a
+    /// string become \n / \t / \r; everything outside strings is untouched. Makes lenient JSON parseable.</summary>
+    static string EscapeRawControlCharsInStrings(string s)
+    {
+        var sb = new StringBuilder(s.Length + 32);
+        bool inStr = false, esc = false;
+        foreach (var ch in s)
+        {
+            if (inStr)
+            {
+                if (esc) { sb.Append(ch); esc = false; continue; }
+                if (ch == '\\') { sb.Append(ch); esc = true; continue; }
+                if (ch == '"') { sb.Append(ch); inStr = false; continue; }
+                switch (ch)
+                {
+                    case '\n': sb.Append("\\n"); break;
+                    case '\r': sb.Append("\\r"); break;
+                    case '\t': sb.Append("\\t"); break;
+                    default: sb.Append(ch); break;
+                }
+            }
+            else
+            {
+                if (ch == '"') inStr = true;
+                sb.Append(ch);
+            }
+        }
+        return sb.ToString();
     }
 
     static IEnumerable<string> CandidateJsons(string t)
