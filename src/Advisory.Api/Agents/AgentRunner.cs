@@ -56,7 +56,9 @@ public sealed class MafAgentRunner(IConfiguration cfg, ILogger<MafAgentRunner> l
             var ai = chat.AsAIAgent(new ChatClientAgentOptions
             {
                 Name = agent.Id,
-                ChatOptions = new ChatOptions { Instructions = instructions }
+                // High output cap so code-generation phases (full-file JSON change sets) are not
+                // truncated mid-JSON — truncation produced "did not return a valid change set".
+                ChatOptions = new ChatOptions { Instructions = instructions, MaxOutputTokens = 16000 }
             }) as ChatClientAgent;
             if (ai is null) return new AgentRunResult("", agent.Id, agent.Model, TokenUsage.Zero, false, "MAF did not return a ChatClientAgent");
 

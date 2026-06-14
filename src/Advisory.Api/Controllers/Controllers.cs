@@ -1190,8 +1190,10 @@ public class AiCatalogController : ControllerBase
 public class EvolutionController : ControllerBase
 {
     private readonly Advisory.Api.Evolution.EvolutionService _svc;
-    public EvolutionController(Advisory.Api.Evolution.EvolutionService svc)
-    { _svc = svc; }
+    private readonly Advisory.Api.Agents.GroqCycle _groq;
+    private readonly IServiceScopeFactory _scopes;
+    public EvolutionController(Advisory.Api.Evolution.EvolutionService svc, Advisory.Api.Agents.GroqCycle groq, IServiceScopeFactory scopes)
+    { _svc = svc; _groq = groq; _scopes = scopes; }
 
     [HttpGet("status")]
     public ActionResult Status() => Ok(_svc.Status());
@@ -1311,6 +1313,60 @@ public class EvolutionController : ControllerBase
         return ok
             ? Accepted(new { runId = run.Id, ticket = t.Number, status = run.Status, detail })
             : BadRequest(new { error = detail });
+    }
+
+    /// <summary>API-NATIVE Groq cycle — runs entirely in the container, NO local worker. Plans on Groq,
+    /// parks for operator approval, then (on approve) Groq writes the change and the container clones +
+    /// builds + tests + opens the PR. Fast and worker-free for all-Groq routing.</summary>
+    [HttpPost("groq-cycle")]
+    [Authorize(Policy = Policies.CanAdmin)]
+    public async Task<ActionResult> GroqCycleRun([FromBody] EvolveReq req, CancellationToken ct)
+    {
+        if (!_svc.Enabled) return BadRequest(new { error = "evolution is disabled" });
+        if (string.IsNullOrWhiteSpace(_svc.Repo)) return BadRequest(new { error = "no target repo" });
+        var agent = _groq.ExecutionAgent();
+        if (agent is null) return BadRequest(new { error = "no enabled API agent (Groq/OpenAI) routed to execution — this path needs an API agent, not a CLI agent" });
+        var t = await _svc.TicketAsync(req.Ticket, ct);
+        if (t is null) return NotFound(new { error = $"ticket #{req.Ticket} not found" });
+
+        var run = _svc.NewRun(t);
+        run.Stage = "planning the fix (Groq, in-container)"; run.Pct = 15; run.Append($"[groq] API-native cycle on {agent.Id} ({agent.Model}).");
+
+        // Plan now (fast), then PARK for operator approval. The implement step runs in the background
+        // once the operator approves (poll), so this endpoint returns immediately.
+        var plan = await _groq.PlanAsync(agent, t.Number, t.Title, t.Body, ct);
+        _svc.SubmitPlan(run.Id, plan);
+
+        var runId = run.Id; var ticket = t.Number; var title = t.Title; var body = t.Body;
+        _ = Task.Run(async () =>
+        {
+            using var scope = _scopes.CreateScope();
+            var svc = scope.ServiceProvider.GetRequiredService<Advisory.Api.Evolution.EvolutionService>();
+            var groq = scope.ServiceProvider.GetRequiredService<Advisory.Api.Agents.GroqCycle>();
+            // Poll for the operator's decision (up to ~15 min). reject is handled by the decision endpoint.
+            for (int i = 0; i < 180; i++)
+            {
+                await Task.Delay(5000);
+                var r = svc.Run(runId);
+                if (r is null || r.Approval == "rejected") return;
+                if (r.Approval is "approved") break;
+                if (i == 179) { svc.UpdateProgress(runId, "fix", "skipped", null, "approval timed out — re-queue to retry"); return; }
+            }
+            svc.UpdateProgress(runId, "fix", "running", null, "approved — Groq implementing (in-container)");
+            var ag = groq.ExecutionAgent();
+            if (ag is null) { svc.UpdateProgress(runId, "fix", "failed", null, "execution agent disappeared"); return; }
+            // Context comes from RECALL against the .said brain inside ProduceChangeAsync — token-efficient,
+            // only the relevant route + test pattern, not whole files.
+            var approved = svc.Run(runId);
+            var change = await groq.ProduceChangeAsync(ag, ticket, title, body, approved?.Plan ?? plan, default);
+            if (change is null) { svc.UpdateProgress(runId, "fix", "failed", null, "Groq did not return a valid change set"); return; }
+            svc.UpdateProgress(runId, "build", "tests", null, $"building + testing: {change.summary}");
+            var (pok, detail) = await groq.ImplementAndPrAsync(ticket, title, change, default);
+            if (pok) svc.UpdateProgress(runId, "pr", "pr-open", detail, $"PR opened (Groq, in-container): {detail}");
+            else svc.UpdateProgress(runId, "fix", "failed", null, $"implement/PR failed: {detail}");
+        });
+
+        return Accepted(new { runId = run.Id, ticket = t.Number, status = "awaiting-approval", agent = agent.Id, model = agent.Model });
     }
 }
 
