@@ -28,6 +28,13 @@ COPY --from=reach /reach /app/reachability
 # Research backlog read by the Evolution tab (parsed into section-tagged findings). Baked from the
 # repo at build time; refreshed when `release` rebuilds the image after a research PR merges to main.
 COPY RESEARCH.md /app/RESEARCH.md
+# .said project brain + the LINUX said binary, so the in-container Groq cycle RECALLS only the code it
+# needs (said sym/get/ask) instead of being force-fed whole files. The Windows said.exe can't run here;
+# said-linux is the x86-64 ELF build. Baked at image build; refreshed on release.
+COPY tools/said/said-linux /app/said
+COPY Advisory.said /app/Advisory.said
+RUN chmod +x /app/said
+ENV SAID_BIN=/app/said SAID_FILE=/app/Advisory.said
 ENV ASPNETCORE_URLS=http://+:5000
 EXPOSE 5000
 ENTRYPOINT ["dotnet", "Advisory.Api.dll"]
