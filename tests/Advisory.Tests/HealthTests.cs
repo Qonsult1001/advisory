@@ -76,6 +76,15 @@ public class HealthTests : IClassFixture<WebApplicationFactory<Program>>
     }
 
     // --- Issue #69: GET /api/uptime ---
+    [Fact]
+    public async Task Os_returns_nonempty_os()
+    {
+        var resp = await _client.GetAsync("/api/os");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        Assert.True(doc.RootElement.TryGetProperty("os", out var os));
+        Assert.False(string.IsNullOrWhiteSpace(os.GetString()));
+    }
 
     [Fact]
     public async Task Uptime_returns_200()
