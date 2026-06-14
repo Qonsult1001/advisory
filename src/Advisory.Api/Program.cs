@@ -144,6 +144,8 @@ app.MapGet("/api/health", () => Results.Ok(new { status = "ok", service = "Advis
 app.MapGet("/api/health/live", () => Results.Ok(new { status = "ok" }))
    .AllowAnonymous();
 app.MapGet("/api/version", () => Results.Ok(new
+app.MapGet("/api/os", () => Results.Json(new { os = System.Runtime.InteropServices.RuntimeInformation.OSDescription }))
+    .AllowAnonymous();
     {
         service = "advisory",
         version = typeof(Program).Assembly.GetName().Version?.ToString() ?? "0.0.0"
