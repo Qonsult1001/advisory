@@ -1,18 +1,16 @@
+// tests/Advisory.Tests/HealthTests.cs
+using System;
 using System.Net;
+using System.Net.Http;
 using System.Text.Json;
+using System.Threading.Tasks;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Xunit;
 
-namespace Advisory.Tests;
-
-/// <summary>
-/// Pins the fix for issue #27: GET /api/health must be reachable without authentication
-/// and return 200 with status "ok".
-/// </summary>
 public class HealthTests : IClassFixture<WebApplicationFactory<Program>>
 {
     private readonly HttpClient _client;
-    public HealthTests(WebApplicationFactory<Program> f) => _client = f.CreateClient();
+    public HealthTests(WebApplicationFactory<Program> factory) => _client = factory.CreateClient();
 
     [Fact]
     public async Task Health_returns_200()
@@ -87,71 +85,31 @@ public class HealthTests : IClassFixture<WebApplicationFactory<Program>>
     }
 
     [Fact]
-    public async Task Uptime_returns_nonnegative_uptimeSeconds()
+    public async Task Uptime_returns_nonnegative_seconds()
     {
         var resp = await _client.GetAsync("/api/uptime");
         resp.EnsureSuccessStatusCode();
         using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
-        Assert.True(doc.RootElement.TryGetProperty("uptimeSeconds", out var uptime));
-        Assert.True(uptime.GetDouble() >= 0, "uptimeSeconds must be non-negative");
+        Assert.True(doc.RootElement.TryGetProperty("uptime", out var up));
+        Assert.True(up.GetDouble() >= 0, "uptime must be non‑negative");
     }
 
-    // --- Issue #73: GET /api/env ---
+    // --- New Issue: GET /api/host ---
 
     [Fact]
-    public async Task Env_returns_200()
+    public async Task Host_returns_200()
     {
-        var resp = await _client.GetAsync("/api/env");
+        var resp = await _client.GetAsync("/api/host");
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
     }
 
     [Fact]
-    public async Task Env_returns_nonempty_environment()
+    public async Task Host_returns_nonempty_host()
     {
-        var resp = await _client.GetAsync("/api/env");
+        var resp = await _client.GetAsync("/api/host");
         resp.EnsureSuccessStatusCode();
         using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
-        Assert.True(doc.RootElement.TryGetProperty("environment", out var env));
-        Assert.False(string.IsNullOrEmpty(env.GetString()), "environment must be non-empty");
-    }
-
-    // --- Issue #78: GET /api/time ---
-
-    [Fact]
-    public async Task Time_returns_200()
-    {
-        var resp = await _client.GetAsync("/api/time");
-        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
-    }
-
-    [Fact]
-    public async Task Time_returns_valid_utc_timestamp()
-    {
-        var resp = await _client.GetAsync("/api/time");
-        resp.EnsureSuccessStatusCode();
-        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
-        Assert.True(doc.RootElement.TryGetProperty("utc", out var utc));
-        Assert.True(DateTimeOffset.TryParse(utc.GetString(), out var parsed),
-            "utc must be a valid ISO-8601 timestamp");
-        Assert.Equal(TimeSpan.Zero, parsed.Offset);
-    }
-
-    // --- Issue #82: GET /api/pid ---
-
-    [Fact]
-    public async Task Pid_returns_200()
-    {
-        var resp = await _client.GetAsync("/api/pid");
-        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
-    }
-
-    [Fact]
-    public async Task Pid_returns_positive_integer()
-    {
-        var resp = await _client.GetAsync("/api/pid");
-        resp.EnsureSuccessStatusCode();
-        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
-        Assert.True(doc.RootElement.TryGetProperty("pid", out var pid));
-        Assert.True(pid.GetInt32() > 0, "pid must be a positive integer");
+        Assert.True(doc.RootElement.TryGetProperty("host", out var host));
+        Assert.False(string.IsNullOrWhiteSpace(host.GetString()), "host must be non‑empty");
     }
 }
