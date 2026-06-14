@@ -39,13 +39,27 @@ public sealed class GroqCycle(IAgentRunner runner, IPolicyStore policy, Evolutio
         catch { return ""; }
     }
 
-    /// <summary>Push a memory back to .said after a change — "JSON output pushed to .said" so future
-    /// cycles recall it. Best-effort; never blocks the cycle.</summary>
+    /// <summary>Save a memory to .said after a change so future cycles recall it. The v0.6.0 CLI command
+    /// is `add` (the MCP tool is `remember`); we shell to the CLI here. Best-effort; never blocks.</summary>
     public void SaidRemember(string note)
     {
         if (!File.Exists(SaidBin) || !File.Exists(SaidFile)) return;
-        try { EvolutionService.RunProc(SaidBin, new[] { "remember", note, "--path", SaidFile }, null, null, 15000); }
+        try { EvolutionService.RunProc(SaidBin, new[] { "add", note, "--path", SaidFile }, null, null, 15000); }
         catch { }
+    }
+
+    /// <summary>Pre-validate a member insertion via `said edit --explain` (v0.6.0): returns the raw JSON
+    /// menu of valid anchors for adding to a class/scope, so the model can pick the right move up front.</summary>
+    public string SaidExplain(string saidPath, string file, string symbol)
+    {
+        try
+        {
+            var (ok, outp, _) = EvolutionService.RunProc(SaidBin,
+                new[] { "edit", "--path", saidPath, "--file", file, "--explain", "--symbol", symbol, "--json" },
+                Path.GetDirectoryName(saidPath), null, 15000);
+            return ok ? outp : "";
+        }
+        catch { return ""; }
     }
 
     /// <summary>One SURGICAL edit applied via `said edit` — an anchored insert/replace, NEVER a whole-file
@@ -86,37 +100,39 @@ public sealed class GroqCycle(IAgentRunner runner, IPolicyStore policy, Evolutio
     public async Task<ChangeSet?> ProduceChangeAsync(AiAgent agent, int ticket, string title, string body,
         string plan, CancellationToken ct, string? priorFailure = null, ChangeSet? priorAttempt = null)
     {
-        // RECALL the EXACT anchor text from .said: existing endpoint registrations + a test pattern.
+        // RECALL the EXACT anchor text from .said + the valid test-class anchors (--explain) so the model
+        // picks the right move on the FIRST try (the v0.6.0 success-rate lever).
         var routeCtx = SaidRecall("grep", "MapGet");
-        var testCtx  = SaidRecall("grep", "Fact");
         if (string.IsNullOrWhiteSpace(routeCtx))
             routeCtx = SaidRecall("ask", "where are minimal-api GET endpoints registered in Program.cs");
+        var testAnchors = SaidExplain(SaidFile, "tests/Advisory.Tests/HealthTests.cs", "HealthTests");
 
         var sys =
             "You implement ONE minimal change for the Advisory .NET 10 API, test-first, as SURGICAL EDITS. " +
             "Return ONLY strict JSON: {\"summary\":\"...\",\"edits\":[{\"file\":\"relative/path\",\"mode\":\"<mode>\"," +
-            "\"anchor\":\"EXACT existing line text\",\"content\":\"new code\"}]}. " +
-            "NEVER return whole-file content. Each edit is applied at an anchor — you can only INSERT or REPLACE " +
-            "at a precise location, never rewrite a file. Prefer mode \"insert-after-text\" with an \"anchor\" that " +
-            "is an EXACT substring of an existing line (copy it verbatim from the recalled context below). " +
-            "CRITICAL: the anchor must be a COMPLETE, self-contained line — never the first line of a multi-line " +
-            "statement (e.g. don't anchor on `Results.Ok(new` that spans several lines); pick a line that ends a " +
-            "statement, like one with `.AllowAnonymous();`, so the insert lands between statements, not inside one. " +
-            "Add the endpoint to src/Advisory.Api/Program.cs (insert-after-text, anchor = a complete existing " +
-            "`.AllowAnonymous();` line) and a test to tests/Advisory.Tests/HealthTests.cs. " +
-            "Valid modes: insert-after-text, insert-before-text, replace-text. No prose, JSON only.";
+            "\"anchor\":\"...\",\"symbol\":\"...\",\"content\":\"new code\"}]}. NEVER return whole-file content. " +
+            "TWO edits, using these EXACT patterns:\n" +
+            "1) ENDPOINT → file src/Advisory.Api/Program.cs, mode \"insert-after-text\", anchor = a COMPLETE existing " +
+            "line that ends a statement (copy a full `.AllowAnonymous();` line VERBATIM from the recall below — " +
+            "never a prefix or the first line of a multi-line statement). content = one `app.MapGet(...).AllowAnonymous();` line.\n" +
+            "2) TEST → file tests/Advisory.Tests/HealthTests.cs, mode \"append-into-symbol\", symbol = \"HealthTests\" " +
+            "(NO anchor). This appends your [Fact] method at CLASS scope (auto-indented) so it can NEVER nest inside " +
+            "another method. content = the full `[Fact] public async Task ...() { ... }` method body. " +
+            "Use HttpClient via the existing fixture pattern; assert HTTP 200 and the JSON shape from the ticket.\n" +
+            "No prose, JSON only.";
         var repair = "";
         if (!string.IsNullOrWhiteSpace(priorFailure))
             repair =
                 "\n\n=== YOUR PREVIOUS ATTEMPT FAILED — FIX IT ===\n" +
-                "The previous change set did not build/test. Here is what you returned:\n" +
-                JsonSerializer.Serialize(priorAttempt) + "\n\nThe build/test error was:\n" + Trim(priorFailure, 2500) +
-                "\nReturn a CORRECTED change set. Common causes: the anchor was inside a multi-line statement " +
-                "(pick a complete line that ends in `;`), a duplicate definition, or a missing using/namespace.";
+                "Here is what you returned:\n" + JsonSerializer.Serialize(priorAttempt) +
+                "\n\nThe error was:\n" + Trim(priorFailure, 2500) +
+                "\nIf the error JSON contains a `valid_anchors` array, use one of those EXACT {mode,symbol/anchor} " +
+                "pairs. For adding a member, prefer the `append-into-symbol` entry. Other common causes: anchor was " +
+                "inside a multi-line statement (pick a complete line ending in `;`), a duplicate definition, or a missing using.";
         var user =
             $"Ticket #{ticket}: {title}\n\n{body}\n\nApproved plan:\n{plan}\n\n" +
-            $"=== .said recall: existing endpoint registrations (copy an anchor verbatim) ===\n{Trim(routeCtx, 4000)}\n\n" +
-            $"=== .said recall: existing test pattern (anchor for the test file) ===\n{Trim(testCtx, 3000)}\n" + repair;
+            $"=== .said recall: existing endpoint registrations (copy a COMPLETE .AllowAnonymous(); line as the endpoint anchor) ===\n{Trim(routeCtx, 4000)}\n\n" +
+            $"=== .said --explain: valid anchors for adding to the test class HealthTests (use append-into-symbol HealthTests) ===\n{Trim(testAnchors, 1200)}\n" + repair;
         var rr = await runner.RunAsync(agent, new AgentRunRequest("execution", agent.Persona ?? "", sys, user), ct);
         if (!rr.Ok) { log.LogWarning("Groq execution failed: {err}", rr.Error); return null; }
         var cs = ParseChangeSet(rr.Text);
