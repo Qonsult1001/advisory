@@ -1355,15 +1355,16 @@ public class EvolutionController : ControllerBase
             svc.UpdateProgress(runId, "fix", "running", null, "approved — Groq implementing (in-container)");
             var ag = groq.ExecutionAgent();
             if (ag is null) { svc.UpdateProgress(runId, "fix", "failed", null, "execution agent disappeared"); return; }
-            // Context comes from RECALL against the .said brain inside ProduceChangeAsync — token-efficient,
-            // only the relevant route + test pattern, not whole files.
+            // SELF-REPAIR loop: produce → apply+build+test in a clone; if it fails to build/test, feed the
+            // error back to Groq and retry (up to 2 repairs). Only opens a PR when build AND tests pass —
+            // a non-compiling change can never reach a PR. Context is RECALL from .said (token-efficient).
             var approved = svc.Run(runId);
-            var change = await groq.ProduceChangeAsync(ag, ticket, title, body, approved?.Plan ?? plan, default);
-            if (change is null) { svc.UpdateProgress(runId, "fix", "failed", null, "Groq did not return a valid change set"); return; }
-            svc.UpdateProgress(runId, "build", "tests", null, $"building + testing: {change.summary}");
-            var (pok, detail) = await groq.ImplementAndPrAsync(ticket, title, change, default);
-            if (pok) svc.UpdateProgress(runId, "pr", "pr-open", detail, $"PR opened (Groq, in-container): {detail}");
-            else svc.UpdateProgress(runId, "fix", "failed", null, $"implement/PR failed: {detail}");
+            var (pok, detail) = await groq.ImplementWithRepairAsync(
+                ag, ticket, title, body, approved?.Plan ?? plan,
+                (stage, msg) => svc.UpdateProgress(runId, stage, stage == "build" ? "tests" : "running", null, msg),
+                maxRepairs: 2, default);
+            if (pok) svc.UpdateProgress(runId, "pr", "pr-open", detail, $"PR opened (Groq, in-container, built+tested): {detail}");
+            else svc.UpdateProgress(runId, "fix", "failed", null, $"implement failed (no PR — change never built/tested clean): {detail}");
         });
 
         return Accepted(new { runId = run.Id, ticket = t.Number, status = "awaiting-approval", agent = agent.Id, model = agent.Model });
