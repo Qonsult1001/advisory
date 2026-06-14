@@ -327,6 +327,33 @@ public class EvolutionService
         catch (Exception ex) { _log.LogWarning(ex, "parse tickets"); return new(); }
     }
 
+    /// <summary>Fetch ONE ticket by number (immediate — no label-search index lag).</summary>
+    public async Task<EvoTicket?> TicketAsync(int number, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(Repo)) return null;
+        var (ok, outp, _) = await GhAsync(new[] {
+            "issue", "view", number.ToString(), "--repo", Repo!,
+            "--json", "number,title,body,author,state,labels,comments,url"
+        }, null, ct);
+        if (!ok) return null;
+        try
+        {
+            using var doc = JsonDocument.Parse(outp);
+            var e = doc.RootElement;
+            return new EvoTicket(
+                e.GetProperty("number").GetInt32(),
+                e.GetProperty("title").GetString() ?? "",
+                e.TryGetProperty("body", out var b) ? b.GetString() ?? "" : "",
+                e.TryGetProperty("author", out var a) && a.TryGetProperty("login", out var al) ? al.GetString() ?? "" : "",
+                e.TryGetProperty("state", out var st) ? st.GetString() ?? "open" : "open",
+                e.TryGetProperty("labels", out var lb) ? lb.EnumerateArray().Select(x => x.GetProperty("name").GetString() ?? "").ToList() : new(),
+                e.TryGetProperty("comments", out var c) && c.ValueKind == JsonValueKind.Array ? c.GetArrayLength() : 0,
+                DateTimeOffset.UtcNow,
+                e.TryGetProperty("url", out var ul) ? ul.GetString() ?? "" : "");
+        }
+        catch { return null; }
+    }
+
     /// <summary>Fetch full comment thread for a ticket (tester replies the engine should address).</summary>
     public async Task<string> TicketContextAsync(int number, CancellationToken ct)
     {
