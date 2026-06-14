@@ -14,8 +14,10 @@ public record TokenUsage(int Prompt, int Completion, int Total)
 /// <summary>Result of running one phase on one agent: the text it produced + token usage + which agent.</summary>
 public record AgentRunResult(string Text, string AgentId, string Model, TokenUsage Usage, bool Ok = true, string? Error = null);
 
-/// <summary>A request to run a single phase on a routed agent.</summary>
-public record AgentRunRequest(string Phase, string Persona, string Instructions, string UserMessage);
+/// <summary>A request to run a single phase on a routed agent. JsonObject=true forces the provider to
+/// return valid JSON (OpenAI/Groq "json_object" response_format) — the market-standard way to get
+/// reliable structured output instead of hand-parsing free-form text.</summary>
+public record AgentRunRequest(string Phase, string Persona, string Instructions, string UserMessage, bool JsonObject = false);
 
 /// <summary>Application contract — the orchestrator depends on this, never on MAF types directly
 /// (clean-architecture boundary, mirroring BeapiGlobalAiService's IAgentRunner).</summary>
@@ -56,9 +58,16 @@ public sealed class MafAgentRunner(IConfiguration cfg, ILogger<MafAgentRunner> l
             var ai = chat.AsAIAgent(new ChatClientAgentOptions
             {
                 Name = agent.Id,
-                // High output cap so code-generation phases (full-file JSON change sets) are not
-                // truncated mid-JSON — truncation produced "did not return a valid change set".
-                ChatOptions = new ChatOptions { Instructions = instructions, MaxOutputTokens = 16000 }
+                // High output cap so code-generation JSON isn't truncated. When the caller needs
+                // structured output, set ResponseFormat=Json — this is OpenAI/Groq "json_object" mode,
+                // which FORCES the provider to return syntactically valid JSON (the market-standard fix
+                // for "model returned free-form text"; replaces fragile hand-parsing of prose).
+                ChatOptions = new ChatOptions
+                {
+                    Instructions = instructions,
+                    MaxOutputTokens = 16000,
+                    ResponseFormat = request.JsonObject ? ChatResponseFormat.Json : null,
+                }
             }) as ChatClientAgent;
             if (ai is null) return new AgentRunResult("", agent.Id, agent.Model, TokenUsage.Zero, false, "MAF did not return a ChatClientAgent");
 
