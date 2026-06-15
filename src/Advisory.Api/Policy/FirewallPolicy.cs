@@ -249,6 +249,9 @@ public class AiAgent
     // instructions (e.g. "You are a meticulous .NET security reviewer; never weaken a control…").
     public string? Persona { get; set; }
     public bool Enabled { get; set; } = true;
+    // Reasoning ("show the model's thinking") — only for providers that support it (Groq, OpenRouter).
+    // Off by default; when on, the runner sends reasoning_effort and captures the thinking text.
+    public bool Reasoning { get; set; } = false;
 }
 
 /// <summary>Which configured agent handles each phase of a cycle. Empty => fall back to the default

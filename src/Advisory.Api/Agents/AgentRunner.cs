@@ -2,6 +2,7 @@ using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using OpenAI;
 using Advisory.Api.Policy;
+using System.Text.Json;
 
 namespace Advisory.Api.Agents;
 
@@ -12,7 +13,7 @@ public record TokenUsage(int Prompt, int Completion, int Total)
 }
 
 /// <summary>Result of running one phase on one agent: the text it produced + token usage + which agent.</summary>
-public record AgentRunResult(string Text, string AgentId, string Model, TokenUsage Usage, bool Ok = true, string? Error = null);
+public record AgentRunResult(string Text, string AgentId, string Model, TokenUsage Usage, bool Ok = true, string? Error = null, string? Reasoning = null);
 
 /// <summary>A request to run a single phase on a routed agent. JsonObject=true forces the provider to
 /// return valid JSON (OpenAI/Groq "json_object" response_format) — the market-standard way to get
@@ -51,6 +52,17 @@ public sealed class MafAgentRunner(IConfiguration cfg, ILogger<MafAgentRunner> l
             return Stub(agent, request, string.IsNullOrWhiteSpace(key) ? "no API key — stubbed" : $"{agent.Standard} runs via the local CLI");
         }
 
+        // Reasoning path: when the agent has reasoning ON and the provider supports it (Groq /
+        // OpenRouter, OpenAI-compatible), call directly so we can send reasoning_effort AND capture
+        // the model's THINKING (a separate `reasoning` field the OpenAI SDK drops). Off by default.
+        var epLower = (agent.Endpoint ?? "").ToLowerInvariant();
+        var reasoningCapable = epLower.Contains("api.groq.com") || epLower.Contains("openrouter.ai");
+        if (agent.Reasoning && reasoningCapable)
+        {
+            try { return await RunWithReasoningAsync(agent, request, key!, epLower.Contains("openrouter.ai"), ct); }
+            catch (Exception ex) { log.LogWarning(ex, "reasoning path failed for {Agent}; falling back to MAF", agent.Id); }
+        }
+
         try
         {
             IChatClient chat = BuildChatClient(agent, key!);
@@ -85,6 +97,55 @@ public sealed class MafAgentRunner(IConfiguration cfg, ILogger<MafAgentRunner> l
             return new AgentRunResult("", agent.Id, agent.Model, TokenUsage.Zero, false, ex.Message);
         }
     }
+
+    static readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(120) };
+
+    /// <summary>Direct OpenAI-compatible call with reasoning enabled, capturing both the answer
+    /// (`content`) and the model's THINKING (`reasoning`). Groq uses `reasoning_effort`; OpenRouter
+    /// uses `reasoning: { effort }`. Used only when the agent has Reasoning=on.</summary>
+    async Task<AgentRunResult> RunWithReasoningAsync(AiAgent agent, AgentRunRequest request, string key, bool isOpenRouter, CancellationToken ct)
+    {
+        var baseUrl = (agent.Endpoint ?? "https://api.openai.com/v1").TrimEnd('/');
+        var instructions = string.IsNullOrWhiteSpace(agent.Persona) ? request.Instructions : agent.Persona + "\n\n" + request.Instructions;
+        var body = new Dictionary<string, object?>
+        {
+            ["model"] = agent.Model,
+            ["max_tokens"] = 16000,
+            ["messages"] = new object[]
+            {
+                new { role = "system", content = instructions },
+                new { role = "user", content = request.UserMessage },
+            },
+        };
+        if (request.JsonObject) body["response_format"] = new { type = "json_object" };
+        // Provider-specific reasoning param (medium effort = a useful, not excessive, thinking budget).
+        if (isOpenRouter) body["reasoning"] = new { effort = "medium" };
+        else body["reasoning_effort"] = "medium";
+
+        using var req = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/chat/completions");
+        req.Headers.Add("Authorization", $"Bearer {key}");
+        if (isOpenRouter) { req.Headers.Add("HTTP-Referer", "https://advisory.local"); req.Headers.Add("X-Title", "Advisory"); }
+        req.Content = new StringContent(JsonSerializer.Serialize(body), System.Text.Encoding.UTF8);
+        req.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
+
+        var resp = await _http.SendAsync(req, ct).ConfigureAwait(false);
+        var raw = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+        if (!resp.IsSuccessStatusCode) return new AgentRunResult("", agent.Id, agent.Model, TokenUsage.Zero, false, $"{(int)resp.StatusCode}: {Trim(raw, 300)}");
+
+        using var doc = JsonDocument.Parse(raw);
+        var msg = doc.RootElement.GetProperty("choices")[0].GetProperty("message");
+        var content = msg.TryGetProperty("content", out var c) ? c.GetString() ?? "" : "";
+        var reasoning = msg.TryGetProperty("reasoning", out var r) && r.ValueKind == JsonValueKind.String ? r.GetString() : null;
+        TokenUsage usage = TokenUsage.Zero;
+        if (doc.RootElement.TryGetProperty("usage", out var u))
+        {
+            int pt = u.TryGetProperty("prompt_tokens", out var p) ? p.GetInt32() : 0;
+            int ctk = u.TryGetProperty("completion_tokens", out var co) ? co.GetInt32() : 0;
+            usage = new TokenUsage(pt, ctk, u.TryGetProperty("total_tokens", out var tt) ? tt.GetInt32() : pt + ctk);
+        }
+        return new AgentRunResult(content, agent.Id, agent.Model, usage, true, null, reasoning);
+    }
+    static string Trim(string s, int n) => string.IsNullOrEmpty(s) || s.Length <= n ? s : s[..n] + "…";
 
     /// <summary>AiAgent → IChatClient. OpenAI-compatible (Groq, on-prem gpt-oss, OpenAI) via a custom
     /// endpoint; Anthropic via its OpenAI-compatible endpoint. Mirrors Beapi's OpenAiMafChatClientFactory.</summary>
