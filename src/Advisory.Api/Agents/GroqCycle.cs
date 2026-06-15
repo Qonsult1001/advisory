@@ -323,6 +323,37 @@ public sealed class GroqCycle(IAgentRunner runner, IPolicyStore policy, Evolutio
     /// `detail` (the compiler/test error) back to Groq for a corrected change set.</summary>
     public record ImplResult(bool ok, string detail, bool buildOrTestFailed);
 
+    /// <summary>Pick the most informative single line from a build/test/edit error for the run log:
+    /// prefer the first real compiler/anchor error (`error CS...`, `anchor ... not found`, `said edit
+    /// failed`), else the first non-empty line. Bounded length so the log stays readable.</summary>
+    static string FirstErrorLine(string detail)
+    {
+        if (string.IsNullOrWhiteSpace(detail)) return "(no error text)";
+        var lines = detail.Split('\n').Select(l => l.Trim()).Where(l => l.Length > 0).ToList();
+        // Bare header tags from ImplementAndPrAsync ("does NOT BUILD:", "TESTS FAILED:") carry no
+        // detail — keep the tag as a prefix but append the first line that actually says WHY.
+        bool IsHeaderTag(string l) => l is "does NOT BUILD:" or "TESTS FAILED:"
+                                      || l.StartsWith("said edit failed", StringComparison.OrdinalIgnoreCase);
+        // The most informative line: a real compiler/assert/anchor error that ISN'T just a header tag.
+        var detailLine = lines.FirstOrDefault(l => !IsHeaderTag(l) && (
+                             l.Contains("error CS", StringComparison.OrdinalIgnoreCase)
+                             || l.Contains("anchor", StringComparison.OrdinalIgnoreCase)
+                             || l.Contains("Assert", StringComparison.OrdinalIgnoreCase)
+                             || l.Contains("Expected", StringComparison.OrdinalIgnoreCase)
+                             || l.Contains("Exception", StringComparison.OrdinalIgnoreCase)
+                             || l.Contains("error", StringComparison.OrdinalIgnoreCase)
+                             || l.Contains("Failed", StringComparison.OrdinalIgnoreCase)));
+        var header = lines.FirstOrDefault(IsHeaderTag);
+        var pick = (header, detailLine) switch
+        {
+            ({ } h, { } d) when h != d => $"{h} {d}",
+            (_, { } d)                 => d,
+            ({ } h, _)                 => h,
+            _                          => lines.FirstOrDefault() ?? "(no error text)"
+        };
+        return pick.Length > 240 ? pick.Substring(0, 240) + "…" : pick;
+    }
+
     /// <summary>Drive the full implement step with a SELF-REPAIR loop: produce a change set, apply +
     /// build + test in a throwaway clone; if it fails to build/test, feed the error back to Groq for a
     /// corrected change set and retry (up to maxRepairs). Only opens a PR when build AND tests pass —
@@ -345,7 +376,11 @@ public sealed class GroqCycle(IAgentRunner runner, IPolicyStore policy, Evolutio
             lastErr = r.detail;
             if (attempt == maxRepairs) break;
             // Build/test failed — ask Groq to FIX it, passing the error + its prior attempt.
-            progress?.Invoke("fix", $"change didn't build/test — asking Groq to fix (attempt {attempt + 1}/{maxRepairs})");
+            // Surface the ACTUAL error into the run log (not just "didn't build/test"), so each
+            // first-attempt failure leaves per-run evidence of WHY (compiler/anchor error), instead
+            // of discarding it. `r.detail` is already tagged + tail-trimmed; keep the log line compact.
+            progress?.Invoke("fix",
+                $"attempt {attempt + 1}/{maxRepairs} failed — asking Groq to fix. Error: {FirstErrorLine(r.detail)}");
             var fixedCs = await ProduceChangeAsync(agent, ticket, title, body, plan, ct, lastErr, change);
             if (fixedCs is null) return (false, $"repair failed — Groq returned no valid change set. Last error:\n{lastErr}");
             change = fixedCs;
