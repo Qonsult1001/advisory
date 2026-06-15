@@ -143,6 +143,7 @@ app.MapGet("/api/health", () => Results.Ok(new { status = "ok", service = "Advis
    .AllowAnonymous();
 app.MapGet("/api/numcpu", () => new { numcpu = Environment.ProcessorCount }).AllowAnonymous();
 app.MapGet("/api/alloc2", () => new { alloc = GC.GetTotalAllocatedBytes(true) }).AllowAnonymous();
+app.MapGet("/api/is64bit", () => new { is64bit = Environment.Is64BitProcess }).AllowAnonymous();
 app.MapGet("/api/cpu", () => new { cpu = Environment.ProcessorCount }).AllowAnonymous();
 app.MapGet("/api/cores", () => new { cores = Environment.ProcessorCount }).AllowAnonymous();
 app.MapGet("/api/logical", () => new { logical = Environment.ProcessorCount }).AllowAnonymous();

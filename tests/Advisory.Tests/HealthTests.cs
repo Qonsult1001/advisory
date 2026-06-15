@@ -121,6 +121,15 @@ public class HealthTests : IClassFixture<WebApplicationFactory<Program>>
         Assert.True(doc.RootElement.TryGetProperty("host", out var host));
         Assert.False(string.IsNullOrWhiteSpace(host.GetString()), "host must be non‑empty");
     }
+                                    [Fact]
+                                    public async Task Is64Bit_Returns_200()
+                                    {
+                                        var resp = await _client.GetAsync("/api/is64bit");
+                                        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+                                        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+                                        Assert.True(doc.RootElement.TryGetProperty("is64bit", out var prop));
+                                        Assert.True(prop.ValueKind == JsonValueKind.True || prop.ValueKind == JsonValueKind.False);
+                                    }
                                 [Fact]
                                     public async Task Logical_returns_200_and_positive()
                                     {
