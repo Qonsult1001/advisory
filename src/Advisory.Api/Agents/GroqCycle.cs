@@ -48,6 +48,34 @@ public sealed class GroqCycle(IAgentRunner runner, IPolicyStore policy, Evolutio
         catch { }
     }
 
+    /// <summary>Read the actual complete `app.MapGet(...)...AllowAnonymous();` registration lines from
+    /// Program.cs so the model copies a REAL anchor verbatim (never hallucinates one like /healthz).
+    /// Reads the read-only /workspace mount (current source). Returns "" if unavailable.</summary>
+    static string RealEndpointAnchors()
+    {
+        foreach (var p in new[] { "/workspace/src/Advisory.Api/Program.cs", "src/Advisory.Api/Program.cs" })
+        {
+            try
+            {
+                if (!File.Exists(p)) continue;
+                var lines = File.ReadAllLines(p);
+                // Anchor on the LINE THAT ENDS a registration (`.AllowAnonymous();`), so inserting AFTER it
+                // lands the new endpoint BETWEEN complete registrations — never inside a multi-line statement
+                // (that was the Program.cs-split bug). These are single, unique, on-disk lines.
+                var hits = lines.Select(x => x.Trim())
+                                .Where(l => l.StartsWith(".AllowAnonymous();") || (l.StartsWith("app.MapGet(") && l.Contains("AllowAnonymous();")))
+                                .ToList();
+                if (hits.Count > 0)
+                    return "To add the endpoint, use mode 'insert-after-text' with \"anchor\" = one of these EXACT "
+                           + "single lines copied VERBATIM (each ends a registration; your new "
+                           + "`app.MapGet(\"/api/...\", ...).AllowAnonymous();` will be inserted on the line after it):\n"
+                           + string.Join("\n", hits.Distinct().TakeLast(6));
+            }
+            catch { }
+        }
+        return "";
+    }
+
     /// <summary>Pre-validate a member insertion via `said edit --explain` (v0.6.0): returns the raw JSON
     /// menu of valid anchors for adding to a class/scope, so the model can pick the right move up front.</summary>
     public string SaidExplain(string saidPath, string file, string symbol)
@@ -102,13 +130,14 @@ public sealed class GroqCycle(IAgentRunner runner, IPolicyStore policy, Evolutio
     public async Task<ChangeSet?> ProduceChangeAsync(AiAgent agent, int ticket, string title, string body,
         string plan, CancellationToken ct, string? priorFailure = null, ChangeSet? priorAttempt = null)
     {
-        // RECALL the EXACT endpoint-anchor text from .said. (We do NOT run `said edit --explain` here:
-        // it reads the on-disk source file, which doesn't exist next to the baked brain at /app — only
-        // the clone has the source. The prompt already directs append-into-symbol for the test, and the
-        // in-clone repair step parses valid_anchors when source IS present, so --explain isn't needed here.)
-        var routeCtx = SaidRecall("grep", "MapGet");
+        // The endpoint anchor MUST be a REAL existing line (else `said edit insert-after-text` errors
+        // "anchor not found" and the model wastes repairs). .said recall can't reliably surface Program.cs's
+        // top-level minimal-API registrations (they're file-scope statements, not a class symbol, and grep
+        // is noisy), so read the actual `app.MapGet(...).AllowAnonymous();` lines straight from the source.
+        // /workspace is the read-only repo mount with current source; fall back to .said recall if absent.
+        var routeCtx = RealEndpointAnchors();
         if (string.IsNullOrWhiteSpace(routeCtx))
-            routeCtx = SaidRecall("ask", "where are minimal-api GET endpoints registered in Program.cs");
+            routeCtx = SaidRecall("grep", "MapGet");
 
         var sys =
             "You implement ONE minimal change for the Advisory .NET 10 API, test-first, as SURGICAL EDITS. " +
