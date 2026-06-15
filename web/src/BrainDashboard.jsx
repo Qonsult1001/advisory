@@ -55,8 +55,9 @@ export default function BrainDashboard({ C, s, API, StatTile, Callout, nfmt }) {
   const [stats, setStats] = useState(null);
   const [phase, setPhase] = useState("loading"); // loading | ready | unbuilt | error
   const [err, setErr] = useState("");
-  const [tab, setTab] = useState(null); // explore | recall | loop | null
-  const [hist, setHist] = useState(null); // ticket totals for the stat row
+  const [tab, setTab] = useState(null);
+  const [hist, setHist] = useState(null);   // ticket totals for the stat row
+  const [disc, setDisc] = useState(null);   // discover(): pillars / memory_types / top_tags
 
   useEffect(() => {
     fetch(`${API}/evolution/history`).then((r) => r.json()).then(setHist).catch(() => setHist(null));
@@ -68,14 +69,24 @@ export default function BrainDashboard({ C, s, API, StatTile, Callout, nfmt }) {
       try {
         const b = await loadBrain(API);
         if (!alive) return;
+        // WARM UP the brain so its learning state (recall-weights, dream, s_slow) is REAL,
+        // not zero — run a handful of real asks tied to what the loop actually does. This is the
+        // brain learning from use; the math runs in-browser, nothing leaves the page.
+        const WARMUP = [
+          "where do endpoints register", "the build and test gate", "operator merge approval",
+          "self-repair loop on a failed build", "real test fixture for the cycle",
+          "fix replay by fingerprint", "surgical edit via said edit", "first attempt build failure",
+        ];
+        for (const q of WARMUP) { try { b.ask_fused(q, 5, false); } catch {} }
+        try { b.dream(1n); } catch {}   // force a consolidation pass so dream cycle > 0
+
         let st = {};
         try { st = b.stats() || {}; } catch { st = {}; }
-        // symbol count + memory count are separate methods, not in stats().
         try { st.__symbols = b.symbol_count(); } catch { st.__symbols = null; }
         try { st.__count = b.count_memories(); } catch { st.__count = null; }
-        setBrain(b);
-        setStats(st);
-        setPhase("ready");
+        let d = null; try { d = b.discover(); } catch {}
+        if (!alive) return;
+        setBrain(b); setStats(st); setDisc(d); setPhase("ready");
       } catch (e) {
         if (!alive) return;
         if (e.message === "brain-not-built") setPhase("unbuilt");
@@ -123,11 +134,14 @@ export default function BrainDashboard({ C, s, API, StatTile, Callout, nfmt }) {
   // ---- READY: enterprise stat row + tab strip + panel ----
   const indexedMb = fileBytes != null ? (fileBytes / 1e6).toFixed(1) : null;
   const TABS = [
-    { key: "loop", label: "Activity", sub: "tickets over time" },
-    { key: "explore", label: "Explore", sub: "browse stored memories" },
-    { key: "recall", label: "Recall", sub: "live semantic search" },
+    { key: "flow", label: "Flow" },
+    { key: "loop", label: "Activity" },
+    { key: "composition", label: "Composition" },
+    { key: "recall", label: "Recall" },
+    { key: "salience", label: "Salience" },
+    { key: "explore", label: "Explore" },
   ];
-  const active = tab || "loop"; // default to the activity graph — the thing you actually want to see
+  const active = tab || "flow"; // default to the agent flow — memory + orchestration in one picture
   const tk = hist?.totals || {};
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -160,9 +174,12 @@ export default function BrainDashboard({ C, s, API, StatTile, Callout, nfmt }) {
           </a>
         </div>
         <div style={{ padding: "18px 20px" }}>
-          {active === "explore" && <ExplorePanel C={C} s={s} brain={brain} fmt={fmt} total={memories} />}
-          {active === "recall" && <RecallPanel C={C} s={s} brain={brain} />}
+          {active === "flow" && <FlowCanvas C={C} s={s} brain={brain} />}
           {active === "loop" && <LoopPanel C={C} s={s} API={API} />}
+          {active === "composition" && <CompositionPanel C={C} s={s} disc={disc} stats={stats} fmt={fmt} />}
+          {active === "recall" && <RecallPanel C={C} s={s} brain={brain} />}
+          {active === "salience" && <SaliencePanel C={C} s={s} brain={brain} />}
+          {active === "explore" && <ExplorePanel C={C} s={s} brain={brain} fmt={fmt} total={memories} />}
         </div>
       </div>
     </div>);
@@ -175,6 +192,205 @@ function MetricCard({ C, color, value, label, sub, small }) {
       <div style={{ fontSize: small ? 16 : 24, fontWeight: 800, color: C.ink, lineHeight: 1.15, letterSpacing: -0.3, textTransform: small ? "capitalize" : "none", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{value}</div>
       <div style={{ fontSize: 10.5, color: C.sub, textTransform: "uppercase", letterSpacing: 0.5, fontWeight: 700, marginTop: 5 }}>{label}</div>
       {sub && <div style={{ fontSize: 11, color: C.dim, marginTop: 2 }}>{sub}</div>}
+    </div>
+  );
+}
+
+// ============================================================================
+// FLOW — the mutation cycle AS an agent graph (Beapi-style canvas). Memory feeds
+// every stage. This is the "memory + orchestration in one picture" view.
+// ============================================================================
+const FLOW_STAGES = [
+  { key: "plan",   label: "Plan",     prompt: "explore read-only, design the approach, make a todo list", recall: "recalled prior plans + decisions", color: "#1f7fd1" },
+  { key: "design", label: "Design",   prompt: "architecture + file-layout conventions",                   recall: "the project's stored conventions", color: "#7b54d1" },
+  { key: "code",   label: "Code",     prompt: "surgical edits, follow conventions, don't over-engineer",   recall: "recalled verified patterns + real fixture", color: "#2f9e36" },
+  { key: "test",   label: "Test",     prompt: "run build + tests (the gate)",                              recall: "known commands (the Workflow section)", color: "#d99016" },
+  { key: "repair", label: "Repair",   prompt: "feed the error back, fix, retry until green",               recall: "stored Errors & Corrections", color: "#d63649" },
+  { key: "memory", label: "Memory",   prompt: "record the session — tell the whole story",                 recall: "writes back to the iteration store", color: "#40be46" },
+];
+
+function FlowCanvas({ C, s, brain }) {
+  const [sel, setSel] = useState(null);
+  const [probe, setProbe] = useState({}); // stage.key -> live recall count from the brain
+  // Prove memory really feeds each stage: ask the brain each stage's recall query, count hits.
+  useEffect(() => {
+    if (!brain) return;
+    const out = {};
+    for (const st of FLOW_STAGES) {
+      try { const r = brain.ask_fused(st.recall, 5, false); out[st.key] = Array.isArray(r) ? r.length : (r?.results?.length || 0); }
+      catch { out[st.key] = 0; }
+    }
+    setProbe(out);
+  }, [brain]);
+
+  // Canvas geometry: Start → 6 stage nodes (Plan..Memory) → Terminal, orchestrator below feeding all.
+  const W = 920, H = 360, nodeW = 116, nodeH = 60, rowY = 70, gap = (W - 80 - nodeW) / (FLOW_STAGES.length + 1);
+  const xs = (i) => 60 + gap * (i + 1);
+  const startX = 16, endX = W - nodeW - 16, busY = 250, orchY = 250;
+  const stageCenter = (i) => ({ x: xs(i) + nodeW / 2, y: rowY + nodeH / 2 });
+
+  return (
+    <div>
+      <PanelHead C={C} title="Agent flow" sub="the self-healing cycle as a graph — every stage runs on its routed agent and recalls from the brain" />
+      <div style={{ display: "grid", gridTemplateColumns: sel ? "1.5fr 1fr" : "1fr", gap: 16 }}>
+        <div style={{ border: `1px solid ${C.line}`, borderRadius: 12, background: C.surface2, overflow: "hidden" }}>
+          <svg width="100%" viewBox={`0 0 ${W} ${H}`} style={{ display: "block" }}>
+            <defs>
+              <marker id="arrow" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
+                <path d="M0,0 L7,3 L0,6 Z" fill={C.sub} />
+              </marker>
+            </defs>
+
+            {/* Start node */}
+            <FlowDot C={C} x={startX} y={rowY + nodeH / 2 - 14} label="Start" tone={C.sub} />
+            {/* edges: start -> plan, stage -> next stage, last -> end */}
+            <Edge C={C} x1={startX + 52} y1={rowY + nodeH / 2} x2={xs(0)} y2={rowY + nodeH / 2} />
+            {FLOW_STAGES.map((st, i) => i < FLOW_STAGES.length - 1 && (
+              <Edge key={"e" + i} C={C} x1={xs(i) + nodeW} y1={rowY + nodeH / 2} x2={xs(i + 1)} y2={rowY + nodeH / 2} />
+            ))}
+            <Edge C={C} x1={xs(FLOW_STAGES.length - 1) + nodeW} y1={rowY + nodeH / 2} x2={endX} y2={rowY + nodeH / 2} />
+            <FlowDot C={C} x={endX} y={rowY + nodeH / 2 - 14} label="Done" tone={C.accent} />
+
+            {/* Repair loop-back edge: repair (idx 4) curves back to code (idx 2) */}
+            {(() => {
+              const a = stageCenter(4), b = stageCenter(2);
+              const d = `M ${a.x} ${rowY + nodeH} C ${a.x} ${rowY + nodeH + 55}, ${b.x} ${rowY + nodeH + 55}, ${b.x} ${rowY + nodeH}`;
+              return <g><path d={d} fill="none" stroke="#d63649" strokeWidth="1.6" strokeDasharray="4 3" markerEnd="url(#arrow)" />
+                <text x={(a.x + b.x) / 2} y={rowY + nodeH + 52} fontSize="9.5" fill="#d63649" textAnchor="middle">retry until green</text></g>;
+            })()}
+
+            {/* Stage nodes */}
+            {FLOW_STAGES.map((st, i) => {
+              const x = xs(i), on = sel === st.key;
+              return (
+                <g key={st.key} style={{ cursor: "pointer" }} onClick={() => setSel(on ? null : st.key)}>
+                  <rect x={x} y={rowY} width={nodeW} height={nodeH} rx="9" fill={C.surface}
+                    stroke={on ? st.color : C.line} strokeWidth={on ? 2.2 : 1.2} />
+                  <rect x={x} y={rowY} width={nodeW} height="4" rx="2" fill={st.color} />
+                  <text x={x + nodeW / 2} y={rowY + 26} fontSize="13" fontWeight="700" fill={C.ink} textAnchor="middle">{st.label}</text>
+                  <text x={x + nodeW / 2} y={rowY + 44} fontSize="9" fill={C.sub} textAnchor="middle">
+                    {probe[st.key] != null ? `↑ ${probe[st.key]} recalled` : "…"}
+                  </text>
+                  {/* memory feed line from the bus up into this node */}
+                  <line x1={x + nodeW / 2} y1={busY} x2={x + nodeW / 2} y2={rowY + nodeH} stroke={C.accent} strokeWidth="1" strokeDasharray="3 3" opacity="0.55" markerEnd="url(#arrow)" />
+                </g>
+              );
+            })}
+
+            {/* Memory bus (the brain) — a bar under all stages, feeding each */}
+            <rect x={50} y={busY} width={W - 100} height={46} rx="10" fill={C.surface} stroke={C.accent} strokeWidth="1.4" />
+            <text x={W / 2} y={busY + 20} fontSize="12" fontWeight="700" fill={C.accentDim} textAnchor="middle">🧠 .said memory — one shared brain</text>
+            <text x={W / 2} y={busY + 36} fontSize="9.5" fill={C.sub} textAnchor="middle">recall-weighted retrieval · verified patterns · errors &amp; corrections · learns from every cycle</text>
+          </svg>
+        </div>
+
+        {sel && (() => {
+          const st = FLOW_STAGES.find((x) => x.key === sel);
+          return (
+            <div style={{ border: `1px solid ${C.line}`, borderRadius: 12, padding: 16, alignSelf: "start" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+                <span style={{ width: 12, height: 12, borderRadius: 3, background: st.color }} />
+                <span style={{ fontSize: 15, fontWeight: 700, color: C.ink }}>{st.label}</span>
+              </div>
+              <Row C={C} k="Prompt" v={st.prompt} />
+              <Row C={C} k="Recalls from memory" v={st.recall} />
+              <Row C={C} k="Live recall hits" v={probe[sel] != null ? `${probe[sel]} memories matched this stage's query` : "…"} />
+              {sel === "repair" && <Row C={C} k="Loop" v="on a failed build/test, feeds the compiler error back and retries — the edge that loops to Code" />}
+              {sel === "memory" && <Row C={C} k="Writes back" v="records the session so the next cycle recalls it — the brain compounds" />}
+            </div>
+          );
+        })()}
+      </div>
+      <div style={{ fontSize: 11.5, color: C.dim, marginTop: 10 }}>Click a stage to see its prompt and what it pulls from the brain. The dashed green lines are memory feeding each stage; the red dashed edge is the self-repair loop.</div>
+    </div>
+  );
+}
+function FlowDot({ C, x, y, label, tone }) {
+  return <g><circle cx={x + 16} cy={y + 14} r="14" fill={C.surface} stroke={tone} strokeWidth="1.6" />
+    <text x={x + 16} y={y + 18} fontSize="9" fill={tone} textAnchor="middle" fontWeight="700">{label}</text></g>;
+}
+function Edge({ C, x1, y1, x2, y2 }) {
+  return <line x1={x1} y1={y1} x2={x2} y2={y2} stroke={C.sub} strokeWidth="1.5" markerEnd="url(#arrow)" />;
+}
+function Row({ C, k, v }) {
+  return <div style={{ marginBottom: 10 }}>
+    <div style={{ fontSize: 10.5, color: C.sub, textTransform: "uppercase", letterSpacing: 0.4, fontWeight: 700 }}>{k}</div>
+    <div style={{ fontSize: 12.5, color: C.ink, marginTop: 2, lineHeight: 1.45 }}>{v}</div>
+  </div>;
+}
+
+// ============================================================================
+// COMPOSITION — discover(): what's actually in the brain (pillars, types, tags)
+// ============================================================================
+function CompositionPanel({ C, s, disc, stats, fmt }) {
+  if (!disc) return <div style={{ fontSize: 12.5, color: C.dim }}>Composition unavailable.</div>;
+  const pillars = Object.entries(disc.pillars || {});
+  const types = Object.entries(disc.memory_types || {});
+  const tags = (disc.top_tags || []).slice(0, 10);
+  const total = stats?.active_memories || tags.reduce((a, [, n]) => Math.max(a, n), 1) || 1;
+  const Bar = ([name, n]) => {
+    const pct = Math.min(100, Math.round((n / total) * 100));
+    return (
+      <div key={name} style={{ marginBottom: 8 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: C.ink, marginBottom: 3 }}>
+          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "78%", fontFamily: String(name).includes(":") ? C.mono : C.sans }}>{name}</span>
+          <b>{fmt(n)}</b>
+        </div>
+        <div style={{ height: 7, background: C.line, borderRadius: 4, overflow: "hidden" }}>
+          <div style={{ width: `${pct}%`, height: "100%", background: C.accent }} />
+        </div>
+      </div>
+    );
+  };
+  return (
+    <div>
+      <PanelHead C={C} title="What's in the brain" sub="the live composition of the .said memory — pillars, memory types, and the dominant tags" />
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
+        <div>
+          <div style={{ fontSize: 12.5, fontWeight: 700, color: C.ink, marginBottom: 8 }}>Memory pillars</div>
+          {pillars.length ? pillars.map(Bar) : <div style={{ fontSize: 12, color: C.dim }}>All frames are Code (a code-init brain).</div>}
+          <div style={{ fontSize: 12.5, fontWeight: 700, color: C.ink, margin: "16px 0 8px" }}>Memory types</div>
+          {types.length ? types.map(Bar) : <div style={{ fontSize: 12, color: C.dim }}>AST-chunked code frames (method / class declarations).</div>}
+        </div>
+        <div>
+          <div style={{ fontSize: 12.5, fontWeight: 700, color: C.ink, marginBottom: 8 }}>Top tags</div>
+          {tags.map(Bar)}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// SALIENCE — live interactive: score how important the brain thinks text is
+// ============================================================================
+function SaliencePanel({ C, s, brain }) {
+  const [text, setText] = useState("operator approved the merge of a green build that fixed the endpoint");
+  const [res, setRes] = useState(null);
+  const run = useCallback(() => {
+    try { setRes(brain.salience_score(text, null)); } catch (e) { setRes({ error: String(e.message || e) }); }
+  }, [text, brain]);
+  useEffect(() => { run(); }, []); // score the default on open
+  const band = res?.band, score = res?.score;
+  const bandColor = band === "high" ? C.allow : band === "medium" ? C.warn : C.dim;
+  return (
+    <div>
+      <PanelHead C={C} title="Salience" sub="how important does the brain rate a memory? — the heuristic that decides what's worth keeping vs skipping" />
+      <textarea value={text} onChange={(e) => setText(e.target.value)} rows={3}
+        style={{ width: "100%", border: `1px solid ${C.line}`, borderRadius: 8, padding: "10px 12px", fontSize: 12.5, fontFamily: C.sans, resize: "vertical", boxSizing: "border-box" }} />
+      <div style={{ display: "flex", gap: 10, marginTop: 10, alignItems: "center" }}>
+        <button onClick={run} style={{ ...s.btnPrimary }}>Score it</button>
+        {res && !res.error && (
+          <div style={{ display: "flex", gap: 16, alignItems: "center" }}>
+            <span style={{ fontSize: 26, fontWeight: 800, color: bandColor }}>{score}</span>
+            <span style={{ fontSize: 12, fontWeight: 700, color: bandColor, textTransform: "uppercase", border: `1px solid ${bandColor}`, borderRadius: 999, padding: "2px 10px" }}>{band}</span>
+            <span style={{ fontSize: 12.5, color: C.sub }}>recommendation: <b style={{ color: C.ink }}>{res.recommendation}</b></span>
+          </div>
+        )}
+        {res?.error && <span style={{ fontSize: 12, color: C.block }}>{res.error}</span>}
+      </div>
+      {res?.tags && <div style={{ marginTop: 10, display: "flex", gap: 6 }}>{res.tags.map((t) => <span key={t} style={{ fontSize: 11, background: C.surface2, border: `1px solid ${C.line}`, borderRadius: 999, padding: "3px 10px", color: C.sub, fontFamily: C.mono }}>{t}</span>)}</div>}
+      <div style={{ fontSize: 11.5, color: C.dim, marginTop: 12 }}>This is the live <code style={s.code}>salience_score</code> running in your browser — the same heuristic the brain uses to decide whether a memory is worth storing.</div>
     </div>
   );
 }
