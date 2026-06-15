@@ -121,6 +121,21 @@ public class HealthTests : IClassFixture<WebApplicationFactory<Program>>
         Assert.True(doc.RootElement.TryGetProperty("host", out var host));
         Assert.False(string.IsNullOrWhiteSpace(host.GetString()), "host must be non‑empty");
     }
+                    [Fact]
+                    public async Task GetCpu_Returns200AndPositiveCount()
+                    {
+                        using var factory = new Microsoft.AspNetCore.Mvc.Testing.WebApplicationFactory<Program>();
+                        var client = factory.CreateClient();
+
+                        var response = await client.GetAsync("/api/cpu");
+                        Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
+
+                        var json = await response.Content.ReadAsStringAsync();
+                        using var doc = System.Text.Json.JsonDocument.Parse(json);
+                        var cpu = doc.RootElement.GetProperty("cpu").GetInt32();
+
+                        Assert.True(cpu > 0, $"CPU count should be >0 but was {cpu}");
+                    }
                 [Fact]
                 public async Task Get_Ticks_ReturnsPositiveTicks()
                 {
