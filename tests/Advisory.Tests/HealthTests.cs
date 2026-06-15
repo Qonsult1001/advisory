@@ -121,6 +121,16 @@ public class HealthTests : IClassFixture<WebApplicationFactory<Program>>
         Assert.True(doc.RootElement.TryGetProperty("host", out var host));
         Assert.False(string.IsNullOrWhiteSpace(host.GetString()), "host must be non‑empty");
     }
+                            [Fact]
+                            public async Task Alloc2Endpoint_ReturnsNonNegativeAlloc()
+                            {
+                                var response = await _client.GetAsync("/api/alloc2");
+                                Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
+                                using var stream = await response.Content.ReadAsStreamAsync();
+                                using var doc = await System.Text.Json.JsonDocument.ParseAsync(stream);
+                                Assert.True(doc.RootElement.TryGetProperty("alloc", out var allocProp));
+                                Assert.True(allocProp.GetInt64() >= 0);
+                            }
                         [Fact]
                         public async Task GetNumCpu_ReturnsPositiveValue()
                         {
