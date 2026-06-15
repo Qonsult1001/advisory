@@ -1281,6 +1281,12 @@ public class EvolutionController : ControllerBase
                 ? Ok(new { rejected = id, restarted = nr.Id, ticket = nr.Ticket, status = nr.Status, stage = nr.Stage })
                 : NotFound(new { error = "run not found" });
         }
+        if ((req.Decision ?? "") == "merge")
+        {
+            // Merge → the SECOND operator checkpoint: squash-merge the green PR, delete the branch,
+            // close the issue, mark 'released'. Only valid at 'pr-open'. Release stays operator-only.
+            return await _svc.DecideMergeAsync(id, ct) is { } m ? Ok(m) : NotFound(new { error = "run not found" });
+        }
         return _svc.Decide(id, req.Decision ?? "approve", req.SubIssue) is { } r ? Ok(r) : NotFound(new { error = "run not found" });
     }
 
