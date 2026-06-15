@@ -121,6 +121,15 @@ public class HealthTests : IClassFixture<WebApplicationFactory<Program>>
         Assert.True(doc.RootElement.TryGetProperty("host", out var host));
         Assert.False(string.IsNullOrWhiteSpace(host.GetString()), "host must be non‑empty");
     }
+                                            [Fact]
+                                            public async Task Framework_returns_200_and_nonempty_framework()
+                                            {
+                                                var resp = await _client.GetAsync("/api/framework");
+                                                Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+                                                var json = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+                                                var framework = json.RootElement.GetProperty("framework").GetString();
+                                                Assert.False(string.IsNullOrEmpty(framework));
+                                            }
                                         [Fact]
                                         public async Task Platform_returns_200_and_platform()
                                         {
