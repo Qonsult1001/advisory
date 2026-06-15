@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
-import BrainDashboard from "./BrainDashboard.jsx";
+import BrainDashboard, { MutationFlow } from "./BrainDashboard.jsx";
 
 const API = "http://localhost:5000/api";
 const api = {
@@ -4052,6 +4052,15 @@ function Evolution() {
           })}
         </tbody></table>
       </div>
+
+      {/* LIVE agent flow — follows the running mutation through its phases, right where you started it */}
+      <SubHead>Live agent flow</SubHead>
+      <div style={s.card}>
+        <div style={{ padding: "16px 20px" }}>
+          <MutationFlow C={C} s={s} API={API} />
+        </div>
+      </div>
+
       <Callout><b>Safety:</b> PR-only — the engine writes to a branch and opens a pull request; a human reviews and merges.
         If tests don't pass, it opens a <b>draft</b> PR flagged for review. It never pushes to the default branch and never auto-merges.</Callout>
     </div>
