@@ -241,7 +241,20 @@ function stageColor(C, live) {
   return C.info; // active / queued
 }
 
-function FlowCanvas({ C, s, brain, API }) {
+// Self-contained flow visual for the Mutation page: loads its own brain (best-effort)
+// and renders the live agent-flow canvas. Brain is optional — recall counts just stay "…"
+// if it isn't available, but the LIVE phase-tracking works regardless.
+export function MutationFlow({ C, s, API }) {
+  const [brain, setBrain] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    loadBrain(API).then((b) => { if (alive) setBrain(b); }).catch(() => {});
+    return () => { alive = false; };
+  }, [API]);
+  return <FlowCanvas C={C} s={s} brain={brain} API={API} compact />;
+}
+
+function FlowCanvas({ C, s, brain, API, compact }) {
   const [sel, setSel] = useState(null);
   const [probe, setProbe] = useState({}); // stage.key -> live recall count from the brain
   const [run, setRun] = useState(null);   // the active/most-recent run (live phase)
@@ -269,17 +282,23 @@ function FlowCanvas({ C, s, brain, API }) {
   const live = mapRunToNode(run);
   const isLive = run && ["queued", "running", "awaiting-approval", "tests"].includes((run.status || "").toLowerCase());
 
-  // Canvas geometry: Start → 6 stage nodes (Plan..Memory) → Terminal, orchestrator below feeding all.
-  const W = 920, H = 360, nodeW = 116, nodeH = 60, rowY = 70, gap = (W - 80 - nodeW) / (FLOW_STAGES.length + 1);
+  // Canvas geometry — compact mode shrinks everything so it fits nicely under the run table.
+  const W = 920;
+  const nodeW = compact ? 100 : 116;
+  const nodeH = compact ? 46 : 60;
+  const rowY = compact ? 18 : 70;
+  const busY = compact ? 132 : 250;
+  const H = compact ? 196 : 360;
+  const gap = (W - 80 - nodeW) / (FLOW_STAGES.length + 1);
   const xs = (i) => 60 + gap * (i + 1);
-  const startX = 16, endX = W - nodeW - 16, busY = 250, orchY = 250;
+  const startX = 16, endX = W - nodeW - 16;
   const stageCenter = (i) => ({ x: xs(i) + nodeW / 2, y: rowY + nodeH / 2 });
 
   return (
-    <div>
-      <PanelHead C={C} title="Agent flow" sub="the self-healing cycle as a graph — every stage runs on its routed agent and recalls from the brain" />
+    <div style={{ position: "relative" }}>
+      {!compact && <PanelHead C={C} title="Agent flow" sub="the self-healing cycle as a graph — every stage runs on its routed agent and recalls from the brain" />}
       {/* LIVE banner — follows the active mutation through its phases */}
-      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12, fontSize: 12.5 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: compact ? 8 : 12, fontSize: 12.5 }}>
         <span style={{ width: 9, height: 9, borderRadius: "50%", background: isLive ? C.allow : C.dim,
           boxShadow: isLive ? `0 0 0 0 ${C.allow}` : "none", animation: isLive ? "pulse 1.3s infinite" : "none", display: "inline-block" }} />
         {run ? (
@@ -291,8 +310,8 @@ function FlowCanvas({ C, s, brain, API }) {
         ) : <span style={{ color: C.dim }}>No active run — start a mutation and this graph follows it through every phase.</span>}
         <style>{`@keyframes pulse{0%{box-shadow:0 0 0 0 ${C.allow}88}70%{box-shadow:0 0 0 7px ${C.allow}00}100%{box-shadow:0 0 0 0 ${C.allow}00}}`}</style>
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: sel ? "1.5fr 1fr" : "1fr", gap: 16 }}>
-        <div style={{ border: `1px solid ${C.line}`, borderRadius: 12, background: C.surface2, overflow: "hidden" }}>
+      <div style={{ display: "grid", gridTemplateColumns: (sel && !compact) ? "1.5fr 1fr" : "1fr", gap: 16 }}>
+        <div style={{ border: `1px solid ${C.line}`, borderRadius: 12, background: C.surface2, overflow: "hidden", maxWidth: compact ? 760 : "none" }}>
           <svg width="100%" viewBox={`0 0 ${W} ${H}`} style={{ display: "block" }}>
             <defs>
               <marker id="arrow" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
@@ -313,9 +332,10 @@ function FlowCanvas({ C, s, brain, API }) {
             {/* Repair loop-back edge: repair (idx 4) curves back to code (idx 2) */}
             {(() => {
               const a = stageCenter(4), b = stageCenter(2);
-              const d = `M ${a.x} ${rowY + nodeH} C ${a.x} ${rowY + nodeH + 55}, ${b.x} ${rowY + nodeH + 55}, ${b.x} ${rowY + nodeH}`;
+              const dip = compact ? 30 : 55;
+              const d = `M ${a.x} ${rowY + nodeH} C ${a.x} ${rowY + nodeH + dip}, ${b.x} ${rowY + nodeH + dip}, ${b.x} ${rowY + nodeH}`;
               return <g><path d={d} fill="none" stroke="#d63649" strokeWidth="1.6" strokeDasharray="4 3" markerEnd="url(#arrow)" />
-                <text x={(a.x + b.x) / 2} y={rowY + nodeH + 52} fontSize="9.5" fill="#d63649" textAnchor="middle">retry until green</text></g>;
+                <text x={(a.x + b.x) / 2} y={rowY + nodeH + dip - 3} fontSize="9.5" fill="#d63649" textAnchor="middle">retry until green</text></g>;
             })()}
 
             {/* Stage nodes */}
@@ -335,8 +355,8 @@ function FlowCanvas({ C, s, brain, API }) {
                   <rect x={x} y={rowY} width={nodeW} height={nodeH} rx="9" fill={liveHere ? `${liveTone}14` : C.surface}
                     stroke={stroke} strokeWidth={liveHere || on ? 2.2 : 1.2} />
                   <rect x={x} y={rowY} width={nodeW} height="4" rx="2" fill={st.color} />
-                  <text x={x + nodeW / 2} y={rowY + 26} fontSize="13" fontWeight="700" fill={C.ink} textAnchor="middle">{st.label}</text>
-                  <text x={x + nodeW / 2} y={rowY + 44} fontSize="9" fill={liveHere ? liveTone : C.sub} textAnchor="middle" fontWeight={liveHere ? 700 : 400}>
+                  <text x={x + nodeW / 2} y={rowY + nodeH / 2 + 1} fontSize={compact ? 12 : 13} fontWeight="700" fill={C.ink} textAnchor="middle">{st.label}</text>
+                  <text x={x + nodeW / 2} y={rowY + nodeH - 8} fontSize="9" fill={liveHere ? liveTone : C.sub} textAnchor="middle" fontWeight={liveHere ? 700 : 400}>
                     {liveHere ? (live.state === "active" ? "● running" : live.state === "failed" ? "✕ failed" : live.state === "done" ? "✓ done" : "queued")
                               : (probe[st.key] != null ? `↑ ${probe[st.key]} recalled` : "…")}
                   </text>
@@ -347,19 +367,21 @@ function FlowCanvas({ C, s, brain, API }) {
             })}
 
             {/* Memory bus (the brain) — a bar under all stages, feeding each */}
-            <rect x={50} y={busY} width={W - 100} height={46} rx="10" fill={C.surface} stroke={C.accent} strokeWidth="1.4" />
-            <text x={W / 2} y={busY + 20} fontSize="12" fontWeight="700" fill={C.accentDim} textAnchor="middle">🧠 .said memory — one shared brain</text>
-            <text x={W / 2} y={busY + 36} fontSize="9.5" fill={C.sub} textAnchor="middle">recall-weighted retrieval · verified patterns · errors &amp; corrections · learns from every cycle</text>
+            <rect x={50} y={busY} width={W - 100} height={compact ? 38 : 46} rx="10" fill={C.surface} stroke={C.accent} strokeWidth="1.4" />
+            <text x={W / 2} y={busY + (compact ? 16 : 20)} fontSize={compact ? 11 : 12} fontWeight="700" fill={C.accentDim} textAnchor="middle">🧠 .said memory — one shared brain</text>
+            <text x={W / 2} y={busY + (compact ? 30 : 36)} fontSize="9.5" fill={C.sub} textAnchor="middle">recall-weighted retrieval · verified patterns · errors &amp; corrections · learns from every cycle</text>
           </svg>
         </div>
 
         {sel && (() => {
           const st = FLOW_STAGES.find((x) => x.key === sel);
-          return (
-            <div style={{ border: `1px solid ${C.line}`, borderRadius: 12, padding: 16, alignSelf: "start" }}>
+          const body = (
+            <div style={{ border: `1px solid ${C.line}`, borderRadius: 12, padding: 16, alignSelf: "start",
+              ...(compact ? { position: "absolute", top: 40, right: 0, width: 320, background: C.surface, boxShadow: "0 8px 30px rgba(0,0,0,.18)", zIndex: 20 } : {}) }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
                 <span style={{ width: 12, height: 12, borderRadius: 3, background: st.color }} />
-                <span style={{ fontSize: 15, fontWeight: 700, color: C.ink }}>{st.label}</span>
+                <span style={{ fontSize: 15, fontWeight: 700, color: C.ink, flex: 1 }}>{st.label}</span>
+                {compact && <button onClick={() => setSel(null)} style={{ background: "none", border: "none", cursor: "pointer", color: C.sub, fontSize: 16, lineHeight: 1 }}>×</button>}
               </div>
               <Row C={C} k="Prompt" v={st.prompt} />
               <Row C={C} k="Recalls from memory" v={st.recall} />
@@ -368,9 +390,11 @@ function FlowCanvas({ C, s, brain, API }) {
               {sel === "memory" && <Row C={C} k="Writes back" v="records the session so the next cycle recalls it — the brain compounds" />}
             </div>
           );
+          return body;
         })()}
       </div>
-      <div style={{ fontSize: 11.5, color: C.dim, marginTop: 10 }}>Click a stage to see its prompt and what it pulls from the brain. The dashed green lines are memory feeding each stage; the red dashed edge is the self-repair loop.</div>
+      {!compact && <div style={{ fontSize: 11.5, color: C.dim, marginTop: 10 }}>Click a stage to see its prompt and what it pulls from the brain. The dashed green lines are memory feeding each stage; the red dashed edge is the self-repair loop.</div>}
+      {compact && <div style={{ fontSize: 11, color: C.dim, marginTop: 6 }}>Click a stage for details. Follows your running mutation live.</div>}
     </div>
   );
 }
