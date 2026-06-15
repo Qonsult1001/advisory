@@ -115,68 +115,61 @@ export default function BrainDashboard({ C, s, API, StatTile, Callout, nfmt }) {
       </div>
     );
 
-  // ---- READY: hero + drill-down ----
+  // ---- READY: enterprise stat row + tab strip + panel ----
+  const indexedMb = fileBytes != null ? (fileBytes / 1e6).toFixed(1) : null;
+  const TABS = [
+    { key: "explore", label: "Explore", sub: "browse stored memories" },
+    { key: "recall", label: "Recall", sub: "live semantic search" },
+    { key: "loop", label: "Loop activity", sub: "self-healing cycles" },
+  ];
+  const active = tab || "explore"; // default to a panel so the page is never just stats
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-      {/* HERO */}
-      <div style={{
-        ...s.card, padding: "20px 22px",
-        background: `linear-gradient(135deg, ${C.surface} 0%, ${C.surface2} 100%)`,
-        border: `1px solid ${C.line}`,
-      }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 4 }}>
-          <span style={{ fontSize: 26 }}>🧠</span>
-          <div>
-            <div style={{ fontSize: 18, fontWeight: 800, color: C.ink, letterSpacing: -0.3 }}>Advisory Brain</div>
-            <div style={{ fontSize: 12, color: C.sub }}>
-              one shared, portable memory — recall, fixes, and learnings compound across every cycle
-            </div>
-          </div>
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      {/* STAT ROW — enterprise cards with accent top-border (matches Overview) */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(6,1fr)", gap: 12 }}>
+        <MetricCard C={C} color={C.accent} value={fmt(memories)} label="Memories" sub="code + notes" />
+        <MetricCard C={C} color={C.info} value={fmt(symbols)} label="Symbols" sub="classes / methods" />
+        <MetricCard C={C} color={C.accentDim} value={ratio ? `${ratio}×` : "—"} label="Compression" sub={indexedMb ? `${indexedMb} MB indexed` : "indexed"} />
+        <MetricCard C={C} color={C.warn} value={fmt(deleted ?? 0)} label="Tombstones" sub="superseded" />
+        <MetricCard C={C} color={C.info} value={(stats?.mode || "portable")} label="Mode" sub="brain format" small />
+        <MetricCard C={C} color={C.accent} value="WASM" label="Engine" sub="in-browser" small />
+      </div>
+
+      {/* SECTION CARD — tab strip + panel, matching the Overview's card style */}
+      <div style={{ ...s.card, marginBottom: 0, overflow: "hidden" }}>
+        <div style={{ display: "flex", alignItems: "center", borderBottom: `1px solid ${C.line}`, padding: "0 6px" }}>
+          {TABS.map((t) => (
+            <button key={t.key} onClick={() => setTab(t.key)} style={{
+              background: "transparent", border: "none", cursor: "pointer",
+              padding: "14px 18px 12px", fontSize: 13, fontWeight: 600,
+              color: active === t.key ? C.ink : C.sub,
+              borderBottom: `2px solid ${active === t.key ? C.accent : "transparent"}`,
+              marginBottom: -1,
+            }}>{t.label}</button>
+          ))}
           <div style={{ flex: 1 }} />
           <a href={`${API}/admin/context/download`}
-             style={{ ...s.add, background: C.surface, color: C.ink, textDecoration: "none", border: `1px solid ${C.line}`, fontSize: 12.5 }}>
+             style={{ ...s.add, background: C.surface, color: C.ink, textDecoration: "none", border: `1px solid ${C.line}`, fontSize: 12, marginRight: 8, padding: "7px 13px" }}>
             ⬇ Download .said
           </a>
         </div>
-
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12, marginTop: 12 }}>
-          <StatTile value={fmt(memories)} label="Memories" sub="indexed code + notes" tone={C.accentDim} />
-          <StatTile value={fmt(symbols)} label="Symbols" sub="classes / methods" tone={C.info} />
-          <StatTile value={ratio ? `${ratio}×` : "—"} label="Compression" sub={fileBytes != null ? `${(fileBytes / 1e6).toFixed(1)} MB indexed` : "code + notes"} tone={C.accent} />
-          <StatTile value={recalls != null ? fmt(recalls) : "live"} label="Recall engine" sub="ask · sym · grep" />
-        </div>
-
-        <div style={{ display: "flex", gap: 18, marginTop: 12, fontSize: 11.5, color: C.dim, flexWrap: "wrap" }}>
-          {deleted != null && <span>tombstones: <b style={{ color: C.sub }}>{fmt(deleted)}</b></span>}
-          <span>mode: <b style={{ color: C.sub }}>{stats?.mode || "portable"}</b></span>
-          <span>engine: <b style={{ color: C.sub }}>sca-core (WASM, in-browser)</b></span>
-        </div>
-
-        {/* drill-down buttons */}
-        <div style={{ display: "flex", gap: 10, marginTop: 16, flexWrap: "wrap" }}>
-          <DrillButton C={C} active={tab === "explore"} onClick={() => setTab(tab === "explore" ? null : "explore")}>🗂  Explore memories →</DrillButton>
-          <DrillButton C={C} active={tab === "recall"} onClick={() => setTab(tab === "recall" ? null : "recall")}>🔍  Recall →</DrillButton>
-          <DrillButton C={C} active={tab === "loop"} onClick={() => setTab(tab === "loop" ? null : "loop")}>♻  Loop activity →</DrillButton>
+        <div style={{ padding: "18px 20px" }}>
+          {active === "explore" && <ExplorePanel C={C} s={s} brain={brain} fmt={fmt} total={memories} />}
+          {active === "recall" && <RecallPanel C={C} s={s} brain={brain} />}
+          {active === "loop" && <LoopPanel C={C} s={s} API={API} />}
         </div>
       </div>
-
-      {/* DRILL-DOWN PANEL */}
-      {tab === "explore" && <ExplorePanel C={C} s={s} brain={brain} fmt={fmt} total={memories} />}
-      {tab === "recall" && <RecallPanel C={C} s={s} brain={brain} />}
-      {tab === "loop" && <LoopPanel C={C} s={s} API={API} />}
-    </div>
-  );
+    </div>);
 }
 
-function DrillButton({ C, active, onClick, children }) {
+// Enterprise metric card — clean, with a colored accent top-border (matches the Overview tiles).
+function MetricCard({ C, color, value, label, sub, small }) {
   return (
-    <button onClick={onClick} style={{
-      background: active ? C.accent : C.surface,
-      color: active ? "#fff" : C.ink,
-      border: `1px solid ${active ? C.accent : C.line}`,
-      borderRadius: 999, padding: "8px 16px", fontSize: 12.5, fontWeight: 600, cursor: "pointer",
-      transition: "all .12s",
-    }}>{children}</button>
+    <div style={{ background: C.surface, border: `1px solid ${C.line}`, borderTop: `3px solid ${color}`, borderRadius: 12, padding: "14px 16px", minWidth: 0 }}>
+      <div style={{ fontSize: small ? 16 : 24, fontWeight: 800, color: C.ink, lineHeight: 1.15, letterSpacing: -0.3, textTransform: small ? "capitalize" : "none", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{value}</div>
+      <div style={{ fontSize: 10.5, color: C.sub, textTransform: "uppercase", letterSpacing: 0.5, fontWeight: 700, marginTop: 5 }}>{label}</div>
+      {sub && <div style={{ fontSize: 11, color: C.dim, marginTop: 2 }}>{sub}</div>}
+    </div>
   );
 }
 
@@ -211,7 +204,7 @@ function ExplorePanel({ C, s, brain, fmt, total }) {
   }, [brain]);
 
   return (
-    <div style={{ ...s.card, padding: "16px 18px" }}>
+    <div>
       <PanelHead C={C} title="Explore memories" sub={`${fmt(total)} stored — click any to read it`} />
       <div style={{ display: "grid", gridTemplateColumns: detail ? "1.3fr 1fr" : "1fr", gap: 14 }}>
         <div>
@@ -277,7 +270,7 @@ function RecallPanel({ C, s, brain }) {
   }, [q, brain]);
 
   return (
-    <div style={{ ...s.card, padding: "16px 18px" }}>
+    <div>
       <PanelHead C={C} title="Recall" sub="ask the brain — live semantic search (sym + grep + SCA fusion)" />
       <div style={{ display: "flex", gap: 8 }}>
         <input ref={inputRef} value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => e.key === "Enter" && run()}
@@ -311,7 +304,7 @@ function LoopPanel({ C, s, API }) {
     fetch(`${API}/evolution/runs`).then((r) => r.json()).then((d) => setRuns(d?.runs || [])).catch(() => setRuns([]));
   }, [API]);
   return (
-    <div style={{ ...s.card, padding: "16px 18px" }}>
+    <div>
       <PanelHead C={C} title="Loop activity" sub="what the brain drove — recent self-healing mutation cycles" />
       {runs == null && <BrainSpinner C={C} label="loading cycles…" />}
       {runs && runs.length === 0 && <div style={{ fontSize: 12.5, color: C.dim }}>No cycles yet. Run a mutation and the brain’s work shows here.</div>}

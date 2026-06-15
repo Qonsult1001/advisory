@@ -192,7 +192,7 @@ export default function App() {
           <div style={{ display: "flex", gap: 4 }}>
             <span style={tab === "admin" || tab === "memory" ? s.appTab : s.appTabOn} onClick={() => setTab("dashboard")}>Platform</span>
             <span style={tab === "admin" ? s.appTabOn : s.appTab} onClick={() => setTab("admin")}>Administration</span>
-            <span style={tab === "memory" ? s.appTabOn : s.appTab} onClick={() => setTab("memory")}>🧠 Brain</span>
+            <span style={tab === "memory" ? s.appTabOn : s.appTab} onClick={() => setTab("memory")}>Memories</span>
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
@@ -326,10 +326,10 @@ export default function App() {
 
           {tab === "memory" && (
             <div style={{ animation: "fwfade .2s ease" }}>
-              <Crumb trail={[{ label: "All Projects" }, { label: "Brain" }]} />
-              <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 4 }}>Advisory Brain</div>
-              <p style={{ color: C.sub, fontSize: 12.5, marginBottom: 16 }}>The portable <code style={s.code}>.said</code> memory every agent shares — browse what’s stored, recall anything live, and see what the self-healing loop learned. Runs in your browser via WASM; nothing leaves the page.</p>
-              <BrainDashboard C={C} s={s} API={API} StatTile={StatTile} Callout={Callout} nfmt={nfmt} />
+              <Crumb trail={[{ label: "All Projects" }, { label: "Memories" }]} />
+              <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 4 }}>Memories</div>
+              <p style={{ color: C.sub, fontSize: 12.5, marginBottom: 16 }}>The shared <code style={s.code}>.said</code> memory every agent draws on — browse what’s indexed, recall anything live, and review what the self-healing loop has learned. Runs in-browser; nothing leaves the page.</p>
+              <BrainDashboard C={C} s={s} API={API} StatTile={StatTile} Callout={Callout} nfmt={nfmt} Icon={Icon} />
             </div>
           )}
 
