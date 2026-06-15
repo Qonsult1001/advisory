@@ -3564,6 +3564,93 @@ function _MemoryPanel_REMOVED({ d, update }) {
 }
 
 // Model dropdown — live list from the provider (Groq/OpenAI /models) or curated (claude/cursor).
+// Right-side drawer to configure ONE agent (model, endpoint, key, persona, reasoning) and Test it.
+// Keeps the agent list compact — you edit + test here, then close to collapse.
+function AgentDrawer({ C, s, d, i, a, setAgent, onClose }) {
+  const [test, setTest] = useState(null);   // {state, reply, reasoning, error}
+  const cli = a.standard === "cursor-cli" || a.standard === "claude-cli";
+  const ep = (a.endpoint || "").toLowerCase();
+  const supportsReasoning = ep.includes("api.groq.com") || ep.includes("openrouter.ai");
+  const runTest = async () => {
+    setTest({ state: "running" });
+    const r = await api.testAgent(a.id, "").catch(() => ({ ok: false, error: "request failed" }));
+    if (r.mode === "cli-queued") { setTest({ state: "queued" }); return; }
+    setTest({ state: "done", ok: r.ok, reply: r.reply, reasoning: r.reasoning, error: r.error, tokens: r.tokens });
+  };
+  return (
+    <>
+      <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.32)", zIndex: 90 }} />
+      <div style={{ position: "fixed", top: 0, right: 0, bottom: 0, width: 480, maxWidth: "94vw", background: C.surface, boxShadow: "-8px 0 30px rgba(0,0,0,.2)", zIndex: 91, display: "flex", flexDirection: "column" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "16px 18px", borderBottom: `1px solid ${C.line}` }}>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 15, fontWeight: 700, color: C.ink }}>{a.name || a.id}</div>
+            <div style={{ fontSize: 11, color: C.sub }}>{cli ? "local CLI (worker)" : "Microsoft Agent Framework"}</div>
+          </div>
+          <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: C.sub, fontSize: 20, lineHeight: 1 }}>×</button>
+        </div>
+        <div style={{ overflowY: "auto", padding: 18, display: "flex", flexDirection: "column", gap: 14 }}>
+          <Field label="Name"><TextInput value={a.name} onChange={(e) => setAgent(i, { name: e.target.value })} /></Field>
+          <Field label="Standard">
+            <select value={a.standard} onChange={(e) => setAgent(i, { standard: e.target.value })} style={{ ...s.select, width: "100%" }}>
+              {(d.standards || []).map((x) => <option key={x} value={x}>{x}</option>)}
+            </select>
+          </Field>
+          <Field label="Model"><ModelSelect agent={a} onPick={(m) => setAgent(i, { model: m })} /></Field>
+          {cli
+            ? (a.standard === "cursor-cli"
+                ? <Field label="Cursor user — Authenticate & accept the licence in your browser"><CursorAuth agent={a} onUser={(u) => setAgent(i, { cursorUser: u })} /></Field>
+                : a.id === "claude-cli-test"
+                ? <Field label="Auth"><div style={{ ...s.inputText, width: "100%", color: C.sub, background: C.bg2 }}>Uses the worker host's Claude login (.env). Operator-only.</div></Field>
+                : <Field label="Auth — Authenticate, then approve in your browser"><CursorAuth agent={a} onUser={() => {}} /></Field>)
+            : <>
+                <Field label="Endpoint"><TextInput value={a.endpoint || ""} placeholder="https://api.groq.com/openai/v1" onChange={(e) => setAgent(i, { endpoint: e.target.value })} mono /></Field>
+                <Field label={a.hasKey ? "API key — stored ✓ (blank keeps it)" : "API key (blank = use server env key)"}>
+                  <TextInput type="password" value={a.apiKey || ""} placeholder={a.hasKey ? "•••••••• unchanged" : "paste key"} onChange={(e) => setAgent(i, { apiKey: e.target.value })} />
+                </Field>
+              </>}
+          <Field label="Persona — system prompt injected when this agent runs">
+            <textarea value={a.persona || ""} onChange={(e) => setAgent(i, { persona: e.target.value })}
+              placeholder="e.g. You are a meticulous .NET engineer. Smallest correct change, test first, PR-only."
+              rows={4} style={{ ...s.inputText, width: "100%", resize: "vertical", lineHeight: 1.5, fontFamily: C.sans, boxSizing: "border-box" }} />
+          </Field>
+          {/* Reasoning enable/disable */}
+          <div style={{ display: "flex", alignItems: "center", gap: 10, borderTop: `1px solid ${C.line}`, paddingTop: 14 }}>
+            <button onClick={() => supportsReasoning && setAgent(i, { reasoning: !a.reasoning })} disabled={!supportsReasoning}
+              title={supportsReasoning ? "Show the model's step-by-step thinking" : "Reasoning is for Groq / OpenRouter agents"}
+              style={{ width: 42, height: 22, borderRadius: 999, border: "none", cursor: supportsReasoning ? "pointer" : "not-allowed", background: a.reasoning && supportsReasoning ? C.accent : C.line, position: "relative", opacity: supportsReasoning ? 1 : 0.5, padding: 0, flexShrink: 0 }}>
+              <span style={{ position: "absolute", top: 2, left: a.reasoning && supportsReasoning ? 22 : 2, width: 18, height: 18, borderRadius: "50%", background: "#fff", transition: "left .15s" }} />
+            </button>
+            <div>
+              <div style={{ fontSize: 12.5, fontWeight: 600, color: C.ink }}>Reasoning {a.reasoning && supportsReasoning ? "on" : "off"}</div>
+              <div style={{ fontSize: 11, color: C.dim }}>{supportsReasoning ? "Show the model's thinking" : "Available on Groq / OpenRouter"}</div>
+            </div>
+          </div>
+          {/* Test — runs the agent, shows reply + thinking */}
+          <div style={{ borderTop: `1px solid ${C.line}`, paddingTop: 14 }}>
+            <button onClick={runTest} disabled={test?.state === "running"} style={{ ...s.btnPrimary, opacity: test?.state === "running" ? 0.6 : 1 }}>{test?.state === "running" ? "Testing…" : "Test agent"}</button>
+            {test?.state === "queued" && <div style={{ fontSize: 12, color: C.sub, marginTop: 8 }}>Queued for the worker (CLI agent).</div>}
+            {test?.state === "done" && (
+              <div style={{ marginTop: 10 }}>
+                {test.ok ? <>
+                  <div style={{ fontSize: 11, color: C.sub, textTransform: "uppercase", letterSpacing: 0.4, fontWeight: 700, marginBottom: 4 }}>Reply {test.tokens ? `· ${test.tokens} tok` : ""}</div>
+                  <pre style={{ margin: 0, background: C.surface2, border: `1px solid ${C.line}`, borderRadius: 8, padding: "10px 12px", fontSize: 12, fontFamily: C.mono, whiteSpace: "pre-wrap", maxHeight: 140, overflow: "auto" }}>{test.reply || "(empty)"}</pre>
+                  {test.reasoning && <>
+                    <div style={{ fontSize: 11, color: C.sub, textTransform: "uppercase", letterSpacing: 0.4, fontWeight: 700, margin: "10px 0 4px" }}>💭 Thinking</div>
+                    <pre style={{ margin: 0, background: "#0f1722", color: "#cfe6d4", borderRadius: 8, padding: "10px 12px", fontSize: 11.5, fontFamily: C.mono, whiteSpace: "pre-wrap", maxHeight: 160, overflow: "auto" }}>{test.reasoning}</pre>
+                  </>}
+                </> : <div style={{ fontSize: 12, color: C.block }}>{test.error || "test failed"}</div>}
+              </div>
+            )}
+          </div>
+        </div>
+        <div style={{ padding: "12px 18px", borderTop: `1px solid ${C.line}`, display: "flex", justifyContent: "flex-end" }}>
+          <button onClick={onClose} style={{ ...s.add }}>Done</button>
+        </div>
+      </div>
+    </>
+  );
+}
+
 function ModelSelect({ agent, onPick }) {
   const [models, setModels] = useState(null);
   const [live, setLive] = useState(false);
@@ -3704,12 +3791,13 @@ function AdminCenter({ setTab }) {
   const [d, setD] = useState(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState(null);
+  const [editIdx, setEditIdx] = useState(null);   // which agent's edit drawer is open
   useEffect(() => { api.adminSettings().then(setD).catch(() => setD({ agents: [], standards: [], runtimes: [], databases: [], taskKinds: [], mutationRouting: {}, evolutionRouting: {} })); }, []);
   if (!d) return <div style={{ padding: 30, color: C.sub }}>Loading Administration…</div>;
 
   const update = (patch) => setD({ ...d, ...patch });
   const setAgent = (i, patch) => { const a = [...d.agents]; a[i] = { ...a[i], ...patch }; update({ agents: a }); };
-  const addAgent = () => update({ agents: [...d.agents, { id: "agent-" + (d.agents.length + 1), name: "New agent", standard: "openai", model: "", endpoint: "", apiKey: "", cursorUser: "", enabled: true, hasKey: false }] });
+  const addAgent = () => { update({ agents: [...d.agents, { id: "agent-" + (d.agents.length + 1), name: "New agent", standard: "openai", model: "", endpoint: "", apiKey: "", cursorUser: "", enabled: true, hasKey: false }] }); setEditIdx(d.agents.length); };
   // Add a provider from the catalog (the ".said LLM Providers" pattern): pre-fills standard,
   // endpoint, and a default model so it's one click. The key comes from the agent field or env.
   const addProvider = (p) => {
@@ -3717,6 +3805,7 @@ function AdminCenter({ setTab }) {
     while (d.agents.some((a) => a.id === id)) id = `${baseId}-${n++}`;
     update({ agents: [...d.agents, { id, name: p.label, standard: p.standard, model: p.defaultModel || "",
       endpoint: p.baseUrl, apiKey: "", cursorUser: "", enabled: true, hasKey: false }] });
+    setEditIdx(d.agents.length);   // open the drawer to configure the new provider
   };
   const removeAgent = (i) => update({ agents: d.agents.filter((_, j) => j !== i) });
   const agentOptions = [{ id: "", label: "— default engine —" }, ...d.agents.map((a) => ({ id: a.id, label: `${a.name} (${a.model || a.standard})` }))];
@@ -3773,101 +3862,54 @@ function AdminCenter({ setTab }) {
       {msg && <Callout>{msg}</Callout>}
 
       <SubHead>AI agents</SubHead>
-      <div style={{ ...s.card, padding: d.agents.length === 0 ? 0 : "8px 0" }}>
-        {d.agents.length === 0 && <div style={{ padding: "28px 22px", color: C.sub, fontSize: 12.5, textAlign: "center" }}>
-          No agents configured yet. Add one — e.g. <b>Claude (Cursor CLI)</b> for research/planning, <b>Groq gpt-oss-120b</b> for execution.</div>}
-        {d.agents.map((a, i) => (
-          <div key={i} style={{ padding: "16px 20px", borderBottom: i < d.agents.length - 1 ? `1px solid ${C.lineSoft}` : "none" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                <span style={{ fontSize: 13, fontWeight: 700, color: C.ink }}>{a.name || "Untitled agent"}</span>
-                <Tag tone={a.enabled ? C.accentDim : C.sub}>{a.standard}</Tag>
-                {(a.standard === "openai" || a.standard === "anthropic")
-                  ? <Tag tone={C.info}>⚙ Agent Framework</Tag>
-                  : <Tag tone={C.warn}>⌂ local CLI (worker)</Tag>}
-                {a.hasKey && <Tag tone={C.sub}>key set</Tag>}
-              </div>
-              <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-                <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5, color: C.sub, cursor: "pointer" }}>
-                  <Switch on={a.enabled} onChange={(v) => setAgent(i, { enabled: v })} /> enabled
-                </label>
-                <AgentTestButton agent={a} />
-                <button onClick={() => removeAgent(i)} title="Remove agent" style={{ background: "transparent", border: `1px solid ${C.line}`, borderRadius: 6, color: C.sub, cursor: "pointer", fontSize: 12, padding: "4px 10px" }}>Remove</button>
-              </div>
-            </div>
-            <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr 1.4fr", gap: 16, marginBottom: 14 }}>
-              <Field label="Name"><TextInput value={a.name} onChange={(e) => setAgent(i, { name: e.target.value })} /></Field>
-              <Field label="Standard">
-                <select value={a.standard} onChange={(e) => setAgent(i, { standard: e.target.value })} style={{ ...s.select, width: "100%" }}>
-                  {(d.standards || []).map((x) => <option key={x} value={x}>{x}</option>)}
-                </select>
-              </Field>
-              <Field label="Model"><ModelSelect agent={a} onPick={(m) => setAgent(i, { model: m })} /></Field>
-            </div>
-            <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr", gap: 16 }}>
-              {a.standard === "cursor-cli"
-                ? <Field label="Cursor user (business account) — then Authenticate & accept the licence in your browser"><CursorAuth agent={a} onUser={(u) => setAgent(i, { cursorUser: u })} /></Field>
-                : a.standard === "claude-cli" && a.id === "claude-cli-test"
-                ? <Field label="Auth"><div style={{ ...s.inputText, width: "100%", color: C.sub, background: C.bg2 }}>Local test agent — uses the worker host's Claude login (.env). Operator-only.</div></Field>
-                : a.standard === "claude-cli"
-                ? <Field label="Auth — click Authenticate, then approve in your browser (runs claude setup-token on the worker)"><CursorAuth agent={a} onUser={() => {}} /></Field>
-                : <Field label="Endpoint"><TextInput value={a.endpoint || ""} placeholder="https://api.groq.com/openai/v1" onChange={(e) => setAgent(i, { endpoint: e.target.value })} mono /></Field>}
-              {(a.standard === "openai" || a.standard === "anthropic")
-                ? <Field label={a.hasKey ? "API key — stored ✓ (blank keeps it)" : "API key"}>
-                    <TextInput type="password" value={a.apiKey || ""} placeholder={a.hasKey ? "•••••••• unchanged" : "paste key"} onChange={(e) => setAgent(i, { apiKey: e.target.value })} />
-                  </Field>
-                : <div />}
-            </div>
-            <div style={{ marginTop: 14 }}>
-              <Field label="Persona — system prompt injected when this agent runs (personality + strict instructions)">
-                <textarea value={a.persona || ""} onChange={(e) => setAgent(i, { persona: e.target.value })}
-                  placeholder="e.g. You are a meticulous .NET security reviewer. Map every change to a control, write a test first, never weaken a guard, keep changes minimal and PR-only."
-                  rows={3} style={{ ...s.inputText, width: "100%", resize: "vertical", lineHeight: 1.5, fontFamily: C.sans }} />
-              </Field>
-            </div>
-            {/* Reasoning toggle — only meaningful for Groq / OpenRouter (OpenAI-compatible + reasoning) */}
-            {(() => {
-              const ep = (a.endpoint || "").toLowerCase();
-              const supports = ep.includes("api.groq.com") || ep.includes("openrouter.ai");
-              return (
-                <div style={{ marginTop: 14, display: "flex", alignItems: "center", gap: 10 }}>
-                  <button onClick={() => supports && setAgent(i, { reasoning: !a.reasoning })} disabled={!supports}
-                    title={supports ? "Show the model's step-by-step thinking" : "Reasoning is supported on Groq / OpenRouter agents"}
-                    style={{ width: 42, height: 22, borderRadius: 999, border: "none", cursor: supports ? "pointer" : "not-allowed",
-                      background: a.reasoning && supports ? C.accent : C.line, position: "relative", opacity: supports ? 1 : 0.5, padding: 0 }}>
-                    <span style={{ position: "absolute", top: 2, left: a.reasoning && supports ? 22 : 2, width: 18, height: 18, borderRadius: "50%", background: "#fff", transition: "left .15s" }} />
-                  </button>
-                  <div>
-                    <div style={{ fontSize: 12.5, fontWeight: 600, color: C.ink }}>Reasoning {a.reasoning && supports ? "on" : "off"}</div>
-                    <div style={{ fontSize: 11, color: C.dim }}>{supports ? "Show the model's thinking (Groq / OpenRouter)" : "Available on Groq / OpenRouter agents"}</div>
-                  </div>
+      {/* COMPACT ROWS — one line per agent; click Edit to open the config drawer. */}
+      <div style={{ ...s.card, padding: 0 }}>
+        {d.agents.length === 0 && <div style={{ padding: "24px 22px", color: C.sub, fontSize: 12.5, textAlign: "center" }}>
+          No agents yet — pick a provider below.</div>}
+        {d.agents.map((a, i) => {
+          const cli = a.standard === "cursor-cli" || a.standard === "claude-cli";
+          return (
+            <div key={i} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 18px", borderBottom: i < d.agents.length - 1 ? `1px solid ${C.lineSoft}` : "none" }}>
+              <span style={{ width: 30, height: 30, borderRadius: 8, background: C.surface2, border: `1px solid ${C.line}`, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 11, color: C.ink, flexShrink: 0 }}>{(a.name || a.id).slice(0, 2).toUpperCase()}</span>
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ fontSize: 13, fontWeight: 700, color: C.ink }}>{a.name || a.id}</span>
+                  <Tag tone={cli ? C.warn : C.info}>{cli ? "CLI" : "MAF"}</Tag>
+                  {a.reasoning && <Tag tone={C.accentDim}>reasoning</Tag>}
+                  {a.hasKey && <Tag tone={C.sub}>key</Tag>}
                 </div>
-              );
-            })()}
-          </div>
-        ))}
-        <div style={{ padding: "14px 20px" }}>
-          <button style={s.add} onClick={addAgent}>+ Add a blank agent</button>
-        </div>
-        {/* CHOOSE A PROVIDER — the .said-style catalog: one click pre-fills endpoint + default model */}
-        <div style={{ borderTop: `1px solid ${C.line}`, padding: "16px 20px" }}>
-          <SubHead>Choose a provider</SubHead>
-          <div style={{ fontSize: 12, color: C.sub, margin: "2px 0 12px" }}>One click adds the provider with its endpoint and a default model pre-filled. Add your API key on the agent (or set its env key on the server).</div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-            {PROVIDER_CATALOG.map((p) => (
-              <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 12, border: `1px solid ${C.line}`, borderRadius: 10, padding: "11px 14px" }}>
-                <span style={{ width: 30, height: 30, borderRadius: 8, background: C.surface2, border: `1px solid ${C.line}`, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 12, color: C.ink }}>{p.label.slice(0, 2).toUpperCase()}</span>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 13, fontWeight: 600, color: C.ink }}>{p.label}</div>
-                  <div style={{ fontSize: 11, color: C.dim, fontFamily: C.mono, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.defaultModel}</div>
-                  {p.note && <div style={{ fontSize: 10.5, color: C.sub, marginTop: 1 }}>{p.note}</div>}
-                </div>
-                <button onClick={() => addProvider(p)} style={{ ...s.add, background: C.surface, color: C.accentDim, border: `1px solid ${C.line}`, whiteSpace: "nowrap", fontSize: 12.5 }}>ADD →</button>
+                <div style={{ fontSize: 11.5, color: C.dim, fontFamily: C.mono, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.model || "— no model —"}{a.endpoint ? ` · ${a.endpoint.replace(/^https?:\/\//, "")}` : ""}</div>
               </div>
-            ))}
-          </div>
+              <Switch on={a.enabled} onChange={(v) => setAgent(i, { enabled: v })} />
+              <button onClick={() => setEditIdx(i)} style={{ ...s.add, background: C.surface, color: C.ink, border: `1px solid ${C.line}`, fontSize: 12.5, padding: "6px 14px" }}>Edit</button>
+              <button onClick={() => removeAgent(i)} title="Remove" style={{ background: "transparent", border: "none", color: C.dim, cursor: "pointer", fontSize: 16, padding: "2px 6px" }}>×</button>
+            </div>
+          );
+        })}
+        <div style={{ padding: "12px 18px", borderTop: d.agents.length ? `1px solid ${C.line}` : "none" }}>
+          <button style={{ ...s.add, background: C.surface, color: C.ink, border: `1px solid ${C.line}` }} onClick={addAgent}>+ Add a blank agent</button>
         </div>
       </div>
+
+      {/* CHOOSE A PROVIDER — quick-add; opens the drawer to configure + test, then collapses. */}
+      <SubHead>Choose a provider</SubHead>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
+        {PROVIDER_CATALOG.map((p) => (
+          <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 10, border: `1px solid ${C.line}`, borderRadius: 10, padding: "10px 12px", background: C.surface }}>
+            <span style={{ width: 28, height: 28, borderRadius: 7, background: C.surface2, border: `1px solid ${C.line}`, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 11, color: C.ink }}>{p.label.slice(0, 2).toUpperCase()}</span>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 12.5, fontWeight: 600, color: C.ink }}>{p.label}</div>
+              <div style={{ fontSize: 10.5, color: C.dim, fontFamily: C.mono, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.defaultModel}</div>
+            </div>
+            <button onClick={() => addProvider(p)} style={{ background: "transparent", border: "none", color: C.accentDim, cursor: "pointer", fontSize: 12.5, fontWeight: 700, whiteSpace: "nowrap" }}>ADD →</button>
+          </div>
+        ))}
+      </div>
+
+      {/* EDIT DRAWER — full config + test for the selected agent; close to collapse. */}
+      {editIdx != null && d.agents[editIdx] && (
+        <AgentDrawer C={C} s={s} d={d} i={editIdx} a={d.agents[editIdx]} setAgent={setAgent} onClose={() => setEditIdx(null)} />
+      )}
 
       <SubHead>Task routing — assign an agent to each phase</SubHead>
       <div style={{ ...s.card, padding: "20px 22px" }}>
