@@ -76,6 +76,52 @@ public sealed class GroqCycle(IAgentRunner runner, IPolicyStore policy, Evolutio
         return "";
     }
 
+    /// <summary>Read the REAL test fixture from HealthTests.cs so the model copies the proven pattern
+    /// (the `_client` field, the actual `using`s, one real `[Fact]`) instead of GUESSING field names
+    /// (`_factory`) or spinning its own `new WebApplicationFactory<Program>()` — the CS0103/CS1061
+    /// class of first-attempt failures. Reads the read-only /workspace mount (current source).
+    /// Returns "" if unavailable.</summary>
+    static string RealTestFixture()
+    {
+        foreach (var p in new[] { "/workspace/tests/Advisory.Tests/HealthTests.cs", "tests/Advisory.Tests/HealthTests.cs" })
+        {
+            try
+            {
+                if (!File.Exists(p)) continue;
+                var lines = File.ReadAllLines(p);
+                // The fixture header = the `using`s + class declaration + ctor (where `_client` is set up).
+                // Grab through the constructor line so the model sees EXACTLY how the HttpClient is named
+                // and obtained. The ctor is the first line containing "factory.CreateClient".
+                int ctor = Array.FindIndex(lines, l => l.Contains("CreateClient"));
+                if (ctor < 0) return "";
+                var header = string.Join("\n", lines.Take(ctor + 1));
+                // One canonical sample [Fact] (the first complete one) so the model copies the call shape.
+                int fa = Array.FindIndex(lines, l => l.TrimStart().StartsWith("[Fact]"));
+                var sample = "";
+                if (fa >= 0)
+                {
+                    // take from [Fact] until the matching closing brace of the method (first line that is
+                    // exactly "}" at the method's indent — good enough: stop at the next [Fact] or 14 lines).
+                    var buf = new List<string>();
+                    for (int i = fa; i < lines.Length && buf.Count < 14; i++)
+                    {
+                        if (buf.Count > 0 && lines[i].TrimStart().StartsWith("[Fact]")) break;
+                        buf.Add(lines[i]);
+                    }
+                    sample = string.Join("\n", buf);
+                }
+                return "The test class ALREADY EXISTS with this exact fixture — your [Fact] runs INSIDE it, "
+                       + "so use the field `_client` (already created). Do NOT declare a new field, a new "
+                       + "constructor, or `new WebApplicationFactory`. These usings are already present "
+                       + "(do not re-add them):\n```csharp\n" + header.Trim()
+                       + "\n```\nA real existing test in this class (copy its call shape — `_client.GetAsync`, "
+                       + "`JsonDocument.Parse`):\n```csharp\n" + sample.Trim() + "\n```";
+            }
+            catch { }
+        }
+        return "";
+    }
+
     /// <summary>Pre-validate a member insertion via `said edit --explain` (v0.6.0): returns the raw JSON
     /// menu of valid anchors for adding to a class/scope, so the model can pick the right move up front.</summary>
     public string SaidExplain(string saidPath, string file, string symbol)
@@ -150,7 +196,9 @@ public sealed class GroqCycle(IAgentRunner runner, IPolicyStore policy, Evolutio
             "2) TEST → file tests/Advisory.Tests/HealthTests.cs, mode \"append-into-symbol\", symbol = \"HealthTests\" " +
             "(NO anchor). This appends your [Fact] method at CLASS scope (auto-indented) so it can NEVER nest inside " +
             "another method. content = the full `[Fact] public async Task ...() { ... }` method body. " +
-            "Use HttpClient via the existing fixture pattern; assert HTTP 200 and the JSON shape from the ticket.\n" +
+            "Use the EXISTING `_client` field shown in the fixture below — do NOT declare a new field, constructor, " +
+            "or `new WebApplicationFactory`, and do NOT re-add usings that are already present. Only call .NET APIs " +
+            "you are certain exist (a wrong member name like GCMemoryInfo.TotalAllocatedBytes fails to compile).\n" +
             "No prose, JSON only.";
         var repair = "";
         if (!string.IsNullOrWhiteSpace(priorFailure))
@@ -161,11 +209,17 @@ public sealed class GroqCycle(IAgentRunner runner, IPolicyStore policy, Evolutio
                 "\nIf the error JSON contains a `valid_anchors` array, use one of those EXACT {mode,symbol/anchor} " +
                 "pairs. For adding a member, prefer the `append-into-symbol` entry. Other common causes: anchor was " +
                 "inside a multi-line statement (pick a complete line ending in `;`), a duplicate definition, or a missing using.";
+        // Inject the REAL test fixture (the `_client` field + existing usings + one sample [Fact]) so the
+        // model copies the proven pattern instead of guessing `_factory` / spinning its own factory — the
+        // CS0103/CS1061 first-attempt-failure class. Read from source (same approach as RealEndpointAnchors).
+        var fixtureCtx = RealTestFixture();
         var user =
             $"Ticket #{ticket}: {title}\n\n{body}\n\nApproved plan:\n{plan}\n\n" +
             // Keep the injected context SMALL — a large recalled blob made gpt-oss emit longer, less
             // reliable JSON (unescaped chars). A few hundred chars is enough to show one anchor pattern.
-            $"=== .said recall: an existing endpoint line to anchor after (copy a COMPLETE .AllowAnonymous(); line) ===\n{Trim(routeCtx, 700)}\n" + repair;
+            $"=== .said recall: an existing endpoint line to anchor after (copy a COMPLETE .AllowAnonymous(); line) ===\n{Trim(routeCtx, 700)}\n" +
+            (string.IsNullOrWhiteSpace(fixtureCtx) ? "" : $"\n=== THE TEST FIXTURE (use `_client`; do not reinvent it) ===\n{Trim(fixtureCtx, 900)}\n") +
+            repair;
         // JsonObject=true → provider is forced to emit valid JSON (json_object mode). This is the real
         // fix for the flaky parsing: stop hoping the model returns clean JSON, make the API guarantee it.
         var rr = await runner.RunAsync(agent, new AgentRunRequest("execution", agent.Persona ?? "", sys, user, JsonObject: true), ct);
