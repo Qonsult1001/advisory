@@ -97,6 +97,20 @@ const C = {
   mono: FONT_MONO, sans: FONT_SANS,
 };
 
+// LLM provider catalog — mirrors the .said "Choose a provider" panel. OpenAI-compatible
+// providers use standard "openai" with their baseUrl as endpoint; Anthropic uses "anthropic".
+const PROVIDER_CATALOG = [
+  { id: "openrouter", label: "OpenRouter", standard: "openai", baseUrl: "https://openrouter.ai/api/v1", defaultModel: "moonshotai/kimi-k2.7-code", note: "Kimi / Opus / many models · key: OPENROUTER_API_KEY" },
+  { id: "openai", label: "OpenAI", standard: "openai", baseUrl: "https://api.openai.com/v1", defaultModel: "gpt-4o-mini" },
+  { id: "deepseek", label: "DeepSeek", standard: "openai", baseUrl: "https://api.deepseek.com/v1", defaultModel: "deepseek-chat" },
+  { id: "mistral", label: "Mistral", standard: "openai", baseUrl: "https://api.mistral.ai/v1", defaultModel: "mistral-small-latest" },
+  { id: "together", label: "Together AI", standard: "openai", baseUrl: "https://api.together.xyz/v1", defaultModel: "meta-llama/Llama-3.3-70B-Instruct-Turbo" },
+  { id: "fireworks", label: "Fireworks AI", standard: "openai", baseUrl: "https://api.fireworks.ai/inference/v1", defaultModel: "accounts/fireworks/models/llama-v3p3-70b-instruct" },
+  { id: "perplexity", label: "Perplexity", standard: "openai", baseUrl: "https://api.perplexity.ai", defaultModel: "llama-3.1-sonar-small-128k-chat" },
+  { id: "xai", label: "xAI (Grok)", standard: "openai", baseUrl: "https://api.x.ai/v1", defaultModel: "grok-2-latest" },
+  { id: "anthropic", label: "Anthropic (Claude)", standard: "anthropic", baseUrl: "https://api.anthropic.com/v1", defaultModel: "claude-haiku-4-5-20251001" },
+];
+
 const ALL_SOURCES = [
   { key: "osv", label: "OSV.dev", scope: "Multi-ecosystem CVE", tier: "Included" },
   { key: "malware", label: "OpenSSF Malicious Packages", scope: "Typosquat / malicious-package (no CVE)", tier: "Included" },
@@ -3696,9 +3710,14 @@ function AdminCenter({ setTab }) {
   const update = (patch) => setD({ ...d, ...patch });
   const setAgent = (i, patch) => { const a = [...d.agents]; a[i] = { ...a[i], ...patch }; update({ agents: a }); };
   const addAgent = () => update({ agents: [...d.agents, { id: "agent-" + (d.agents.length + 1), name: "New agent", standard: "openai", model: "", endpoint: "", apiKey: "", cursorUser: "", enabled: true, hasKey: false }] });
-  // One-click OpenRouter: OpenAI-compatible, endpoint pre-filled, model dropdown restricted to Kimi/Opus.
-  // Uses OPENROUTER_API_KEY from the server .env (no key entered here).
-  const addOpenRouter = () => update({ agents: [...d.agents, { id: "openrouter", name: "OpenRouter", standard: "openai", model: "moonshotai/kimi-k2.7-code", endpoint: "https://openrouter.ai/api/v1", apiKey: "", cursorUser: "", enabled: true, hasKey: false }] });
+  // Add a provider from the catalog (the ".said LLM Providers" pattern): pre-fills standard,
+  // endpoint, and a default model so it's one click. The key comes from the agent field or env.
+  const addProvider = (p) => {
+    const baseId = p.id; let id = baseId, n = 2;
+    while (d.agents.some((a) => a.id === id)) id = `${baseId}-${n++}`;
+    update({ agents: [...d.agents, { id, name: p.label, standard: p.standard, model: p.defaultModel || "",
+      endpoint: p.baseUrl, apiKey: "", cursorUser: "", enabled: true, hasKey: false }] });
+  };
   const removeAgent = (i) => update({ agents: d.agents.filter((_, j) => j !== i) });
   const agentOptions = [{ id: "", label: "— default engine —" }, ...d.agents.map((a) => ({ id: a.id, label: `${a.name} (${a.model || a.standard})` }))];
 
@@ -3806,11 +3825,47 @@ function AdminCenter({ setTab }) {
                   rows={3} style={{ ...s.inputText, width: "100%", resize: "vertical", lineHeight: 1.5, fontFamily: C.sans }} />
               </Field>
             </div>
+            {/* Reasoning toggle — only meaningful for Groq / OpenRouter (OpenAI-compatible + reasoning) */}
+            {(() => {
+              const ep = (a.endpoint || "").toLowerCase();
+              const supports = ep.includes("api.groq.com") || ep.includes("openrouter.ai");
+              return (
+                <div style={{ marginTop: 14, display: "flex", alignItems: "center", gap: 10 }}>
+                  <button onClick={() => supports && setAgent(i, { reasoning: !a.reasoning })} disabled={!supports}
+                    title={supports ? "Show the model's step-by-step thinking" : "Reasoning is supported on Groq / OpenRouter agents"}
+                    style={{ width: 42, height: 22, borderRadius: 999, border: "none", cursor: supports ? "pointer" : "not-allowed",
+                      background: a.reasoning && supports ? C.accent : C.line, position: "relative", opacity: supports ? 1 : 0.5, padding: 0 }}>
+                    <span style={{ position: "absolute", top: 2, left: a.reasoning && supports ? 22 : 2, width: 18, height: 18, borderRadius: "50%", background: "#fff", transition: "left .15s" }} />
+                  </button>
+                  <div>
+                    <div style={{ fontSize: 12.5, fontWeight: 600, color: C.ink }}>Reasoning {a.reasoning && supports ? "on" : "off"}</div>
+                    <div style={{ fontSize: 11, color: C.dim }}>{supports ? "Show the model's thinking (Groq / OpenRouter)" : "Available on Groq / OpenRouter agents"}</div>
+                  </div>
+                </div>
+              );
+            })()}
           </div>
         ))}
-        <div style={{ padding: "14px 20px", display: "flex", gap: 10 }}>
-          <button style={s.add} onClick={addAgent}>+ Add agent</button>
-          <button style={{ ...s.add, background: C.surface, color: C.ink, border: `1px solid ${C.line}` }} onClick={addOpenRouter} title="Add an OpenRouter agent (Kimi / Opus) — uses OPENROUTER_API_KEY from the server .env">+ OpenRouter (Kimi / Opus)</button>
+        <div style={{ padding: "14px 20px" }}>
+          <button style={s.add} onClick={addAgent}>+ Add a blank agent</button>
+        </div>
+        {/* CHOOSE A PROVIDER — the .said-style catalog: one click pre-fills endpoint + default model */}
+        <div style={{ borderTop: `1px solid ${C.line}`, padding: "16px 20px" }}>
+          <SubHead>Choose a provider</SubHead>
+          <div style={{ fontSize: 12, color: C.sub, margin: "2px 0 12px" }}>One click adds the provider with its endpoint and a default model pre-filled. Add your API key on the agent (or set its env key on the server).</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            {PROVIDER_CATALOG.map((p) => (
+              <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 12, border: `1px solid ${C.line}`, borderRadius: 10, padding: "11px 14px" }}>
+                <span style={{ width: 30, height: 30, borderRadius: 8, background: C.surface2, border: `1px solid ${C.line}`, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 12, color: C.ink }}>{p.label.slice(0, 2).toUpperCase()}</span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: C.ink }}>{p.label}</div>
+                  <div style={{ fontSize: 11, color: C.dim, fontFamily: C.mono, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.defaultModel}</div>
+                  {p.note && <div style={{ fontSize: 10.5, color: C.sub, marginTop: 1 }}>{p.note}</div>}
+                </div>
+                <button onClick={() => addProvider(p)} style={{ ...s.add, background: C.surface, color: C.accentDim, border: `1px solid ${C.line}`, whiteSpace: "nowrap", fontSize: 12.5 }}>ADD →</button>
+              </div>
+            ))}
+          </div>
         </div>
       </div>
 

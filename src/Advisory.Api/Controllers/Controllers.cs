@@ -1635,7 +1635,7 @@ public class AdminController : ControllerBase
         }
 
         var rr = await _runner.RunAsync(agent, new Advisory.Api.Agents.AgentRunRequest("test", agent.Persona ?? "", "Answer concisely.", prompt), ct);
-        return Ok(new { mode = "api", agent = id, model = rr.Model, ok = rr.Ok, error = rr.Error, reply = rr.Text, tokens = rr.Usage.Total });
+        return Ok(new { mode = "api", agent = id, model = rr.Model, ok = rr.Ok, error = rr.Error, reply = rr.Text, reasoning = rr.Reasoning, tokens = rr.Usage.Total });
     }
 
     public record AgentRunReq(string? System, string? Task, string? Prompt);
@@ -1771,7 +1771,7 @@ public class AdminController : ControllerBase
 
     static object MaskAgent(Advisory.Api.Policy.AiAgent a) => new
     {
-        a.Id, a.Name, a.Standard, a.Model, a.Endpoint, a.CursorUser, a.Persona, a.Enabled,
+        a.Id, a.Name, a.Standard, a.Model, a.Endpoint, a.CursorUser, a.Persona, a.Enabled, a.Reasoning,
         hasKey = !string.IsNullOrWhiteSpace(a.ApiKey),   // persona is not secret; key never exposed
     };
 
