@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
+import BrainDashboard from "./BrainDashboard.jsx";
 
 const API = "http://localhost:5000/api";
 const api = {
@@ -3825,7 +3826,10 @@ function AdminCenter() {
       </div>
 
       <SubHead>Project memory — the brain every agent shares</SubHead>
-      <MemoryPanel d={d} update={update} />
+      <BrainDashboard C={C} s={s} API={API} StatTile={StatTile} Callout={Callout} nfmt={nfmt} />
+      <div style={{ marginTop: 16 }}>
+        <MemoryPanel d={d} update={update} />
+      </div>
 
       <div style={{ marginTop: 20, display: "flex", gap: 10, alignItems: "center" }}>
         <button style={{ ...s.add, opacity: busy ? 0.6 : 1 }} disabled={busy} onClick={save}>{busy ? "Saving…" : "Save Administration settings"}</button>
