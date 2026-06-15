@@ -200,38 +200,52 @@ function MetricCard({ C, color, value, label, sub, small }) {
 // FLOW — the mutation cycle AS an agent graph (Beapi-style canvas). Memory feeds
 // every stage. This is the "memory + orchestration in one picture" view.
 // ============================================================================
+// The REAL phases the mutation cycle runs (matches GroqCycle / MutateStages — no fiction).
+// `routePhase` = the mutationRouting key that picks this phase's agent (so the drawer can show/edit
+// the right agent's model + prompt). `logMatch` = regex over the run log for this phase's terminal slice.
 const FLOW_STAGES = [
-  { key: "plan",   label: "Plan",     prompt: "explore read-only, design the approach, make a todo list", recall: "recalled prior plans + decisions", color: "#1f7fd1" },
-  { key: "design", label: "Design",   prompt: "architecture + file-layout conventions",                   recall: "the project's stored conventions", color: "#7b54d1" },
-  { key: "code",   label: "Code",     prompt: "surgical edits, follow conventions, don't over-engineer",   recall: "recalled verified patterns + real fixture", color: "#2f9e36" },
-  { key: "test",   label: "Test",     prompt: "run build + tests (the gate)",                              recall: "known commands (the Workflow section)", color: "#d99016" },
-  { key: "repair", label: "Repair",   prompt: "feed the error back, fix, retry until green",               recall: "stored Errors & Corrections", color: "#d63649" },
-  { key: "memory", label: "Memory",   prompt: "record the session — tell the whole story",                 recall: "writes back to the iteration store", color: "#40be46" },
+  { key: "plan",   label: "Plan",   routePhase: "planning",      color: "#1f7fd1",
+    prompt: "Plan ONE small, correct code change: the endpoint/behaviour to add, the file(s) to touch, and the test. Minimal, PR-only — no code yet.",
+    logMatch: /\[groq\]|\[plan\]|planning|awaiting|approved by operator/i },
+  { key: "code",   label: "Code",   routePhase: "execution",     color: "#2f9e36",
+    prompt: "Implement the change as SURGICAL edits via said edit (anchored insert/replace, never a whole-file rewrite). Use the real test fixture. Return strict JSON edits.",
+    logMatch: /implementing|groq implementing|change set|said edit/i },
+  { key: "test",   label: "Build & Test", routePhase: "execution", color: "#d99016",
+    prompt: "Build + run tests in the clone (the gate). A change that doesn't compile and pass can never reach a PR.",
+    logMatch: /building|testing|build\b|tests?\b|gate/i },
+  { key: "repair", label: "Repair", routePhase: "execution",     color: "#d63649",
+    prompt: "On a failed build/test, feed the exact compiler/test error back and retry the change — up to N attempts, until green.",
+    logMatch: /repair attempt|asking groq to fix|re-building after a failure|didn't build/i },
+  { key: "pr",     label: "PR",     routePhase: "documentation", color: "#40be46",
+    prompt: "Open a pull request for the green change. PR-only — a human reviews and merges; the cycle never pushes to main.",
+    logMatch: /pr opened|opening pull request|pull\/\d+/i },
 ];
 
-// Map a live run's (status, stage, log) → which canvas node is ACTIVE, plus a phase state.
-// Mirrors the real MutateStages keys: queued|setup|plan|test|fix|build|tests|pr + statuses.
+// Map a live run's (status, stage, log) → which node is ACTIVE + its state. Real MutateStages keys.
 function mapRunToNode(run) {
   if (!run) return null;
   const status = (run.status || "").toLowerCase();
   const stage = (run.stage || "").toLowerCase();
   const log = (run.log || "").toLowerCase();
-  const repairing = /repair attempt|asking groq to fix|re-building after a failure/.test(log);
-  // terminal states
-  if (status === "released") return { node: "memory", state: "done" };
-  if (status === "pr-open") return { node: "memory", state: "active" };
+  const repairing = /repair attempt|asking groq to fix|re-building after a failure|didn't build/.test(log);
+  if (status === "released") return { node: "pr", state: "done" };
+  if (status === "pr-open") return { node: "pr", state: "done" };
   if (status === "failed" || status === "rejected") {
-    // died — light the node it was on, in red
     const n = repairing ? "repair" : stage.includes("build") || stage.includes("test") ? "test" : stage.includes("implement") || status === "running" ? "code" : "plan";
     return { node: n, state: "failed" };
   }
-  if (status === "awaiting-approval" || stage.includes("await") || stage.includes("plan")) return { node: "plan", state: "active" };
+  if (status === "awaiting-approval" || stage.includes("await") || (stage.includes("plan") && !stage.includes("implement"))) return { node: "plan", state: "active" };
   if (repairing) return { node: "repair", state: "active" };
-  if (stage.includes("test") || status === "tests") return { node: "test", state: "active" };
-  if (stage.includes("build")) return { node: "test", state: "active" };
+  if (stage.includes("test") || stage.includes("build") || status === "tests") return { node: "test", state: "active" };
   if (stage.includes("implement") || stage.includes("fix") || status === "running") return { node: "code", state: "active" };
   if (status === "queued" || stage.includes("setup") || stage.includes("queue")) return { node: "plan", state: "queued" };
   return { node: "plan", state: "active" };
+}
+
+// Extract the run-log lines that belong to a given phase (its "terminal" slice).
+function phaseLogLines(run, stage) {
+  if (!run?.log) return [];
+  return run.log.split("\n").map((l) => l.trim()).filter((l) => l && stage.logMatch.test(l));
 }
 
 function stageColor(C, live) {
@@ -255,25 +269,14 @@ export function MutationFlow({ C, s, API }) {
 }
 
 function FlowCanvas({ C, s, brain, API, compact }) {
-  const [sel, setSel] = useState(null);
-  const [probe, setProbe] = useState({}); // stage.key -> live recall count from the brain
+  const [sel, setSel] = useState(null);   // selected phase key → opens the drawer
   const [run, setRun] = useState(null);   // the active/most-recent run (live phase)
-  // Prove memory really feeds each stage: ask the brain each stage's recall query, count hits.
-  useEffect(() => {
-    if (!brain) return;
-    const out = {};
-    for (const st of FLOW_STAGES) {
-      try { const r = brain.ask_fused(st.recall, 5, false); out[st.key] = Array.isArray(r) ? r.length : (r?.results?.length || 0); }
-      catch { out[st.key] = 0; }
-    }
-    setProbe(out);
-  }, [brain]);
 
   // LIVE: poll the runs endpoint and follow the active mutation through its phases.
   useEffect(() => {
     let alive = true;
     const tick = () => fetch(`${API}/evolution/runs?limit=5`).then((r) => r.json())
-      .then((d) => { if (!alive) return; const rs = d?.runs || []; setRun(rs[0] || null); }).catch(() => {});
+      .then((d) => { if (!alive) return; setRun((d?.runs || [])[0] || null); }).catch(() => {});
     tick();
     const id = setInterval(tick, 2500);
     return () => { alive = false; clearInterval(id); };
@@ -282,134 +285,178 @@ function FlowCanvas({ C, s, brain, API, compact }) {
   const live = mapRunToNode(run);
   const isLive = run && ["queued", "running", "awaiting-approval", "tests"].includes((run.status || "").toLowerCase());
 
-  // Canvas geometry — compact mode shrinks everything so it fits nicely under the run table.
-  const W = 920;
-  const nodeW = compact ? 100 : 116;
-  const nodeH = compact ? 46 : 60;
-  const rowY = compact ? 18 : 70;
-  const busY = compact ? 132 : 250;
-  const H = compact ? 196 : 360;
-  const gap = (W - 80 - nodeW) / (FLOW_STAGES.length + 1);
-  const xs = (i) => 60 + gap * (i + 1);
-  const startX = 16, endX = W - nodeW - 16;
-  const stageCenter = (i) => ({ x: xs(i) + nodeW / 2, y: rowY + nodeH / 2 });
+  // Readable node geometry (no more tiny). 5 real phases.
+  const W = 900, nodeW = 124, nodeH = 64, rowY = 24, H = 150;
+  const gap = (W - 70 - nodeW) / (FLOW_STAGES.length + 1);
+  const xs = (i) => 54 + gap * (i + 1);
+  const startX = 12, endX = W - 46;
+  const cy = rowY + nodeH / 2;
+  const center = (i) => ({ x: xs(i) + nodeW / 2, y: cy });
+  const repairIdx = FLOW_STAGES.findIndex((x) => x.key === "repair");
+  const codeIdx = FLOW_STAGES.findIndex((x) => x.key === "code");
 
   return (
     <div style={{ position: "relative" }}>
-      {!compact && <PanelHead C={C} title="Agent flow" sub="the self-healing cycle as a graph — every stage runs on its routed agent and recalls from the brain" />}
-      {/* LIVE banner — follows the active mutation through its phases */}
-      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: compact ? 8 : 12, fontSize: 12.5 }}>
+      {/* LIVE banner */}
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10, fontSize: 12.5 }}>
         <span style={{ width: 9, height: 9, borderRadius: "50%", background: isLive ? C.allow : C.dim,
-          boxShadow: isLive ? `0 0 0 0 ${C.allow}` : "none", animation: isLive ? "pulse 1.3s infinite" : "none", display: "inline-block" }} />
+          animation: isLive ? "pulse 1.3s infinite" : "none", display: "inline-block" }} />
         {run ? (
           <span style={{ color: C.sub }}>
-            {isLive ? <b style={{ color: C.ink }}>Live</b> : <b style={{ color: C.ink }}>{run.status === "released" ? "Last run" : "Idle"}</b>}
+            {isLive ? <b style={{ color: C.ink }}>Live</b> : <b style={{ color: C.ink }}>{run.status === "released" || run.status === "pr-open" ? "Last run" : "Idle"}</b>}
             {" — #"}{run.ticket}: <span style={{ color: C.ink }}>{run.stage || run.status}</span>
-            {live && <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 700, color: stageColor(C, live), textTransform: "uppercase" }}>● {live.node}{live.state === "failed" ? " (failed)" : live.state === "done" ? " (done)" : ""}</span>}
           </span>
         ) : <span style={{ color: C.dim }}>No active run — start a mutation and this graph follows it through every phase.</span>}
+        <div style={{ flex: 1 }} />
+        <span style={{ fontSize: 11, color: C.dim }}>each phase is an agent — click to inspect &amp; refine</span>
         <style>{`@keyframes pulse{0%{box-shadow:0 0 0 0 ${C.allow}88}70%{box-shadow:0 0 0 7px ${C.allow}00}100%{box-shadow:0 0 0 0 ${C.allow}00}}`}</style>
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: (sel && !compact) ? "1.5fr 1fr" : "1fr", gap: 16 }}>
-        <div style={{ border: `1px solid ${C.line}`, borderRadius: 12, background: C.surface2, overflow: "hidden", maxWidth: compact ? 760 : "none" }}>
-          <svg width="100%" viewBox={`0 0 ${W} ${H}`} style={{ display: "block" }}>
-            <defs>
-              <marker id="arrow" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
-                <path d="M0,0 L7,3 L0,6 Z" fill={C.sub} />
-              </marker>
-            </defs>
 
-            {/* Start node */}
-            <FlowDot C={C} x={startX} y={rowY + nodeH / 2 - 14} label="Start" tone={C.sub} />
-            {/* edges: start -> plan, stage -> next stage, last -> end */}
-            <Edge C={C} x1={startX + 52} y1={rowY + nodeH / 2} x2={xs(0)} y2={rowY + nodeH / 2} />
-            {FLOW_STAGES.map((st, i) => i < FLOW_STAGES.length - 1 && (
-              <Edge key={"e" + i} C={C} x1={xs(i) + nodeW} y1={rowY + nodeH / 2} x2={xs(i + 1)} y2={rowY + nodeH / 2} />
-            ))}
-            <Edge C={C} x1={xs(FLOW_STAGES.length - 1) + nodeW} y1={rowY + nodeH / 2} x2={endX} y2={rowY + nodeH / 2} />
-            <FlowDot C={C} x={endX} y={rowY + nodeH / 2 - 14} label="Done" tone={C.accent} />
+      <div style={{ border: `1px solid ${C.line}`, borderRadius: 12, background: C.surface2, overflow: "hidden", padding: "4px 0" }}>
+        <svg width="100%" viewBox={`0 0 ${W} ${H}`} style={{ display: "block" }}>
+          <defs>
+            <marker id="arrow" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path d="M0,0 L7,3 L0,6 Z" fill={C.sub} />
+            </marker>
+          </defs>
 
-            {/* Repair loop-back edge: repair (idx 4) curves back to code (idx 2) */}
-            {(() => {
-              const a = stageCenter(4), b = stageCenter(2);
-              const dip = compact ? 30 : 55;
-              const d = `M ${a.x} ${rowY + nodeH} C ${a.x} ${rowY + nodeH + dip}, ${b.x} ${rowY + nodeH + dip}, ${b.x} ${rowY + nodeH}`;
-              return <g><path d={d} fill="none" stroke="#d63649" strokeWidth="1.6" strokeDasharray="4 3" markerEnd="url(#arrow)" />
-                <text x={(a.x + b.x) / 2} y={rowY + nodeH + dip - 3} fontSize="9.5" fill="#d63649" textAnchor="middle">retry until green</text></g>;
-            })()}
+          <FlowDot C={C} x={startX} y={cy - 14} label="Start" tone={C.sub} />
+          <Edge C={C} x1={startX + 48} y1={cy} x2={xs(0)} y2={cy} />
+          {FLOW_STAGES.map((st, i) => i < FLOW_STAGES.length - 1 && (
+            <Edge key={"e" + i} C={C} x1={xs(i) + nodeW} y1={cy} x2={xs(i + 1)} y2={cy} />
+          ))}
+          <Edge C={C} x1={xs(FLOW_STAGES.length - 1) + nodeW} y1={cy} x2={endX - 4} y2={cy} />
+          <FlowDot C={C} x={endX} y={cy - 14} label="Done" tone={C.accent} />
 
-            {/* Stage nodes */}
-            {FLOW_STAGES.map((st, i) => {
-              const x = xs(i), on = sel === st.key;
-              const liveHere = live && live.node === st.key;
-              const liveTone = liveHere ? stageColor(C, live) : null;
-              const dim = isLive && !liveHere;   // dim non-active nodes during a live run
-              const stroke = liveHere ? liveTone : on ? st.color : C.line;
-              return (
-                <g key={st.key} style={{ cursor: "pointer", opacity: dim ? 0.5 : 1, transition: "opacity .2s" }} onClick={() => setSel(on ? null : st.key)}>
-                  {liveHere && live.state === "active" && (
-                    <rect x={x - 3} y={rowY - 3} width={nodeW + 6} height={nodeH + 6} rx="11" fill="none" stroke={liveTone} strokeWidth="2">
-                      <animate attributeName="opacity" values="1;0.25;1" dur="1.3s" repeatCount="indefinite" />
-                    </rect>
-                  )}
-                  <rect x={x} y={rowY} width={nodeW} height={nodeH} rx="9" fill={liveHere ? `${liveTone}14` : C.surface}
-                    stroke={stroke} strokeWidth={liveHere || on ? 2.2 : 1.2} />
-                  <rect x={x} y={rowY} width={nodeW} height="4" rx="2" fill={st.color} />
-                  <text x={x + nodeW / 2} y={rowY + nodeH / 2 + 1} fontSize={compact ? 12 : 13} fontWeight="700" fill={C.ink} textAnchor="middle">{st.label}</text>
-                  <text x={x + nodeW / 2} y={rowY + nodeH - 8} fontSize="9" fill={liveHere ? liveTone : C.sub} textAnchor="middle" fontWeight={liveHere ? 700 : 400}>
-                    {liveHere ? (live.state === "active" ? "● running" : live.state === "failed" ? "✕ failed" : live.state === "done" ? "✓ done" : "queued")
-                              : (probe[st.key] != null ? `↑ ${probe[st.key]} recalled` : "…")}
-                  </text>
-                  {/* memory feed line from the bus up into this node */}
-                  <line x1={x + nodeW / 2} y1={busY} x2={x + nodeW / 2} y2={rowY + nodeH} stroke={C.accent} strokeWidth="1" strokeDasharray="3 3" opacity={dim ? 0.25 : 0.55} markerEnd="url(#arrow)" />
-                </g>
-              );
-            })}
+          {/* Repair → Code loop-back */}
+          {(() => {
+            const a = center(repairIdx), b = center(codeIdx);
+            const d = `M ${a.x} ${rowY + nodeH} C ${a.x} ${rowY + nodeH + 38}, ${b.x} ${rowY + nodeH + 38}, ${b.x} ${rowY + nodeH}`;
+            return <g><path d={d} fill="none" stroke="#d63649" strokeWidth="1.6" strokeDasharray="4 3" markerEnd="url(#arrow)" />
+              <text x={(a.x + b.x) / 2} y={rowY + nodeH + 36} fontSize="10" fill="#d63649" textAnchor="middle">retry until green</text></g>;
+          })()}
 
-            {/* Memory bus (the brain) — a bar under all stages, feeding each */}
-            <rect x={50} y={busY} width={W - 100} height={compact ? 38 : 46} rx="10" fill={C.surface} stroke={C.accent} strokeWidth="1.4" />
-            <text x={W / 2} y={busY + (compact ? 16 : 20)} fontSize={compact ? 11 : 12} fontWeight="700" fill={C.accentDim} textAnchor="middle">🧠 .said memory — one shared brain</text>
-            <text x={W / 2} y={busY + (compact ? 30 : 36)} fontSize="9.5" fill={C.sub} textAnchor="middle">recall-weighted retrieval · verified patterns · errors &amp; corrections · learns from every cycle</text>
-          </svg>
-        </div>
-
-        {sel && (() => {
-          const st = FLOW_STAGES.find((x) => x.key === sel);
-          const body = (
-            <div style={{ border: `1px solid ${C.line}`, borderRadius: 12, padding: 16, alignSelf: "start",
-              ...(compact ? { position: "absolute", top: 40, right: 0, width: 320, background: C.surface, boxShadow: "0 8px 30px rgba(0,0,0,.18)", zIndex: 20 } : {}) }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
-                <span style={{ width: 12, height: 12, borderRadius: 3, background: st.color }} />
-                <span style={{ fontSize: 15, fontWeight: 700, color: C.ink, flex: 1 }}>{st.label}</span>
-                {compact && <button onClick={() => setSel(null)} style={{ background: "none", border: "none", cursor: "pointer", color: C.sub, fontSize: 16, lineHeight: 1 }}>×</button>}
-              </div>
-              <Row C={C} k="Prompt" v={st.prompt} />
-              <Row C={C} k="Recalls from memory" v={st.recall} />
-              <Row C={C} k="Live recall hits" v={probe[sel] != null ? `${probe[sel]} memories matched this stage's query` : "…"} />
-              {sel === "repair" && <Row C={C} k="Loop" v="on a failed build/test, feeds the compiler error back and retries — the edge that loops to Code" />}
-              {sel === "memory" && <Row C={C} k="Writes back" v="records the session so the next cycle recalls it — the brain compounds" />}
-            </div>
-          );
-          return body;
-        })()}
+          {/* Phase nodes */}
+          {FLOW_STAGES.map((st, i) => {
+            const x = xs(i), on = sel === st.key;
+            const liveHere = live && live.node === st.key;
+            const liveTone = liveHere ? stageColor(C, live) : null;
+            const dim = isLive && !liveHere;
+            const stroke = liveHere ? liveTone : on ? st.color : C.line;
+            return (
+              <g key={st.key} style={{ cursor: "pointer", opacity: dim ? 0.5 : 1, transition: "opacity .2s" }} onClick={() => setSel(on ? null : st.key)}>
+                {liveHere && live.state === "active" && (
+                  <rect x={x - 3} y={rowY - 3} width={nodeW + 6} height={nodeH + 6} rx="12" fill="none" stroke={liveTone} strokeWidth="2">
+                    <animate attributeName="opacity" values="1;0.25;1" dur="1.3s" repeatCount="indefinite" />
+                  </rect>
+                )}
+                <rect x={x} y={rowY} width={nodeW} height={nodeH} rx="10" fill={liveHere ? `${liveTone}14` : C.surface}
+                  stroke={stroke} strokeWidth={liveHere || on ? 2.4 : 1.2} />
+                <rect x={x} y={rowY} width={nodeW} height="5" rx="2.5" fill={st.color} />
+                <text x={x + nodeW / 2} y={rowY + 30} fontSize="14" fontWeight="700" fill={C.ink} textAnchor="middle">{st.label}</text>
+                <text x={x + nodeW / 2} y={rowY + 49} fontSize="10" fill={liveHere ? liveTone : C.dim} textAnchor="middle" fontWeight={liveHere ? 700 : 500}>
+                  {liveHere ? (live.state === "active" ? "● running" : live.state === "failed" ? "✕ failed" : live.state === "done" ? "✓ done" : "queued") : "agent"}
+                </text>
+              </g>
+            );
+          })}
+        </svg>
       </div>
-      {!compact && <div style={{ fontSize: 11.5, color: C.dim, marginTop: 10 }}>Click a stage to see its prompt and what it pulls from the brain. The dashed green lines are memory feeding each stage; the red dashed edge is the self-repair loop.</div>}
-      {compact && <div style={{ fontSize: 11, color: C.dim, marginTop: 6 }}>Click a stage for details. Follows your running mutation live.</div>}
+      <div style={{ fontSize: 11, color: C.dim, marginTop: 6 }}>The dashed red edge is the self-repair loop. Click a phase to open its live steps and agent settings.</div>
+
+      {/* RIGHT-SIDE DRAWER — terminal steps + agent config for the clicked phase */}
+      {sel && <PhaseDrawer C={C} s={s} API={API} stage={FLOW_STAGES.find((x) => x.key === sel)} run={run} onClose={() => setSel(null)} />}
     </div>
   );
 }
+
+// Right-side drawer: live terminal (the phase's slice of the run log) + the agent that runs it
+// (model dropdown + editable prompt). Reuses the real mutationRouting → agent + persona config.
+function PhaseDrawer({ C, s, API, stage, run, onClose }) {
+  const [cfg, setCfg] = useState(null);     // admin settings (agents + mutationRouting)
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  useEffect(() => { fetch(`${API}/admin/settings`).then((r) => r.json()).then(setCfg).catch(() => setCfg(null)); }, []);
+
+  const agentId = cfg?.mutationRouting?.[stage.routePhase];
+  const agent = cfg?.agents?.find((a) => a.id === agentId) || cfg?.agents?.find((a) => a.standard === "openai");
+  const logLines = phaseLogLines(run, stage);
+
+  const update = (patch) => setCfg((c) => ({ ...c, agents: c.agents.map((a) => a.id === agent.id ? { ...a, ...patch } : a) }));
+  const save = async () => {
+    setSaving(true); setSaved(false);
+    await fetch(`${API}/admin/settings`, { method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ agents: cfg.agents, mutationRouting: cfg.mutationRouting, evolutionRouting: cfg.evolutionRouting,
+        memoryMb: cfg.memoryMb || 0, runtime: cfg.runtime, database: cfg.database }) }).catch(() => {});
+    setSaving(false); setSaved(true); setTimeout(() => setSaved(false), 2000);
+  };
+
+  return (
+    <>
+      <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.32)", zIndex: 90 }} />
+      <div style={{ position: "fixed", top: 0, right: 0, bottom: 0, width: 460, maxWidth: "92vw", background: C.surface,
+        boxShadow: "-8px 0 30px rgba(0,0,0,.2)", zIndex: 91, display: "flex", flexDirection: "column" }}>
+        {/* header */}
+        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "16px 18px", borderBottom: `1px solid ${C.line}` }}>
+          <span style={{ width: 12, height: 12, borderRadius: 3, background: stage.color }} />
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 15, fontWeight: 700, color: C.ink }}>{stage.label}</div>
+            <div style={{ fontSize: 11, color: C.sub }}>agent phase · routed via <b>{stage.routePhase}</b></div>
+          </div>
+          <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: C.sub, fontSize: 20, lineHeight: 1 }}>×</button>
+        </div>
+
+        <div style={{ overflowY: "auto", padding: 18, display: "flex", flexDirection: "column", gap: 18 }}>
+          {/* TERMINAL — this phase's live steps from the run log */}
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 6 }}>Live steps {run ? `· #${run.ticket}` : ""}</div>
+            <pre style={{ margin: 0, background: "#0f1722", color: "#cfe6d4", borderRadius: 8, padding: "12px 14px", fontSize: 11.5,
+              lineHeight: 1.6, fontFamily: C.mono, maxHeight: 200, overflow: "auto", whiteSpace: "pre-wrap" }}>
+              {logLines.length ? logLines.map((l, i) => `▸ ${l}`).join("\n") : "— no activity for this phase yet —\nStart a mutation; this fills with the real steps as the phase runs."}
+            </pre>
+          </div>
+
+          {/* WHAT THIS PHASE DOES */}
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 4 }}>What it does</div>
+            <div style={{ fontSize: 12.5, color: C.ink, lineHeight: 1.5 }}>{stage.prompt}</div>
+          </div>
+
+          {/* AGENT CONFIG — model + editable prompt (the real config) */}
+          <div style={{ borderTop: `1px solid ${C.line}`, paddingTop: 16 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 8 }}>Agent — model &amp; prompt</div>
+            {!cfg && <BrainSpinner C={C} label="loading agent config…" />}
+            {cfg && !agent && <div style={{ fontSize: 12, color: C.dim }}>No agent routed to this phase yet.</div>}
+            {cfg && agent && (
+              <>
+                <div style={{ fontSize: 12, color: C.sub, marginBottom: 4 }}>Agent</div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: C.ink, marginBottom: 10 }}>{agent.id} <span style={{ color: C.dim, fontWeight: 400 }}>({agent.standard})</span></div>
+                <div style={{ fontSize: 12, color: C.sub, marginBottom: 4 }}>Model</div>
+                <input value={agent.model || ""} onChange={(e) => update({ model: e.target.value })}
+                  style={{ width: "100%", border: `1px solid ${C.line}`, borderRadius: 7, padding: "7px 10px", fontSize: 12.5, fontFamily: C.mono, boxSizing: "border-box", marginBottom: 12 }} />
+                <div style={{ fontSize: 12, color: C.sub, marginBottom: 4 }}>System prompt (persona)</div>
+                <textarea value={agent.persona || ""} onChange={(e) => update({ persona: e.target.value })} rows={5}
+                  style={{ width: "100%", border: `1px solid ${C.line}`, borderRadius: 7, padding: "8px 10px", fontSize: 12, fontFamily: C.sans, resize: "vertical", boxSizing: "border-box" }} />
+                <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 12 }}>
+                  <button onClick={save} disabled={saving} style={{ ...s.btnPrimary, opacity: saving ? 0.6 : 1 }}>{saving ? "Saving…" : "Save agent"}</button>
+                  {saved && <span style={{ fontSize: 12, color: C.accentDim }}>✓ saved</span>}
+                  <span style={{ fontSize: 11, color: C.dim }}>applies to the next run</span>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
 function FlowDot({ C, x, y, label, tone }) {
-  return <g><circle cx={x + 16} cy={y + 14} r="14" fill={C.surface} stroke={tone} strokeWidth="1.6" />
+  return <g><circle cx={x + 16} cy={y + 14} r="15" fill={C.surface} stroke={tone} strokeWidth="1.6" />
     <text x={x + 16} y={y + 18} fontSize="9" fill={tone} textAnchor="middle" fontWeight="700">{label}</text></g>;
 }
 function Edge({ C, x1, y1, x2, y2 }) {
   return <line x1={x1} y1={y1} x2={x2} y2={y2} stroke={C.sub} strokeWidth="1.5" markerEnd="url(#arrow)" />;
-}
-function Row({ C, k, v }) {
-  return <div style={{ marginBottom: 10 }}>
-    <div style={{ fontSize: 10.5, color: C.sub, textTransform: "uppercase", letterSpacing: 0.4, fontWeight: 700 }}>{k}</div>
-    <div style={{ fontSize: 12.5, color: C.ink, marginTop: 2, lineHeight: 1.45 }}>{v}</div>
-  </div>;
 }
 
 // ============================================================================
