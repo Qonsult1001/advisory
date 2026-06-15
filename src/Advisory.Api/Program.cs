@@ -130,7 +130,9 @@ builder.Services.AddSingleton<Advisory.Api.Integrations.IGitRepoClient, Advisory
 builder.Services.AddHostedService<PromotionBridge>();
 
 builder.Services.AddCors(o => o.AddDefaultPolicy(p =>
-    p.WithOrigins("http://localhost:5173", "http://localhost:8080").AllowAnyHeader().AllowAnyMethod()));
+    // 8088 = the console (docker-compose maps host 8080→8088); 5173 = vite dev.
+    // The Brain dashboard fetches Advisory.said + the encoder cross-origin from the console.
+    p.WithOrigins("http://localhost:5173", "http://localhost:8080", "http://localhost:8088").AllowAnyHeader().AllowAnyMethod()));
 
 var app = builder.Build();
 app.UseSwagger();
