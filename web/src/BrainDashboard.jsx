@@ -56,6 +56,11 @@ export default function BrainDashboard({ C, s, API, StatTile, Callout, nfmt }) {
   const [phase, setPhase] = useState("loading"); // loading | ready | unbuilt | error
   const [err, setErr] = useState("");
   const [tab, setTab] = useState(null); // explore | recall | loop | null
+  const [hist, setHist] = useState(null); // ticket totals for the stat row
+
+  useEffect(() => {
+    fetch(`${API}/evolution/history`).then((r) => r.json()).then(setHist).catch(() => setHist(null));
+  }, [API]);
 
   useEffect(() => {
     let alive = true;
@@ -118,21 +123,22 @@ export default function BrainDashboard({ C, s, API, StatTile, Callout, nfmt }) {
   // ---- READY: enterprise stat row + tab strip + panel ----
   const indexedMb = fileBytes != null ? (fileBytes / 1e6).toFixed(1) : null;
   const TABS = [
+    { key: "loop", label: "Activity", sub: "tickets over time" },
     { key: "explore", label: "Explore", sub: "browse stored memories" },
     { key: "recall", label: "Recall", sub: "live semantic search" },
-    { key: "loop", label: "Loop activity", sub: "self-healing cycles" },
   ];
-  const active = tab || "explore"; // default to a panel so the page is never just stats
+  const active = tab || "loop"; // default to the activity graph — the thing you actually want to see
+  const tk = hist?.totals || {};
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-      {/* STAT ROW — enterprise cards with accent top-border (matches Overview) */}
+      {/* STAT ROW — meaningful metrics only (no internal jargon) */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(6,1fr)", gap: 12 }}>
-        <MetricCard C={C} color={C.accent} value={fmt(memories)} label="Memories" sub="code + notes" />
+        <MetricCard C={C} color={C.info} value={fmt(tk.started ?? "—")} label="Tickets started" sub="self-healing loop" />
+        <MetricCard C={C} color={C.accent} value={fmt(tk.closed ?? "—")} label="Tickets completed" sub="closed + shipped" />
+        <MetricCard C={C} color={C.accentDim} value={fmt(tk.merged ?? "—")} label="PRs shipped" sub="merged to main" />
+        <MetricCard C={C} color={C.accent} value={fmt(memories)} label="Memories" sub="code + notes indexed" />
         <MetricCard C={C} color={C.info} value={fmt(symbols)} label="Symbols" sub="classes / methods" />
-        <MetricCard C={C} color={C.accentDim} value={ratio ? `${ratio}×` : "—"} label="Compression" sub={indexedMb ? `${indexedMb} MB indexed` : "indexed"} />
-        <MetricCard C={C} color={C.warn} value={fmt(deleted ?? 0)} label="Tombstones" sub="superseded" />
-        <MetricCard C={C} color={C.info} value={(stats?.mode || "portable")} label="Mode" sub="brain format" small />
-        <MetricCard C={C} color={C.accent} value="WASM" label="Engine" sub="in-browser" small />
+        <MetricCard C={C} color={C.accentDim} value={ratio ? `${ratio}×` : "—"} label="Compression" sub={indexedMb ? `${indexedMb} MB` : "indexed"} />
       </div>
 
       {/* SECTION CARD — tab strip + panel, matching the Overview's card style */}
@@ -297,26 +303,121 @@ function RecallPanel({ C, s, brain }) {
   );
 }
 
-// ---- LOOP: per-cycle activity from the existing evolution runs ----
+// ---- LOOP: REAL ticket history — graph (started/completed/merged per day) + activity feed ----
 function LoopPanel({ C, s, API }) {
-  const [runs, setRuns] = useState(null);
+  const [hist, setHist] = useState(null);
   useEffect(() => {
-    fetch(`${API}/evolution/runs`).then((r) => r.json()).then((d) => setRuns(d?.runs || [])).catch(() => setRuns([]));
+    fetch(`${API}/evolution/history`).then((r) => r.json()).then(setHist).catch(() => setHist({ enabled: false }));
   }, [API]);
+
+  if (hist == null) return <BrainSpinner C={C} label="loading ticket history…" />;
+  if (!hist.enabled) return <div style={{ fontSize: 12.5, color: C.dim }}>Ticket history is unavailable (no repo configured).</div>;
+
+  const t = hist.totals || { started: 0, closed: 0, merged: 0 };
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+      <PanelHead C={C} title="Loop activity" sub="what the self-healing loop has done — tickets started, completed, and shipped" />
+
+      {/* headline counters */}
+      <div style={{ display: "flex", gap: 22, flexWrap: "wrap" }}>
+        <Counter C={C} color={C.info} value={t.started} label="Tickets started" />
+        <Counter C={C} color={C.accent} value={t.closed} label="Tickets completed" />
+        <Counter C={C} color={C.accentDim} value={t.merged} label="PRs shipped" />
+      </div>
+
+      {/* interactive grouped-bar timeline */}
+      <TicketTimeline C={C} days={hist.days || []} />
+
+      {/* activity feed — real tickets, started/completed (replaces "tombstones") */}
+      <div>
+        <div style={{ fontSize: 12.5, fontWeight: 700, color: C.ink, marginBottom: 8 }}>Recent tickets</div>
+        <div style={{ border: `1px solid ${C.line}`, borderRadius: 10, overflow: "hidden" }}>
+          {(hist.recent || []).map((r, i) => (
+            <div key={r.number} style={{ display: "flex", gap: 10, alignItems: "center", padding: "9px 12px", borderBottom: i < (hist.recent.length - 1) ? `1px solid ${C.lineSoft}` : "none" }}>
+              <span style={{ width: 9, height: 9, borderRadius: "50%", background: r.state === "CLOSED" || r.closedAt ? C.accent : C.warn, display: "inline-block", flexShrink: 0 }} />
+              <span style={{ fontSize: 12, color: C.sub, minWidth: 42, fontFamily: C.mono }}>#{r.number}</span>
+              <span style={{ fontSize: 12.5, color: C.ink, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.title}</span>
+              <span style={{ fontSize: 11, fontWeight: 600, color: r.closedAt ? C.accentDim : C.warn }}>{r.closedAt ? "completed" : "started"}</span>
+              <span style={{ fontSize: 11, color: C.dim, minWidth: 70, textAlign: "right" }}>{(r.closedAt || r.createdAt || "").slice(0, 10)}</span>
+            </div>
+          ))}
+          {(hist.recent || []).length === 0 && <div style={{ padding: 14, fontSize: 12.5, color: C.dim }}>No tickets yet.</div>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Interactive grouped-bar timeline: per day, three bars (started / completed / merged) with hover tooltips.
+function TicketTimeline({ C, days }) {
+  const [hover, setHover] = useState(null); // {day, x, info}
+  if (!days.length) return <div style={{ fontSize: 12.5, color: C.dim }}>No history to chart yet.</div>;
+  const W = 640, H = 200, padL = 28, padB = 28, padT = 10;
+  const max = Math.max(1, ...days.flatMap((d) => [d.started, d.closed, d.merged]));
+  const groupW = (W - padL) / days.length;
+  const barW = Math.min(14, (groupW - 8) / 3);
+  const series = [
+    { key: "started", color: C.info, label: "Started" },
+    { key: "closed", color: C.accent, label: "Completed" },
+    { key: "merged", color: C.accentDim, label: "Shipped" },
+  ];
+  const y = (v) => padT + (1 - v / max) * (H - padT - padB);
+  return (
+    <div style={{ border: `1px solid ${C.line}`, borderRadius: 10, padding: "14px 16px 8px", position: "relative" }}>
+      <div style={{ display: "flex", gap: 16, marginBottom: 8 }}>
+        {series.map((sd) => (
+          <span key={sd.key} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5, color: C.sub }}>
+            <span style={{ width: 10, height: 10, borderRadius: 2, background: sd.color, display: "inline-block" }} /> {sd.label}
+          </span>
+        ))}
+      </div>
+      <svg width="100%" viewBox={`0 0 ${W} ${H}`} style={{ display: "block" }}>
+        {/* gridlines */}
+        {[0, 0.5, 1].map((g) => {
+          const yy = padT + (1 - g) * (H - padT - padB);
+          return <g key={g}>
+            <line x1={padL} y1={yy} x2={W} y2={yy} stroke={C.lineSoft} strokeWidth="1" />
+            <text x={4} y={yy + 3} fontSize="9" fill={C.dim}>{Math.round(max * g)}</text>
+          </g>;
+        })}
+        {days.map((d, i) => {
+          const gx = padL + i * groupW + (groupW - barW * 3) / 2;
+          return (
+            <g key={d.day}>
+              {series.map((sd, j) => {
+                const v = d[sd.key] || 0;
+                const bh = (v / max) * (H - padT - padB);
+                return (
+                  <rect key={sd.key} x={gx + j * barW} y={H - padB - bh} width={barW - 2} height={bh}
+                    fill={sd.color} rx="2"
+                    onMouseEnter={() => setHover({ day: d.day, x: gx + barW * 1.5, info: d })}
+                    onMouseLeave={() => setHover(null)}
+                    style={{ cursor: "pointer", opacity: hover && hover.day !== d.day ? 0.45 : 1, transition: "opacity .1s" }} />
+                );
+              })}
+              <text x={gx + barW * 1.5} y={H - 8} fontSize="9" fill={C.dim} textAnchor="middle">{d.day.slice(5)}</text>
+            </g>
+          );
+        })}
+      </svg>
+      {hover && (
+        <div style={{ position: "absolute", left: `${(hover.x / W) * 100}%`, top: 36, transform: "translateX(-50%)",
+          background: C.ink, color: "#fff", borderRadius: 8, padding: "7px 11px", fontSize: 11, pointerEvents: "none", whiteSpace: "nowrap", zIndex: 5 }}>
+          <div style={{ fontWeight: 700, marginBottom: 3 }}>{hover.day}</div>
+          <div>Started: <b>{hover.info.started}</b></div>
+          <div>Completed: <b>{hover.info.closed}</b></div>
+          <div>Shipped: <b>{hover.info.merged}</b></div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Counter({ C, color, value, label }) {
   return (
     <div>
-      <PanelHead C={C} title="Loop activity" sub="what the brain drove — recent self-healing mutation cycles" />
-      {runs == null && <BrainSpinner C={C} label="loading cycles…" />}
-      {runs && runs.length === 0 && <div style={{ fontSize: 12.5, color: C.dim }}>No cycles yet. Run a mutation and the brain’s work shows here.</div>}
-      {runs && runs.slice(0, 12).map((r) => (
-        <div key={r.id} style={{ display: "flex", gap: 10, alignItems: "center", padding: "9px 0", borderBottom: `1px solid ${C.lineSoft}` }}>
-          <StatusDot C={C} status={r.status} />
-          <span style={{ fontSize: 12, color: C.sub, minWidth: 48 }}>#{r.ticket}</span>
-          <span style={{ fontSize: 12.5, color: C.ink, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.ticketTitle || r.stage || r.status}</span>
-          <span style={{ fontSize: 11, color: C.dim }}>{r.status}</span>
-          {r.prUrl && <a href={r.prUrl} target="_blank" rel="noreferrer" style={{ fontSize: 11.5, color: C.accentDim }}>PR ↗</a>}
-        </div>
-      ))}
+      <div style={{ fontSize: 26, fontWeight: 800, color, lineHeight: 1.1 }}>{Number(value || 0).toLocaleString()}</div>
+      <div style={{ fontSize: 11, color: C.sub, textTransform: "uppercase", letterSpacing: 0.4, fontWeight: 600, marginTop: 2 }}>{label}</div>
     </div>
   );
 }
