@@ -314,6 +314,58 @@ public class EvolutionService
         return fresh;
     }
 
+    /// <summary>Mutation history for the Memories dashboard graphs: real tickets (started/closed) and
+    /// merged PRs from GitHub, aggregated by day. This is the durable record (GitHub), independent of
+    /// the in-memory run list which the operator can clear. Cached briefly so the dashboard can poll.</summary>
+    private (DateTimeOffset at, object payload)? _historyCache;
+    public async Task<object> HistoryAsync(CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(Repo)) return new { enabled = false, days = Array.Empty<object>(), totals = new { } };
+        if (_historyCache is { } c && (DateTimeOffset.UtcNow - c.at) < TimeSpan.FromSeconds(60)) return c.payload;
+
+        // tickets labelled `mutation` (created + closed dates) and merged mutation PRs.
+        var (tok, tout, _) = await GhAsync(new[] { "issue", "list", "--repo", Repo!, "--label", Label,
+            "--state", "all", "--limit", "200", "--json", "number,state,createdAt,closedAt,title" }, null, ct);
+        var (pok, pout, _) = await GhAsync(new[] { "pr", "list", "--repo", Repo!, "--state", "merged",
+            "--limit", "200", "--json", "number,mergedAt,title" }, null, ct);
+
+        var byDay = new SortedDictionary<string, int[]>();   // day → [started, closed, merged]
+        int[] Slot(string d) { if (!byDay.TryGetValue(d, out var a)) { a = new int[3]; byDay[d] = a; } return a; }
+        int started = 0, closed = 0, merged = 0;
+        var recent = new List<object>();
+        try
+        {
+            if (tok) foreach (var t in JsonDocument.Parse(tout).RootElement.EnumerateArray())
+            {
+                var created = t.TryGetProperty("createdAt", out var cr) ? cr.GetString() : null;
+                var closedAt = t.TryGetProperty("closedAt", out var cl) && cl.ValueKind == JsonValueKind.String ? cl.GetString() : null;
+                var num = t.TryGetProperty("number", out var n) ? n.GetInt32() : 0;
+                var title = t.TryGetProperty("title", out var ti) ? ti.GetString() : "";
+                var state = t.TryGetProperty("state", out var st) ? st.GetString() : "";
+                if (created is { Length: >= 10 }) { Slot(created[..10])[0]++; started++; }
+                if (closedAt is { Length: >= 10 }) { Slot(closedAt[..10])[1]++; closed++; }
+                recent.Add(new { kind = "ticket", number = num, title, state, createdAt = created, closedAt });
+            }
+            if (pok) foreach (var p in JsonDocument.Parse(pout).RootElement.EnumerateArray())
+            {
+                var m = p.TryGetProperty("mergedAt", out var ma) && ma.ValueKind == JsonValueKind.String ? ma.GetString() : null;
+                if (m is { Length: >= 10 }) { Slot(m[..10])[2]++; merged++; }
+            }
+        }
+        catch { /* malformed gh output → return whatever we parsed */ }
+
+        var days = byDay.Select(kv => new { day = kv.Key, started = kv.Value[0], closed = kv.Value[1], merged = kv.Value[2] }).ToList();
+        var payload = new
+        {
+            enabled = true, repo = Repo,
+            days,
+            totals = new { started, closed, merged },
+            recent = recent.OrderByDescending(r => ((dynamic)r).number).Take(15).ToList(),
+        };
+        _historyCache = (DateTimeOffset.UtcNow, payload);
+        return payload;
+    }
+
     /// <summary>The most recent run still waiting/working — what the worker should pick up next.</summary>
     public EvoRun? NextQueued() => _runs.Values
         .Where(r => r.Status is "queued")

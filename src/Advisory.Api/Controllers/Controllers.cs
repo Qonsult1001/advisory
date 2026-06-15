@@ -1210,6 +1210,11 @@ public class EvolutionController : ControllerBase
     [HttpGet("runs")]
     public ActionResult Runs([FromQuery] int limit = 50) => Ok(new { runs = _svc.Runs(limit) });
 
+    /// <summary>Real mutation history (tickets started/closed + merged PRs by day) for the Memories
+    /// dashboard graphs — sourced from GitHub, so it survives clearing the in-memory run list.</summary>
+    [HttpGet("history")]
+    public async Task<ActionResult> History(CancellationToken ct) => Ok(await _svc.HistoryAsync(ct));
+
     /// <summary>Clear mutation run history (the dashboard "Clear runs" action). activeOnly=true keeps
     /// finished runs and only drops queued/running ones so a stale queued run can't re-fire.</summary>
     [HttpDelete("runs")]
