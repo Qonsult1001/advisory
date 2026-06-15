@@ -174,7 +174,7 @@ export default function BrainDashboard({ C, s, API, StatTile, Callout, nfmt }) {
           </a>
         </div>
         <div style={{ padding: "18px 20px" }}>
-          {active === "flow" && <FlowCanvas C={C} s={s} brain={brain} />}
+          {active === "flow" && <FlowCanvas C={C} s={s} brain={brain} API={API} />}
           {active === "loop" && <LoopPanel C={C} s={s} API={API} />}
           {active === "composition" && <CompositionPanel C={C} s={s} disc={disc} stats={stats} fmt={fmt} />}
           {active === "recall" && <RecallPanel C={C} s={s} brain={brain} />}
@@ -209,9 +209,42 @@ const FLOW_STAGES = [
   { key: "memory", label: "Memory",   prompt: "record the session — tell the whole story",                 recall: "writes back to the iteration store", color: "#40be46" },
 ];
 
-function FlowCanvas({ C, s, brain }) {
+// Map a live run's (status, stage, log) → which canvas node is ACTIVE, plus a phase state.
+// Mirrors the real MutateStages keys: queued|setup|plan|test|fix|build|tests|pr + statuses.
+function mapRunToNode(run) {
+  if (!run) return null;
+  const status = (run.status || "").toLowerCase();
+  const stage = (run.stage || "").toLowerCase();
+  const log = (run.log || "").toLowerCase();
+  const repairing = /repair attempt|asking groq to fix|re-building after a failure/.test(log);
+  // terminal states
+  if (status === "released") return { node: "memory", state: "done" };
+  if (status === "pr-open") return { node: "memory", state: "active" };
+  if (status === "failed" || status === "rejected") {
+    // died — light the node it was on, in red
+    const n = repairing ? "repair" : stage.includes("build") || stage.includes("test") ? "test" : stage.includes("implement") || status === "running" ? "code" : "plan";
+    return { node: n, state: "failed" };
+  }
+  if (status === "awaiting-approval" || stage.includes("await") || stage.includes("plan")) return { node: "plan", state: "active" };
+  if (repairing) return { node: "repair", state: "active" };
+  if (stage.includes("test") || status === "tests") return { node: "test", state: "active" };
+  if (stage.includes("build")) return { node: "test", state: "active" };
+  if (stage.includes("implement") || stage.includes("fix") || status === "running") return { node: "code", state: "active" };
+  if (status === "queued" || stage.includes("setup") || stage.includes("queue")) return { node: "plan", state: "queued" };
+  return { node: "plan", state: "active" };
+}
+
+function stageColor(C, live) {
+  if (!live) return C.accent;
+  if (live.state === "failed") return C.block;
+  if (live.state === "done") return C.accent;
+  return C.info; // active / queued
+}
+
+function FlowCanvas({ C, s, brain, API }) {
   const [sel, setSel] = useState(null);
   const [probe, setProbe] = useState({}); // stage.key -> live recall count from the brain
+  const [run, setRun] = useState(null);   // the active/most-recent run (live phase)
   // Prove memory really feeds each stage: ask the brain each stage's recall query, count hits.
   useEffect(() => {
     if (!brain) return;
@@ -223,6 +256,19 @@ function FlowCanvas({ C, s, brain }) {
     setProbe(out);
   }, [brain]);
 
+  // LIVE: poll the runs endpoint and follow the active mutation through its phases.
+  useEffect(() => {
+    let alive = true;
+    const tick = () => fetch(`${API}/evolution/runs?limit=5`).then((r) => r.json())
+      .then((d) => { if (!alive) return; const rs = d?.runs || []; setRun(rs[0] || null); }).catch(() => {});
+    tick();
+    const id = setInterval(tick, 2500);
+    return () => { alive = false; clearInterval(id); };
+  }, [API]);
+
+  const live = mapRunToNode(run);
+  const isLive = run && ["queued", "running", "awaiting-approval", "tests"].includes((run.status || "").toLowerCase());
+
   // Canvas geometry: Start → 6 stage nodes (Plan..Memory) → Terminal, orchestrator below feeding all.
   const W = 920, H = 360, nodeW = 116, nodeH = 60, rowY = 70, gap = (W - 80 - nodeW) / (FLOW_STAGES.length + 1);
   const xs = (i) => 60 + gap * (i + 1);
@@ -232,6 +278,19 @@ function FlowCanvas({ C, s, brain }) {
   return (
     <div>
       <PanelHead C={C} title="Agent flow" sub="the self-healing cycle as a graph — every stage runs on its routed agent and recalls from the brain" />
+      {/* LIVE banner — follows the active mutation through its phases */}
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12, fontSize: 12.5 }}>
+        <span style={{ width: 9, height: 9, borderRadius: "50%", background: isLive ? C.allow : C.dim,
+          boxShadow: isLive ? `0 0 0 0 ${C.allow}` : "none", animation: isLive ? "pulse 1.3s infinite" : "none", display: "inline-block" }} />
+        {run ? (
+          <span style={{ color: C.sub }}>
+            {isLive ? <b style={{ color: C.ink }}>Live</b> : <b style={{ color: C.ink }}>{run.status === "released" ? "Last run" : "Idle"}</b>}
+            {" — #"}{run.ticket}: <span style={{ color: C.ink }}>{run.stage || run.status}</span>
+            {live && <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 700, color: stageColor(C, live), textTransform: "uppercase" }}>● {live.node}{live.state === "failed" ? " (failed)" : live.state === "done" ? " (done)" : ""}</span>}
+          </span>
+        ) : <span style={{ color: C.dim }}>No active run — start a mutation and this graph follows it through every phase.</span>}
+        <style>{`@keyframes pulse{0%{box-shadow:0 0 0 0 ${C.allow}88}70%{box-shadow:0 0 0 7px ${C.allow}00}100%{box-shadow:0 0 0 0 ${C.allow}00}}`}</style>
+      </div>
       <div style={{ display: "grid", gridTemplateColumns: sel ? "1.5fr 1fr" : "1fr", gap: 16 }}>
         <div style={{ border: `1px solid ${C.line}`, borderRadius: 12, background: C.surface2, overflow: "hidden" }}>
           <svg width="100%" viewBox={`0 0 ${W} ${H}`} style={{ display: "block" }}>
@@ -262,17 +321,27 @@ function FlowCanvas({ C, s, brain }) {
             {/* Stage nodes */}
             {FLOW_STAGES.map((st, i) => {
               const x = xs(i), on = sel === st.key;
+              const liveHere = live && live.node === st.key;
+              const liveTone = liveHere ? stageColor(C, live) : null;
+              const dim = isLive && !liveHere;   // dim non-active nodes during a live run
+              const stroke = liveHere ? liveTone : on ? st.color : C.line;
               return (
-                <g key={st.key} style={{ cursor: "pointer" }} onClick={() => setSel(on ? null : st.key)}>
-                  <rect x={x} y={rowY} width={nodeW} height={nodeH} rx="9" fill={C.surface}
-                    stroke={on ? st.color : C.line} strokeWidth={on ? 2.2 : 1.2} />
+                <g key={st.key} style={{ cursor: "pointer", opacity: dim ? 0.5 : 1, transition: "opacity .2s" }} onClick={() => setSel(on ? null : st.key)}>
+                  {liveHere && live.state === "active" && (
+                    <rect x={x - 3} y={rowY - 3} width={nodeW + 6} height={nodeH + 6} rx="11" fill="none" stroke={liveTone} strokeWidth="2">
+                      <animate attributeName="opacity" values="1;0.25;1" dur="1.3s" repeatCount="indefinite" />
+                    </rect>
+                  )}
+                  <rect x={x} y={rowY} width={nodeW} height={nodeH} rx="9" fill={liveHere ? `${liveTone}14` : C.surface}
+                    stroke={stroke} strokeWidth={liveHere || on ? 2.2 : 1.2} />
                   <rect x={x} y={rowY} width={nodeW} height="4" rx="2" fill={st.color} />
                   <text x={x + nodeW / 2} y={rowY + 26} fontSize="13" fontWeight="700" fill={C.ink} textAnchor="middle">{st.label}</text>
-                  <text x={x + nodeW / 2} y={rowY + 44} fontSize="9" fill={C.sub} textAnchor="middle">
-                    {probe[st.key] != null ? `↑ ${probe[st.key]} recalled` : "…"}
+                  <text x={x + nodeW / 2} y={rowY + 44} fontSize="9" fill={liveHere ? liveTone : C.sub} textAnchor="middle" fontWeight={liveHere ? 700 : 400}>
+                    {liveHere ? (live.state === "active" ? "● running" : live.state === "failed" ? "✕ failed" : live.state === "done" ? "✓ done" : "queued")
+                              : (probe[st.key] != null ? `↑ ${probe[st.key]} recalled` : "…")}
                   </text>
                   {/* memory feed line from the bus up into this node */}
-                  <line x1={x + nodeW / 2} y1={busY} x2={x + nodeW / 2} y2={rowY + nodeH} stroke={C.accent} strokeWidth="1" strokeDasharray="3 3" opacity="0.55" markerEnd="url(#arrow)" />
+                  <line x1={x + nodeW / 2} y1={busY} x2={x + nodeW / 2} y2={rowY + nodeH} stroke={C.accent} strokeWidth="1" strokeDasharray="3 3" opacity={dim ? 0.25 : 0.55} markerEnd="url(#arrow)" />
                 </g>
               );
             })}
