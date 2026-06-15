@@ -121,4 +121,14 @@ public class HealthTests : IClassFixture<WebApplicationFactory<Program>>
         Assert.True(doc.RootElement.TryGetProperty("host", out var host));
         Assert.False(string.IsNullOrWhiteSpace(host.GetString()), "host must be non‑empty");
     }
+    [Fact]
+    public async Task GetCores_ReturnsPositiveCount()
+    {
+        var response = await _client.GetAsync("/api/cores");
+        response.EnsureSuccessStatusCode();
+        var jsonString = await response.Content.ReadAsStringAsync();
+        using var doc = JsonDocument.Parse(jsonString);
+        var cores = doc.RootElement.GetProperty("cores").GetInt32();
+        Assert.True(cores > 0, "Cores count should be greater than 0");
+    }
 }
