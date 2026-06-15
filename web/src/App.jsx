@@ -3696,6 +3696,9 @@ function AdminCenter({ setTab }) {
   const update = (patch) => setD({ ...d, ...patch });
   const setAgent = (i, patch) => { const a = [...d.agents]; a[i] = { ...a[i], ...patch }; update({ agents: a }); };
   const addAgent = () => update({ agents: [...d.agents, { id: "agent-" + (d.agents.length + 1), name: "New agent", standard: "openai", model: "", endpoint: "", apiKey: "", cursorUser: "", enabled: true, hasKey: false }] });
+  // One-click OpenRouter: OpenAI-compatible, endpoint pre-filled, model dropdown restricted to Kimi/Opus.
+  // Uses OPENROUTER_API_KEY from the server .env (no key entered here).
+  const addOpenRouter = () => update({ agents: [...d.agents, { id: "openrouter", name: "OpenRouter", standard: "openai", model: "moonshotai/kimi-k2.7-code", endpoint: "https://openrouter.ai/api/v1", apiKey: "", cursorUser: "", enabled: true, hasKey: false }] });
   const removeAgent = (i) => update({ agents: d.agents.filter((_, j) => j !== i) });
   const agentOptions = [{ id: "", label: "— default engine —" }, ...d.agents.map((a) => ({ id: a.id, label: `${a.name} (${a.model || a.standard})` }))];
 
@@ -3805,7 +3808,10 @@ function AdminCenter({ setTab }) {
             </div>
           </div>
         ))}
-        <div style={{ padding: "14px 20px" }}><button style={s.add} onClick={addAgent}>+ Add agent</button></div>
+        <div style={{ padding: "14px 20px", display: "flex", gap: 10 }}>
+          <button style={s.add} onClick={addAgent}>+ Add agent</button>
+          <button style={{ ...s.add, background: C.surface, color: C.ink, border: `1px solid ${C.line}` }} onClick={addOpenRouter} title="Add an OpenRouter agent (Kimi / Opus) — uses OPENROUTER_API_KEY from the server .env">+ OpenRouter (Kimi / Opus)</button>
+        </div>
       </div>
 
       <SubHead>Task routing — assign an agent to each phase</SubHead>

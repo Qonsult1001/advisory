@@ -1674,13 +1674,26 @@ public class AdminController : ControllerBase
     [HttpGet("agent/models")]
     public async Task<ActionResult> AgentModels([FromQuery] string standard, [FromQuery] string? endpoint, [FromQuery] string? agentId, CancellationToken ct)
     {
-        string[] Curated() => standard switch
+        var ep = (endpoint ?? "").ToLowerInvariant();
+        bool isGroq = ep.Contains("api.groq.com");
+        bool isOpenRouter = ep.Contains("openrouter.ai");
+
+        // Groq: ONLY the two supported gpt-oss models. OpenRouter: the curated Kimi/Opus set.
+        string[]? Restricted() =>
+            isGroq       ? new[] { "openai/gpt-oss-20b", "openai/gpt-oss-120b" } :
+            isOpenRouter ? new[] { "moonshotai/kimi-k2.7-code", "moonshotai/kimi-k2.5", "anthropic/claude-opus-4.8" } :
+            null;
+
+        string[] Curated() => Restricted() ?? standard switch
         {
             "claude-cli" => new[] { "claude-opus-4-8", "claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5-20251001" },
             "cursor-cli" => new[] { "auto", "claude-opus-4-8", "claude-sonnet-4-6", "gpt-5", "gpt-4o" },
             "anthropic"  => new[] { "claude-opus-4-8", "claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5-20251001" },
             _            => new[] { "openai/gpt-oss-120b", "openai/gpt-oss-20b", "gpt-4o", "gpt-4o-mini" },
         };
+        // For Groq/OpenRouter the dropdown is a FIXED allow-list — never hit the live /models list.
+        if (Restricted() is { } fixedList)
+            return Ok(new { live = false, models = fixedList });
         if (standard is not ("openai" or "anthropic"))
             return Ok(new { live = false, models = Curated() });
 

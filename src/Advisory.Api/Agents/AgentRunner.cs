@@ -37,8 +37,11 @@ public sealed class MafAgentRunner(IConfiguration cfg, ILogger<MafAgentRunner> l
 {
     public async Task<AgentRunResult> RunAsync(AiAgent agent, AgentRunRequest request, CancellationToken ct = default)
     {
-        // Resolve the credential: agent key, else env (Groq/OpenAI), else stub.
+        // Resolve the credential: agent key, else env. For an OpenRouter endpoint, prefer
+        // OPENROUTER_API_KEY so it doesn't accidentally send the Groq key to OpenRouter.
+        var isOpenRouter = (agent.Endpoint ?? "").Contains("openrouter.ai", StringComparison.OrdinalIgnoreCase);
         var key = !string.IsNullOrWhiteSpace(agent.ApiKey) ? agent.ApiKey
+            : isOpenRouter ? (cfg["OPENROUTER_API_KEY"] ?? cfg["OPENAI_API_KEY"])
             : cfg["GROQ_API_KEY"] ?? cfg["PKGFW_GROQ_API_KEY"] ?? cfg["OPENAI_API_KEY"] ?? cfg["ANTHROPIC_API_KEY"];
 
         // claude-cli / cursor-cli are driven by the local worker's CLI, not an API client — the

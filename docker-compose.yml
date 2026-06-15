@@ -53,6 +53,8 @@ services:
       # Project-specific var name (PKGFW_*) so a machine-wide GROQ_API_KEY can't shadow it via compose.
       - GROQ_API_KEY=${PKGFW_GROQ_API_KEY:-}
       - GROQ_MODEL=${PKGFW_GROQ_MODEL:-openai/gpt-oss-120b}
+      # --- OpenRouter (OpenAI-compatible). Used by an agent whose endpoint is openrouter.ai. ---
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
       # --- On-prem PII redaction (OpenAI Privacy Filter sidecar). Unset => Groq+regex fallback. ---
       - PRIVACY_FILTER_URL=http://privacy-filter:8071
       # --- Self-evolution (PR-only). Dashboard reads tickets + dispatches the evolve.yml workflow.
