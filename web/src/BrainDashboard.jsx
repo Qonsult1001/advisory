@@ -65,6 +65,9 @@ export default function BrainDashboard({ C, s, API, StatTile, Callout, nfmt }) {
         if (!alive) return;
         let st = {};
         try { st = b.stats() || {}; } catch { st = {}; }
+        // symbol count + memory count are separate methods, not in stats().
+        try { st.__symbols = b.symbol_count(); } catch { st.__symbols = null; }
+        try { st.__count = b.count_memories(); } catch { st.__count = null; }
         setBrain(b);
         setStats(st);
         setPhase("ready");
@@ -77,14 +80,15 @@ export default function BrainDashboard({ C, s, API, StatTile, Callout, nfmt }) {
     return () => { alive = false; };
   }, [API]);
 
-  // ---- Stat extraction (the wasm stats() shape mirrors `said stats`) ----
-  const memories = stats?.active_frames ?? stats?.frames ?? null;
-  const symbols = stats?.symbol_count ?? null;
-  const recalls = stats?.brain?.total_recalls ?? stats?.total_recalls ?? null;
-  const dreams = stats?.brain?.dream_cycles ?? stats?.dream_cycles ?? null;
-  const boosted = stats?.brain?.boosted_docs ?? stats?.boosted_docs ?? null;
-  const fileBytes = stats?.file_bytes ?? stats?.fileBytes ?? null;
-  const ratio = stats?.compression_ratio ?? null;
+  // ---- Stat extraction (real wasm stats() shape: active_memories, total_*_bytes,
+  // compression_ratio, audit_event_count; symbols/count come from separate methods) ----
+  const memories = stats?.active_memories ?? stats?.active_frames ?? stats?.__count ?? null;
+  const symbols = stats?.__symbols ?? null;
+  const recalls = stats?.audit_event_count ?? stats?.total_recalls ?? null;
+  const dreams = stats?.tombstone_count ?? stats?.dream_cycles ?? null;
+  const deleted = stats?.deleted_memories ?? null;
+  const fileBytes = stats?.total_uncompressed_bytes ?? stats?.total_compressed_bytes ?? null;
+  const ratio = stats?.compression_ratio ? Math.round(stats.compression_ratio * 10) / 10 : null;
 
   const card = { ...s.card, padding: "18px 20px" };
 
@@ -137,14 +141,14 @@ export default function BrainDashboard({ C, s, API, StatTile, Callout, nfmt }) {
 
         <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12, marginTop: 12 }}>
           <StatTile value={fmt(memories)} label="Memories" sub="indexed code + notes" tone={C.accentDim} />
-          <StatTile value={fmt(recalls)} label="Recalls" sub="queries served" tone={C.info} />
-          <StatTile value={fmt(symbols)} label="Symbols" sub="classes / methods" />
-          <StatTile value={fmt(dreams ?? 0)} label="Consolidations" sub={`${fmt(boosted ?? 0)} boosted`} tone={C.accent} />
+          <StatTile value={fmt(symbols)} label="Symbols" sub="classes / methods" tone={C.info} />
+          <StatTile value={ratio ? `${ratio}×` : "—"} label="Compression" sub={fileBytes != null ? `${(fileBytes / 1e6).toFixed(1)} MB indexed` : "code + notes"} tone={C.accent} />
+          <StatTile value={recalls != null ? fmt(recalls) : "live"} label="Recall engine" sub="ask · sym · grep" />
         </div>
 
         <div style={{ display: "flex", gap: 18, marginTop: 12, fontSize: 11.5, color: C.dim, flexWrap: "wrap" }}>
-          {fileBytes != null && <span>brain size: <b style={{ color: C.sub }}>{(fileBytes / 1e6).toFixed(2)} MB</b></span>}
-          {ratio ? <span>compression: <b style={{ color: C.sub }}>{ratio}×</b></span> : null}
+          {deleted != null && <span>tombstones: <b style={{ color: C.sub }}>{fmt(deleted)}</b></span>}
+          <span>mode: <b style={{ color: C.sub }}>{stats?.mode || "portable"}</b></span>
           <span>engine: <b style={{ color: C.sub }}>sca-core (WASM, in-browser)</b></span>
         </div>
 
