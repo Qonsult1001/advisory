@@ -121,6 +121,17 @@ public class HealthTests : IClassFixture<WebApplicationFactory<Program>>
         Assert.True(doc.RootElement.TryGetProperty("host", out var host));
         Assert.False(string.IsNullOrWhiteSpace(host.GetString()), "host must be non‑empty");
     }
+                                        [Fact]
+                                        public async Task Platform_returns_200_and_platform()
+                                        {
+                                            var resp = await _client.GetAsync("/api/platform");
+                                            Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+                                            var json = await resp.Content.ReadAsStringAsync();
+                                            using var doc = JsonDocument.Parse(json);
+                                            Assert.True(doc.RootElement.TryGetProperty("platform", out var platformProp));
+                                            var platform = platformProp.GetString();
+                                            Assert.False(string.IsNullOrWhiteSpace(platform));
+                                        }
                                     [Fact]
                                     public async Task Is64Bit_Returns_200()
                                     {
