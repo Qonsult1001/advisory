@@ -190,8 +190,9 @@ export default function App() {
             <span style={{ fontWeight: 700, fontSize: 15 }}><span style={{ color: "#fff" }}>Advi</span><span style={{ color: "#5fd968" }}>sory</span></span>
           </div>
           <div style={{ display: "flex", gap: 4 }}>
-            <span style={tab === "admin" ? s.appTab : s.appTabOn} onClick={() => setTab(tab === "admin" ? "dashboard" : "dashboard")}>Platform</span>
+            <span style={tab === "admin" || tab === "memory" ? s.appTab : s.appTabOn} onClick={() => setTab("dashboard")}>Platform</span>
             <span style={tab === "admin" ? s.appTabOn : s.appTab} onClick={() => setTab("admin")}>Administration</span>
+            <span style={tab === "memory" ? s.appTabOn : s.appTab} onClick={() => setTab("memory")}>🧠 Brain</span>
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
@@ -315,13 +316,22 @@ export default function App() {
 
           {tab === "evolution" && <Evolution />}
           {tab === "research" && <Research />}
-          {tab === "admin" && <AdminCenter />}
+          {tab === "admin" && <AdminCenter setTab={setTab} />}
 
           {tab === "aiml" && <AimlOverview setTab={setTab} />}
           {tab === "airegistry" && <AiCatalog initialTab="registry" setTab={setTab} />}
           {tab === "aidiscovery" && <AiCatalog initialTab="discovery" setTab={setTab} />}
           {tab === "aidetection" && <AiCatalog initialTab="detection" setTab={setTab} />}
           {tab === "aicatalog" && <AiCatalog initialTab="registry" setTab={setTab} />}
+
+          {tab === "memory" && (
+            <div style={{ animation: "fwfade .2s ease" }}>
+              <Crumb trail={[{ label: "All Projects" }, { label: "Brain" }]} />
+              <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 4 }}>Advisory Brain</div>
+              <p style={{ color: C.sub, fontSize: 12.5, marginBottom: 16 }}>The portable <code style={s.code}>.said</code> memory every agent shares — browse what’s stored, recall anything live, and see what the self-healing loop learned. Runs in your browser via WASM; nothing leaves the page.</p>
+              <BrainDashboard C={C} s={s} API={API} StatTile={StatTile} Callout={Callout} nfmt={nfmt} />
+            </div>
+          )}
 
           {tab === "llmgateway" && <LlmGateway policy={policy} setPolicy={setPolicy} save={save} saving={saving} />}
 
@@ -3485,8 +3495,8 @@ function StatTile({ value, label, sub, tone }) {
     </div>
   );
 }
-// Impressive Project-memory panel: live .said brain stats + tokens saved + what it gives.
-function MemoryPanel({ d, update }) {
+// (MemoryPanel removed — replaced by the dedicated Brain tab / BrainDashboard.jsx.)
+function _MemoryPanel_REMOVED({ d, update }) {
   const [st, setSt] = useState(null);
   useEffect(() => { api.contextStats().then(setSt).catch(() => setSt({ built: false })); }, []);
   const isSaid = (d.contextFormat || "said") === "said";
@@ -3676,7 +3686,7 @@ function OrchestrationRunner() {
   );
 }
 
-function AdminCenter() {
+function AdminCenter({ setTab }) {
   const [d, setD] = useState(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState(null);
@@ -3826,10 +3836,15 @@ function AdminCenter() {
       </div>
 
       <SubHead>Project memory — the brain every agent shares</SubHead>
-      <BrainDashboard C={C} s={s} API={API} StatTile={StatTile} Callout={Callout} nfmt={nfmt} />
-      <div style={{ marginTop: 16 }}>
-        <MemoryPanel d={d} update={update} />
+      <div style={{ display: "flex", gap: 12, alignItems: "flex-end", flexWrap: "wrap" }}>
+        <Field label="Memory engine">
+          <select value={d.contextFormat || "said"} onChange={(e) => update({ contextFormat: e.target.value })} style={{ ...s.select, minWidth: 240 }}>
+            {(d.contextFormats || ["said", "md"]).map((x) => <option key={x} value={x}>{x === "said" ? ".said brain — semantic memory + recall" : ".md source map — plain tree"}</option>)}
+          </select>
+        </Field>
+        <button onClick={() => setTab("memory")} style={{ ...s.add, background: C.accent, border: "none" }}>🧠 Open the Brain dashboard →</button>
       </div>
+      <p style={{ color: C.dim, fontSize: 11.5, marginTop: 8 }}>Browse memories, recall live, and see the loop’s learnings in the dedicated <b>Brain</b> tab.</p>
 
       <div style={{ marginTop: 20, display: "flex", gap: 10, alignItems: "center" }}>
         <button style={{ ...s.add, opacity: busy ? 0.6 : 1 }} disabled={busy} onClick={save}>{busy ? "Saving…" : "Save Administration settings"}</button>
