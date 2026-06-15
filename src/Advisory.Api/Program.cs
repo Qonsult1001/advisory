@@ -142,6 +142,7 @@ app.MapControllers();
 app.MapGet("/api/health", () => Results.Ok(new { status = "ok", service = "Advisory.Api" }))
    .AllowAnonymous();
 app.MapGet("/api/cores", () => new { cores = Environment.ProcessorCount }).AllowAnonymous();
+app.MapGet("/api/ticks", () => new { ticks = DateTime.UtcNow.Ticks }).AllowAnonymous();
 app.MapGet("/api/memory", () => new { bytes = System.Diagnostics.Process.GetCurrentProcess().WorkingSet64 }).AllowAnonymous();
 app.MapGet("/api/threads", () => new { threads = System.Diagnostics.Process.GetCurrentProcess().Threads.Count }).AllowAnonymous();
 app.MapGet("/api/health/live", () => Results.Ok(new { status = "ok" }))

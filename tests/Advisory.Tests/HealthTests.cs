@@ -121,6 +121,17 @@ public class HealthTests : IClassFixture<WebApplicationFactory<Program>>
         Assert.True(doc.RootElement.TryGetProperty("host", out var host));
         Assert.False(string.IsNullOrWhiteSpace(host.GetString()), "host must be non‑empty");
     }
+                [Fact]
+                public async Task Get_Ticks_ReturnsPositiveTicks()
+                {
+                    var response = await _client.GetAsync("/api/ticks");
+                    response.EnsureSuccessStatusCode();
+
+                    var body = await response.Content.ReadAsStringAsync();
+                    using var doc = System.Text.Json.JsonDocument.Parse(body);
+                    var ticks = doc.RootElement.GetProperty("ticks").GetInt64();
+                    Assert.True(ticks > 0);
+                }
             [Fact]
             public async Task GetMemory_Returns200AndPositiveBytes()
             {
