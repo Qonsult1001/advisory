@@ -237,6 +237,58 @@ public class EvolutionService
     public object? Decision(string id)
         => _runs.TryGetValue(id, out var r) ? new { approval = r.Approval, subIssue = r.SubIssue } : null;
 
+    /// <summary>Operator approves the MERGE of a green PR (the second checkpoint). Valid ONLY at
+    /// 'pr-open' (reached only after build+test pass = 100% complete). Squash-merges, deletes the
+    /// branch, closes the issue, marks the run 'released'. Release stays operator-only — this is only
+    /// reached when a human POSTs decision="merge"; the cycle never merges on its own. On merge FAILURE
+    /// the run stays 'pr-open' so the operator can retry or merge by hand (a transient failure never
+    /// marks a green PR failed).</summary>
+    public async Task<EvoRun?> DecideMergeAsync(string id, CancellationToken ct)
+    {
+        if (!_runs.TryGetValue(id, out var r)) return null;
+        if (r.Status != "pr-open")
+        {
+            r.Append($"[merge] ignored — run is '{r.Status}', not 'pr-open' (merge is only available once the PR is built+tested and open).");
+            return r;
+        }
+        var (ok, detail) = await MergeAndCleanAsync(r.PrUrl, r.Ticket, ct);
+        if (ok)
+        {
+            r.Status = "released"; r.Stage = "released — squash-merged + branch deleted + issue closed";
+            r.Pct = 100; r.EtaSeconds = 0; r.FinishedAt = DateTimeOffset.UtcNow;
+            r.Append($"[merge] APPROVED by operator → squash-merged, branch deleted, #{r.Ticket} closed. {detail}");
+        }
+        else
+        {
+            // stay at pr-open — the PR is still good; just couldn't merge right now.
+            r.Append($"[merge] FAILED (PR left open — retry or merge manually): {detail}");
+        }
+        return r;
+    }
+
+    /// <summary>Code version of the manual end-of-cycle: squash-merge the PR, delete the branch, ensure
+    /// the issue is closed. Uses gh (already authenticated in the container via GH_TOKEN). Returns
+    /// (ok, detail). Does NOT touch run state — the caller (DecideMergeAsync) owns that.</summary>
+    public async Task<(bool ok, string detail)> MergeAndCleanAsync(string? prUrl, int ticket, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(Repo)) return (false, "no EVOLUTION_REPO");
+        if (string.IsNullOrWhiteSpace(prUrl)) return (false, "no PR url on this run");
+        // gh accepts the PR URL directly as the {selector}.
+        var (mok, _, merr) = await GhAsync(new[] { "pr", "merge", prUrl!, "--repo", Repo!, "--squash", "--delete-branch" }, null, ct);
+        if (!mok) return (false, $"gh pr merge failed: {merr}".Trim());
+        // Squash-merge honours "Closes #N" in the PR body, so the issue normally auto-closes. Verify;
+        // fall back to an explicit close if it is somehow still open. Best-effort — a close failure does
+        // not undo a successful merge.
+        try
+        {
+            var (sok, sout, _) = await GhAsync(new[] { "issue", "view", ticket.ToString(), "--repo", Repo!, "--json", "state", "-q", ".state" }, null, ct);
+            if (sok && !sout.Trim().Equals("CLOSED", StringComparison.OrdinalIgnoreCase))
+                await GhAsync(new[] { "issue", "close", ticket.ToString(), "--repo", Repo! }, null, ct);
+        }
+        catch { /* close verification is best-effort */ }
+        return (true, "merged");
+    }
+
     /// <summary>Reject a parked plan AND amend the ticket with the operator's recommendation, then
     /// restart the cycle: post the recommendation as a GitHub comment on the ticket (so the next run's
     /// setup picks it up as a tester comment), mark this run rejected, and queue a fresh run for the
