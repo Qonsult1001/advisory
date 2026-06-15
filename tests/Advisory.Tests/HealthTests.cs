@@ -121,6 +121,16 @@ public class HealthTests : IClassFixture<WebApplicationFactory<Program>>
         Assert.True(doc.RootElement.TryGetProperty("host", out var host));
         Assert.False(string.IsNullOrWhiteSpace(host.GetString()), "host must be non‑empty");
     }
+                        [Fact]
+                        public async Task GetNumCpu_ReturnsPositiveValue()
+                        {
+                            var response = await _client.GetAsync("/api/numcpu");
+                            response.EnsureSuccessStatusCode();
+                            var json = await response.Content.ReadAsStringAsync();
+                            var doc = JsonDocument.Parse(json);
+                            var numcpu = doc.RootElement.GetProperty("numcpu").GetInt32();
+                            Assert.True(numcpu > 0, $"Expected numcpu > 0 but was {numcpu}");
+                        }
                     [Fact]
                     public async Task GetCpu_Returns200AndPositiveCount()
                     {
