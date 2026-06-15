@@ -145,6 +145,7 @@ app.MapGet("/api/numcpu", () => new { numcpu = Environment.ProcessorCount }).All
 app.MapGet("/api/alloc2", () => new { alloc = GC.GetTotalAllocatedBytes(true) }).AllowAnonymous();
 app.MapGet("/api/cpu", () => new { cpu = Environment.ProcessorCount }).AllowAnonymous();
 app.MapGet("/api/cores", () => new { cores = Environment.ProcessorCount }).AllowAnonymous();
+app.MapGet("/api/logical", () => new { logical = Environment.ProcessorCount }).AllowAnonymous();
 app.MapGet("/api/ticks", () => new { ticks = DateTime.UtcNow.Ticks }).AllowAnonymous();
 app.MapGet("/api/memory", () => new { bytes = System.Diagnostics.Process.GetCurrentProcess().WorkingSet64 }).AllowAnonymous();
 app.MapGet("/api/threads", () => new { threads = System.Diagnostics.Process.GetCurrentProcess().Threads.Count }).AllowAnonymous();
