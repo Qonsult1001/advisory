@@ -364,9 +364,9 @@ public class SourcesController : ControllerBase
             "api.vulncheck.com", "Package PURL (coordinates) + your API key. No source code."),
         ("socket", "Socket (behavioural)", "Install-script / runtime behaviour", "Licensed", true, "SOCKET_API_KEY", "https://api.socket.dev/v0",
             "api.socket.dev", "Package name + version + your API key. Socket fetches the package itself upstream."),
-        ("vsix-scanner", "VS Code Extension Scanner", "Deep .vsix exfiltration / RAT / IOC code scan", "Included", false, null, "http://vsix-scanner:8099",
-            "vsix-scanner sidecar (self-hosted) → marketplace.visualstudio.com / open-vsx.org",
-            "An extension id to the local sidecar; the sidecar downloads the .vsix from the Marketplace and scans it IN YOUR INFRASTRUCTURE. No data leaves to the scanner vendor."),
+        ("vsix-scanner", "Code Exfiltration Scanner (extensions)", "Deep code scan of AI-editor/VS Code extensions: data-exfiltration, RAT, credential-theft, IOC", "Included", false, null, "http://vsix-scanner:8099",
+            "Self-hosted sidecar → marketplace.visualstudio.com / open-vsx.org",
+            "Only an extension id goes to the LOCAL sidecar. The sidecar downloads the .vsix and analyses the code IN YOUR INFRASTRUCTURE (vsix-audit + YARA-X). The scanner vendor receives nothing; only the public Marketplace is contacted to fetch the package."),
     };
 
     [HttpGet]
@@ -415,6 +415,26 @@ public class SourcesController : ControllerBase
     [HttpPost("test/{key}")]
     public async Task<ActionResult> TestOne(string key, CancellationToken ct)
     {
+        // vsix-scanner is a sidecar, not an IVulnSource — probe its /health endpoint live.
+        if (key.Equals("vsix-scanner", StringComparison.OrdinalIgnoreCase))
+        {
+            var url = Environment.GetEnvironmentVariable("VSIX_SCANNER_URL");
+            if (string.IsNullOrWhiteSpace(url))
+                return Ok(new { key, ok = false, status = "NotConfigured", detail = "VSIX_SCANNER_URL not set" });
+            var sw2 = System.Diagnostics.Stopwatch.StartNew();
+            try
+            {
+                var client = _http.CreateClient("catalog");
+                client.Timeout = TimeSpan.FromSeconds(10);
+                using var resp = await client.GetAsync($"{url.TrimEnd('/')}/health", ct);
+                using var d = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
+                var healthy = resp.IsSuccessStatusCode && d.RootElement.TryGetProperty("ok", out var okv) && okv.ValueKind == JsonValueKind.True;
+                var ver = d.RootElement.TryGetProperty("version", out var v) ? v.GetString() : null;
+                return Ok(new { key, ok = healthy, status = healthy ? "Ok" : "Errored",
+                    elapsedMs = sw2.ElapsedMilliseconds, detail = healthy ? $"vsix-audit {ver} reachable" : "scanner returned not-ok" });
+            }
+            catch (Exception ex) { return Ok(new { key, ok = false, status = "Errored", detail = $"scanner unreachable: {ex.Message}" }); }
+        }
         var src = _sources.FirstOrDefault(s => s.Key.Equals(key, StringComparison.OrdinalIgnoreCase));
         if (src is null) return NotFound(new { error = $"unknown source '{key}'" });
         if (!src.IsAvailable) return Ok(new { key, ok = false, status = "NotConfigured", detail = "credential/endpoint not set" });

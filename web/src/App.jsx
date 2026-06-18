@@ -121,7 +121,7 @@ const ALL_SOURCES = [
   { key: "epss", label: "EPSS (FIRST.org)", scope: "Exploit probability", tier: "Included" },
   { key: "vulncheck", label: "VulnCheck", scope: "Pre-NVD / zero-day intel", tier: "Licensed" },
   { key: "socket", label: "Socket (behavioural)", scope: "Install-script / runtime behaviour", tier: "Licensed" },
-  { key: "vsix-scanner", label: "VS Code Extension Scanner", scope: "Deep .vsix exfiltration / RAT / IOC code scan", tier: "Included" },
+  { key: "vsix-scanner", label: "Code Exfiltration Scanner (extensions)", scope: "Deep code scan: data-exfiltration, RAT, credential-theft, IOC", tier: "Included" },
 ];
 
 // Why a source is inactive — shown on hover so "Not configured" never reads as "broken".
@@ -1116,8 +1116,8 @@ function Sources({ sources, policy, set, setPolicy, save, saving }) {
             ? <div style={{ color: C.info, fontSize: 10.5, fontFamily: C.mono, marginTop: 2 }} title="Endpoint override (on-prem mirror)">↳ {src.endpoint} <span style={{ color: C.accentDim }}>· override</span></div>
             : src.defaultEndpoint && <div style={{ color: C.dim, fontSize: 10.5, fontFamily: C.mono, marginTop: 2 }} title="Built-in default endpoint">↳ {src.defaultEndpoint}</div>}
           {(src.egress || src.dataSent) && <button onClick={() => setFlowOpen(open ? null : src.key)}
-            style={{ background: "none", border: "none", color: C.accent, fontSize: 10.5, cursor: "pointer", padding: "3px 0 0", display: "flex", alignItems: "center", gap: 4 }}>
-            {open ? "▾" : "▸"} Data flow — what is sent &amp; where</button>}</td>
+            style={{ background: "none", border: "none", color: C.accent, fontSize: 10.5, cursor: "pointer", padding: "3px 0 0", display: "flex", alignItems: "center", gap: 4, textAlign: "left" }}>
+            {open ? "▾" : "▸"} <span>Egress: <span style={{ color: C.sub }}>{(src.egress || "").split("→")[0].split("(")[0].trim() || "—"}</span> — click for full data flow</span></button>}</td>
         <td style={s.td}><Tag tone={src.tier === "Licensed" ? C.warn : src.tier === "Custom" ? C.info : C.allow}>{src.tier}</Tag></td>
         <td style={s.td}>
           {t ? <span style={{ color: tone(t.ok, t.status), fontWeight: 600 }} title={t.detail || ""}>{t.status}{t.elapsedMs ? ` · ${t.elapsedMs}ms` : ""}</span>
