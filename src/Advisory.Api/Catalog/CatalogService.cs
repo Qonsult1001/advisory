@@ -47,7 +47,11 @@ public record ExtensionRisk(
     IReadOnlyList<string> ExfiltrationNotes,   // plain-English data-exfiltration assessment
     bool CodeScanned = false,                  // did the deep .vsix code scan actually run?
     string? CodeScanStatus = null,             // Clean / Findings / Unavailable
-    IReadOnlyList<CodeScanFinding>? CodeFindings = null);  // REAL findings from vsix-audit on the bytes
+    IReadOnlyList<CodeScanFinding>? CodeFindings = null,   // REAL findings from vsix-audit on the bytes
+    string? VerdictBasis = null,               // one-line: WHY this verdict (what drove it)
+    IReadOnlyList<string>? VerdictCriteria = null,         // the explicit pass/fail rules (for GSOC/audit)
+    int ConfirmedThreats = 0,                  // critical, concrete (non-heuristic) findings
+    int HeuristicMatches = 0);                 // YARA signature matches — flagged, NOT auto-condemning
 
 /// <summary>A standalone CVE/advisory detail, looked up by id from OSV + enriched with KEV/EPSS.</summary>
 public record CatalogCve(
@@ -1066,14 +1070,38 @@ public class CatalogService
 
         // Verdict — now driven by REAL code findings, not just reputation.
         var highCount = signals.Count(x => x.Level == "High");
+        var confirmedThreats = codeFindings.Count(c => c.Severity == "critical" && c.Category != "yara")
+                               + (knownMalicious ? 1 : 0);
+        var heuristicMatches = codeFindings.Count(c => c.Category == "yara");
         var verdict = (knownMalicious || codeMalicious) ? "High-Risk"
             : highCount > 0 ? "Caution"
             : !publisherVerified ? "Caution"
             : "Trusted";
 
+        // The explicit decision criteria — so a security analyst sees exactly WHY it passed and
+        // precisely WHAT would make it fail. This is the audit-defensible part: it removes the
+        // "an AI just said Trusted" ambiguity by stating the deterministic rule that produced it.
+        var basis = verdict switch
+        {
+            "High-Risk" => knownMalicious
+                ? "FAILED: listed on a malicious-package advisory feed."
+                : "FAILED: a confirmed (non-heuristic) critical code finding — concrete evidence such as a known C2 domain, crypto-wallet address, or eval over network data.",
+            "Caution" => !publisherVerified
+                ? "PASSED with caution: no confirmed threat, but the publisher domain is unverified (impersonation risk)."
+                : "PASSED with caution: no confirmed threat, but one or more high-severity capability signals warrant review.",
+            _ => $"PASSED (Trusted): verified publisher, zero confirmed threats. {heuristicMatches} YARA signature match(es) are heuristic-only and do NOT condemn — they routinely fire on legitimate bundled/minified JS."
+        };
+        var criteria = new List<string>
+        {
+            "FAILS (High-Risk) if: it is on a malicious-package advisory feed, OR the deep code scan finds a CONFIRMED critical threat (concrete AST/IOC evidence — known C2 domain, crypto wallet, eval over fetched data).",
+            "PASSES WITH CAUTION if: no confirmed threat, but the publisher is unverified OR a high-severity capability signal is present.",
+            "PASSES (Trusted) if: verified publisher AND zero confirmed threats.",
+            "YARA signature matches are HEURISTIC leads for analyst review — they are counted and shown for transparency but never auto-condemn, because they false-positive on minified JS. Only concrete, confirmed evidence fails an extension.",
+        };
+
         return new ExtensionRisk(verdict, publisherVerified, domain, executesCode, runsAuto, untrusted,
             onOpenVsx, knownMalicious, installs, deps, signals, exfil,
-            codeScanned, codeStatus, codeFindings);
+            codeScanned, codeStatus, codeFindings, basis, criteria, confirmedThreats, heuristicMatches);
     }
 
     /// <summary>
@@ -1099,7 +1127,14 @@ public class CatalogService
                 {
                     string? S(string k) => f.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
                     var file = f.TryGetProperty("location", out var loc) && loc.ValueKind == JsonValueKind.Object && loc.TryGetProperty("file", out var fv) ? fv.GetString() : null;
-                    list.Add(new CodeScanFinding(S("id") ?? "", S("title") ?? "", S("severity") ?? "low", S("category") ?? "", S("description"), file));
+                    var cat = S("category") ?? "";
+                    var detail = S("description");
+                    // Reframe YARA-rule detail so an analyst reads it as a HEURISTIC pattern match (which
+                    // routinely fires on bundled/minified JS), not a confirmed malware verdict — the
+                    // scanner's own wording ("patterns associated with known malware") reads as a verdict.
+                    if (cat == "yara")
+                        detail = $"HEURISTIC signature match (not a confirmed threat). A YARA rule pattern matched this file — these commonly fire on legitimate bundled/minified JS. Treat as a lead for review, not proof. {detail}";
+                    list.Add(new CodeScanFinding(S("id") ?? "", S("title") ?? "", S("severity") ?? "low", cat, detail, file));
                 }
             return (list.Count == 0 ? "Clean" : "Findings", list, true);
         }

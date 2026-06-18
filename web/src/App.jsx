@@ -2387,6 +2387,42 @@ const CATALOG_ECOS = [
   { key: "Debian", label: "Debian", live: true },
   { key: "Ubuntu", label: "Ubuntu", live: true },
 ];
+// Animated loader for the Catalog — shows real progress so a slow lookup (esp. the deep .vsix code
+// scan, which downloads + unpacks + YARA-scans the extension) never looks hung.
+function CatalogLoading({ view, eco }) {
+  const isExt = eco === "AIEditorExtensions" && view === "package";
+  const steps = isExt
+    ? ["Fetching extension metadata from the Marketplace…", "Resolving publisher trust + versions…",
+       "Downloading the .vsix and unpacking it…", "Deep code scan: AST, IOC, obfuscation…",
+       "Running YARA malware/RAT signatures…", "Cross-checking Open VSX + malicious feeds…", "Compiling the risk assessment…"]
+    : view === "cve"
+      ? ["Looking up the advisory in OSV…", "Enriching with CISA KEV + EPSS…", "Resolving affected packages…"]
+      : ["Querying the registry…", "Checking OSV / KEV / EPSS…", "Computing health + verdict…"];
+  const [i, setI] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => setI((x) => Math.min(x + 1, steps.length - 1)), isExt ? 4500 : 1400);
+    return () => clearInterval(t);
+  }, []);
+  return (
+    <div style={{ maxWidth: 560, margin: "60px auto", textAlign: "center", animation: "fwfade .2s ease" }}>
+      <div style={{ width: 38, height: 38, margin: "0 auto 18px", borderRadius: "50%",
+        border: `3px solid ${C.line}`, borderTopColor: C.accent, animation: "fwspin .8s linear infinite" }} />
+      <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 6 }}>
+        {isExt ? "Scanning extension — this can take up to ~90s" : "Loading…"}
+      </div>
+      <div style={{ fontSize: 12.5, color: C.sub, minHeight: 18, marginBottom: 16 }}>{steps[i]}</div>
+      {/* indeterminate progress bar */}
+      <div style={{ position: "relative", height: 4, borderRadius: 4, background: C.line, overflow: "hidden" }}>
+        <div style={{ position: "absolute", top: 0, width: "40%", height: "100%", borderRadius: 4,
+          background: C.accent, animation: "fwbar 1.3s ease-in-out infinite" }} />
+      </div>
+      {isExt && <div style={{ fontSize: 11, color: C.dim, marginTop: 14 }}>
+        Inspecting the real .vsix bytes (vsix-audit + YARA-X) for data-exfiltration, RAT &amp; credential-theft patterns — not just reputation.
+      </div>}
+    </div>
+  );
+}
+
 function Catalog() {
   const [eco, setEco] = useState("npm");
   const [ecoOpen, setEcoOpen] = useState(false);
@@ -2489,7 +2525,7 @@ function Catalog() {
         )}
       </div>
 
-      {loading && view !== "landing" && <div style={s.kevEmpty}>Loading…</div>}
+      {loading && view !== "landing" && <CatalogLoading view={view} eco={eco} />}
       {!loading && view === "landing" && <CatalogLanding eco={eco} setQ={setQ} search={() => runSearch()} onSample={(t) => { const at = t.lastIndexOf("@"); at > 0 ? openPkg(t.slice(0, at), t.slice(at + 1)) : runSearch(t); }} onInsights={() => setView("insights")} onCve={openCve} onPick={setEco} />}
       {!loading && view === "results" && <SearchResults data={results} eco={eco} onOpen={openPkg} onCve={openCve} />}
       {!loading && view === "package" && pkg && <PackageOverview pkg={pkg} onVersion={(v) => openPkg(pkg.name, v)} />}
@@ -3189,25 +3225,49 @@ function ExtensionRiskTab({ er }) {
   return (
     <div style={{ display: "grid", gridTemplateColumns: "300px 1fr", gap: 20, alignItems: "start" }}>
       <div style={{ ...s.card, padding: "18px 18px" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
           <span style={{ fontSize: 22 }}>{er.verdict === "High-Risk" ? "⛔" : er.verdict === "Caution" ? "⚠" : "🛡"}</span>
           <div>
             <div style={{ fontSize: 18, fontWeight: 700, color: vColor }}>{er.verdict}</div>
             <div style={{ fontSize: 11, color: C.sub }}>Capability & reputation assessment</div>
           </div>
         </div>
+        {/* Why this verdict — stated as a deterministic rule, not an opaque AI call. */}
+        {er.verdictBasis && <div style={{ fontSize: 11.5, color: C.sub, lineHeight: 1.5, padding: "8px 10px", borderRadius: 8,
+          background: `${vColor}10`, border: `1px solid ${vColor}40`, marginBottom: 12 }}>{er.verdictBasis}</div>}
+        {/* Threat tally — separates CONFIRMED from HEURISTIC so an analyst isn't alarmed by YARA leads. */}
+        <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+          <div style={{ flex: 1, textAlign: "center", padding: "8px 4px", borderRadius: 8, border: `1px solid ${(er.confirmedThreats || 0) > 0 ? C.block : C.line}`, background: (er.confirmedThreats || 0) > 0 ? `${C.block}12` : "transparent" }}>
+            <div style={{ fontSize: 20, fontWeight: 800, color: (er.confirmedThreats || 0) > 0 ? C.block : C.allow }}>{er.confirmedThreats || 0}</div>
+            <div style={{ fontSize: 9.5, color: C.sub, textTransform: "uppercase", letterSpacing: 0.3 }}>Confirmed threats</div>
+          </div>
+          <div style={{ flex: 1, textAlign: "center", padding: "8px 4px", borderRadius: 8, border: `1px solid ${C.line}` }}>
+            <div style={{ fontSize: 20, fontWeight: 800, color: C.warn }}>{er.heuristicMatches || 0}</div>
+            <div style={{ fontSize: 9.5, color: C.sub, textTransform: "uppercase", letterSpacing: 0.3 }}>Heuristic leads</div>
+          </div>
+        </div>
         <InfoRow k="Publisher verified" v={er.publisherVerified ? "Yes (domain-verified)" : "NO — unverified"} />
         {er.publisherDomain && <InfoRow k="Publisher domain" v={er.publisherDomain} />}
+        {/* Open VSX cross-verification — upfront trust signal. */}
+        <InfoRow k="On Open VSX" v={er.onOpenVsx ? "Yes — cross-verified ✓" : "No — Marketplace-only"} />
+        <InfoRow k="Malicious advisory" v={er.knownMalicious ? "YES — DO NOT INSTALL" : "None"} />
+        <InfoRow k="Deep code scan" v={er.codeScanned ? (er.codeScanStatus === "Clean" ? "Ran — clean" : `Ran — ${(er.codeFindings || []).length} finding(s)`) : "Unavailable"} />
         <InfoRow k="Executes native code" v={er.executesCode ? "Yes (FS/network/proc)" : "No"} />
         <InfoRow k="Runs automatically" v={er.runsAutomatically ? "Yes (on startup)" : "No (manual)"} />
         <InfoRow k="Untrusted workspaces" v={er.supportsUntrustedWorkspaces ? "Allowed" : "Blocked (safer)"} />
-        <InfoRow k="On Open VSX" v={er.onOpenVsx ? "Yes (cross-verified)" : "No (Marketplace-only)"} />
-        <InfoRow k="Malicious advisory" v={er.knownMalicious ? "YES — DO NOT INSTALL" : "None"} />
-        <InfoRow k="Deep code scan" v={er.codeScanned ? (er.codeScanStatus === "Clean" ? "Ran — clean" : `Ran — ${(er.codeFindings || []).length} finding(s)`) : "Unavailable"} />
         <InfoRow k="Installs" v={er.installs != null ? Number(er.installs).toLocaleString() : "—"} />
         {er.dependencies?.length > 0 && <InfoRow k="Extension deps" v={er.dependencies.join(", ")} />}
       </div>
       <div>
+        {/* Decision criteria — the audit-defensible "when does this pass / when does it fail". */}
+        {er.verdictCriteria?.length > 0 && (
+          <div style={{ ...s.card, padding: "16px 20px", borderLeft: `3px solid ${C.accent}` }}>
+            <div style={{ fontWeight: 600, marginBottom: 10, display: "flex", alignItems: "center", gap: 8 }}>⚖️ How this verdict is decided <span style={{ fontSize: 10.5, color: C.sub, fontWeight: 400 }}>(deterministic rules — for security review)</span></div>
+            <ul style={{ margin: 0, paddingLeft: 18, display: "flex", flexDirection: "column", gap: 7 }}>
+              {er.verdictCriteria.map((c, i) => <li key={i} style={{ fontSize: 12, color: C.sub, lineHeight: 1.5 }}>{c}</li>)}
+            </ul>
+          </div>
+        )}
         <div style={{ ...s.card, padding: 0 }}>
           <div style={{ padding: "14px 20px", borderBottom: `1px solid ${C.lineSoft}`, fontWeight: 600 }}>Capability signals</div>
           <table style={s.table}><thead><tr>{["Signal", "Level", "Detail"].map((c) => <th key={c} style={s.th}>{c}</th>)}</tr></thead>
@@ -3234,19 +3294,27 @@ function ExtensionRiskTab({ er }) {
             ? <div style={{ padding: "16px 20px", fontSize: 12.5, color: C.sub }}>Deep .vsix code scan not available (scanner sidecar unreachable). The assessment above is static + reputational only.</div>
             : (er.codeFindings || []).length === 0
               ? <div style={{ padding: "16px 20px", fontSize: 12.5, color: C.sub }}>vsix-audit downloaded and inspected the published .vsix — no exfiltration / RAT / obfuscation / IOC indicators in the code.</div>
-              : <table style={s.table}><thead><tr>{["Severity", "Finding", "Category", "Detail"].map((c) => <th key={c} style={s.th}>{c}</th>)}</tr></thead>
+              : <>
+                <div style={{ padding: "10px 20px", fontSize: 11.5, color: C.sub, background: `${C.warn}10`, borderBottom: `1px solid ${C.lineSoft}` }}>
+                  <b style={{ color: C.ink }}>Reading this table:</b> <b style={{ color: C.block }}>Confirmed</b> = concrete evidence (drives the verdict). <b style={{ color: C.warn }}>Heuristic</b> = a YARA signature pattern matched — a lead for review, not proof; these routinely fire on legitimate minified JS and do <b>not</b> condemn the extension.
+                </div>
+                <table style={s.table}><thead><tr>{["Type", "Severity", "Finding", "Category", "Detail"].map((c) => <th key={c} style={s.th}>{c}</th>)}</tr></thead>
                   <tbody>{er.codeFindings.map((cf, i) => {
-                    const sc = cf.severity === "critical" || cf.severity === "high" ? C.block : cf.severity === "medium" ? C.warn : C.sub;
+                    const heuristic = cf.category === "yara";
+                    const confirmed = cf.severity === "critical" && !heuristic;
+                    const sc = confirmed ? C.block : heuristic ? C.warn : (cf.severity === "high" ? C.block : cf.severity === "medium" ? C.warn : C.sub);
                     return (
                       <tr key={i} style={s.tr}>
+                        <td style={s.td}><span style={{ fontSize: 9.5, fontWeight: 700, padding: "2px 7px", borderRadius: 4,
+                          color: heuristic ? C.warn : C.block, border: `1px solid ${heuristic ? C.warn : C.block}` }}>{heuristic ? "HEURISTIC" : "CONFIRMED"}</span></td>
                         <td style={s.td}><span style={{ fontFamily: C.mono, fontSize: 10, padding: "3px 9px", borderRadius: 20, color: sc, background: `${sc}1f`, fontWeight: 600 }}>{(cf.severity || "").toUpperCase()}</span></td>
                         <td style={{ ...s.td, fontWeight: 600, fontSize: 12.5 }}>{cf.title}</td>
                         <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11, color: C.sub }}>{cf.category}</td>
-                        <td style={{ ...s.td, color: C.sub, fontSize: 11.5, maxWidth: 460 }}>{cf.detail}{cf.file ? ` · ${cf.file}` : ""}</td>
+                        <td style={{ ...s.td, color: C.sub, fontSize: 11.5, maxWidth: 440 }}>{cf.detail}{cf.file ? ` · ${cf.file}` : ""}</td>
                       </tr>
                     );
                   })}</tbody>
-                </table>}
+                </table></>}
         </div>
         <div style={{ ...s.card, padding: "16px 20px" }}>
           <div style={{ fontWeight: 600, marginBottom: 10, display: "flex", alignItems: "center", gap: 8 }}>🔎 Data-exfiltration assessment</div>
@@ -6462,7 +6530,9 @@ const FONTS = `@import url('https://fonts.googleapis.com/css2?family=Inter:wght@
   ::selection{background:rgba(22,82,212,.16)}
   @keyframes fwpulse{0%,100%{opacity:1}50%{opacity:.4}}
   @keyframes fwfade{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
-  @keyframes fwslide{from{transform:translateX(24px);opacity:.4}to{transform:none;opacity:1}}`;
+  @keyframes fwslide{from{transform:translateX(24px);opacity:.4}to{transform:none;opacity:1}}
+  @keyframes fwbar{0%{left:-40%}100%{left:100%}}
+  @keyframes fwspin{to{transform:rotate(360deg)}}`;
 
 const DEMO = {
   policy: { version: "12", cvssBlockThreshold: 7.0, blockKnownExploited: true, epssBlockThreshold: 0.5,
