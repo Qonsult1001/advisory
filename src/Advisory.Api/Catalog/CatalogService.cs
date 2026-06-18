@@ -51,7 +51,9 @@ public record ExtensionRisk(
     string? VerdictBasis = null,               // one-line: WHY this verdict (what drove it)
     IReadOnlyList<string>? VerdictCriteria = null,         // the explicit pass/fail rules (for GSOC/audit)
     int ConfirmedThreats = 0,                  // critical, concrete (non-heuristic) findings
-    int HeuristicMatches = 0);                 // YARA signature matches — flagged, NOT auto-condemning
+    int HeuristicMatches = 0,                  // YARA signature matches — flagged, NOT auto-condemning
+    string? GateAction = null,                 // what the CURRENT policy would do: Block / Notify / Allow
+    string? GateActionReason = null);          // why the policy lands on that action
 
 /// <summary>A standalone CVE/advisory detail, looked up by id from OSV + enriched with KEV/EPSS.</summary>
 public record CatalogCve(
@@ -1100,9 +1102,35 @@ public class CatalogService
             "YARA signature matches are low-confidence heuristics that false-positive on minified JS — they are suppressed from the findings list and never affect the verdict.",
         };
 
+        // What the CURRENT signed policy would actually DO with this extension (so the operator sees
+        // the enforcement outcome, not just a verdict). A confirmed threat / High-Risk always blocks
+        // when enforcement is on; an unverified-only Caution follows ExtensionUnverifiedAction.
+        var pol = _policy.Current;
+        string gateAction, gateReason;
+        if (pol.ExtensionRiskAction.Equals("Disabled", StringComparison.OrdinalIgnoreCase))
+        { gateAction = "Allow"; gateReason = "Extension gate is disabled in policy (SEC-EXT-01 off)."; }
+        else if (verdict == "High-Risk")
+        { gateAction = "Block"; gateReason = knownMalicious ? "On a malicious-package feed." : "Confirmed code-threat (IOC) found."; }
+        else if (verdict == "Caution" && !publisherVerified)
+        {
+            gateAction = pol.ExtensionUnverifiedAction switch
+            {
+                "Block" => "Block", "Allow" => "Allow", _ => "Notify"
+            };
+            gateReason = gateAction switch
+            {
+                "Block" => "Policy blocks unverified-publisher extensions (ExtensionUnverifiedAction=Block).",
+                "Allow" => "Policy allows unverified publishers (ExtensionUnverifiedAction=Allow).",
+                _ => "Unverified publisher — allowed but flagged for approval (ExtensionUnverifiedAction=Notify)."
+            };
+        }
+        else
+        { gateAction = "Allow"; gateReason = "Trusted — verified publisher, no confirmed threats."; }
+
         return new ExtensionRisk(verdict, publisherVerified, domain, executesCode, runsAuto, untrusted,
             onOpenVsx, knownMalicious, installs, deps, signals, exfil,
-            codeScanned, codeStatus, codeFindings, basis, criteria, confirmedThreats, heuristicMatches);
+            codeScanned, codeStatus, codeFindings, basis, criteria, confirmedThreats, heuristicMatches,
+            gateAction, gateReason);
     }
 
     /// <summary>

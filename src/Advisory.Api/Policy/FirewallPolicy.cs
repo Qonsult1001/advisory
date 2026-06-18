@@ -50,6 +50,16 @@ public class FirewallPolicy
     public List<AllowedModel> AllowedModels { get; set; } = new();
     public bool EnforceModelAllowList { get; set; } = false;   // off by default: approve models first
 
+    // --- AI-editor extension gate (control: SEC-EXT-01). How the gate treats an extension that the
+    //     deep scan rates non-Trusted. "Block" = hard-block High-Risk; "Caution" extensions are
+    //     decided by ExtensionUnverifiedAction below. A confirmed code threat (IOC) ALWAYS blocks
+    //     regardless. ---
+    public string ExtensionRiskAction { get; set; } = "Block";   // Block | Notify | Disabled
+    // What to do when the ONLY issue is an unverified publisher (no confirmed threat). Default Notify:
+    // unverified is the norm for legit smaller publishers, so we warn + require approval rather than
+    // silently block (which would push devs to bypass the gate). Set Block for a locked-down org.
+    public string ExtensionUnverifiedAction { get; set; } = "Notify";  // Block | Notify | Allow
+
     // --- LLM Gateway (controls SEC-LLM-01/02): route OpenAI/Anthropic API traffic through the
     //     firewall — every call recorded; outbound prompts scanned for embedded secrets (DLP). ---
     public LlmGatewayPolicy Llm { get; set; } = new();

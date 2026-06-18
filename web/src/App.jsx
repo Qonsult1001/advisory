@@ -282,6 +282,29 @@ export default function App() {
                   <Stepper value={policy.minScorecardScore ?? 0} step={0.5} min={0} max={10}
                     onChange={(v) => set("minScorecardScore", v)} unit="/ 10" /></Ctl>
               </Table>
+              <SubHead>SEC-EXT-01 — AI-editor extension gate</SubHead>
+              <Table cols={["Control", "Rule", "Setting"]}>
+                <Ctl id="SEC-EXT-01" rule="On a High-Risk extension (confirmed code threat / on malicious feed)">
+                  <div style={{ display: "flex", gap: 6 }}>
+                    {["Disabled", "Notify", "Block"].map((o) => (
+                      <button key={o} onClick={() => set("extensionRiskAction", o)}
+                        style={{ fontSize: 11.5, fontWeight: 600, padding: "5px 12px", borderRadius: 6, cursor: "pointer",
+                          border: `1px solid ${(policy.extensionRiskAction || "Block") === o ? C.accent : C.line}`,
+                          background: (policy.extensionRiskAction || "Block") === o ? "rgba(64,190,70,.1)" : C.surface,
+                          color: (policy.extensionRiskAction || "Block") === o ? C.accentDim : C.sub }}>{o}</button>
+                    ))}
+                  </div></Ctl>
+                <Ctl id="SEC-EXT-02" rule="When the ONLY issue is an unverified publisher (no confirmed threat)">
+                  <div style={{ display: "flex", gap: 6 }}>
+                    {["Allow", "Notify", "Block"].map((o) => (
+                      <button key={o} onClick={() => set("extensionUnverifiedAction", o)}
+                        style={{ fontSize: 11.5, fontWeight: 600, padding: "5px 12px", borderRadius: 6, cursor: "pointer",
+                          border: `1px solid ${(policy.extensionUnverifiedAction || "Notify") === o ? C.accent : C.line}`,
+                          background: (policy.extensionUnverifiedAction || "Notify") === o ? "rgba(64,190,70,.1)" : C.surface,
+                          color: (policy.extensionUnverifiedAction || "Notify") === o ? C.accentDim : C.sub }}>{o}</button>
+                    ))}
+                  </div></Ctl>
+              </Table>
               <SubHead>SEC-AIML-01 — Model-weight controls</SubHead>
               <Table cols={["Control", "Rule", "Setting"]}>
                 <Ctl id="" rule="Permit safetensors format only">
@@ -3255,11 +3278,18 @@ function ExtensionRiskTab({ er }) {
       <div style={{ ...s.card, padding: "18px 18px" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
           <span style={{ fontSize: 22 }}>{er.verdict === "High-Risk" ? "⛔" : er.verdict === "Caution" ? "⚠" : "🛡"}</span>
-          <div>
+          <div style={{ flex: 1 }}>
             <div style={{ fontSize: 18, fontWeight: 700, color: vColor }}>{er.verdict}</div>
             <div style={{ fontSize: 11, color: C.sub }}>Capability & reputation assessment</div>
           </div>
+          {er.gateAction && (() => {
+            const gc = er.gateAction === "Block" ? C.block : er.gateAction === "Notify" ? C.warn : C.allow;
+            return <span title={er.gateActionReason} style={{ fontSize: 10, fontWeight: 700, padding: "4px 9px", borderRadius: 6, color: gc, border: `1px solid ${gc}`, whiteSpace: "nowrap" }}>
+              Policy: {er.gateAction === "Block" ? "BLOCK" : er.gateAction === "Notify" ? "ALLOW + FLAG" : "ALLOW"}
+            </span>;
+          })()}
         </div>
+        {er.gateActionReason && <div style={{ fontSize: 10.5, color: C.sub, marginBottom: 10 }}>{er.gateActionReason}</div>}
         {/* Why this verdict — stated as a deterministic rule, not an opaque AI call. */}
         {er.verdictBasis && <div style={{ fontSize: 11.5, color: C.sub, lineHeight: 1.5, padding: "8px 10px", borderRadius: 8,
           background: `${vColor}10`, border: `1px solid ${vColor}40`, marginBottom: 12 }}>{er.verdictBasis}</div>}
