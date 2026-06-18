@@ -525,8 +525,24 @@ public class ScansController : ControllerBase
     [HttpGet("repositories")]
     public async Task<ActionResult> Repositories(CancellationToken ct)
     {
-        if (!_nexus.IsConfigured) return Ok(new { configured = false, repositories = Array.Empty<object>() });
-        var repos = await _nexus.ListRepositoriesAsync(ct);
+        var repos = _nexus.IsConfigured ? (await _nexus.ListRepositoriesAsync(ct)).Cast<object>().ToList() : new List<object>();
+        // Surface real scanned-image repos (e.g. docker-local) from the live ScanStore — actual scans,
+        // not fixtures. Any repo we have stored scans for that Nexus didn't list gets added here.
+        var nexusNames = repos.Select(r => (r as dynamic)?.Name as string ?? "").ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var grp in _scans.All().GroupBy(s => s.Repository))
+        {
+            if (nexusNames.Contains(grp.Key)) continue;
+            var first = grp.First();
+            repos.Add(new
+            {
+                Name = grp.Key,
+                Format = first.Ecosystem.ToString(),
+                Type = "hosted",
+                IndexedArtifacts = grp.Select(s => $"{s.Name}|{s.Version}").Distinct().Count(),
+                LatestArtifact = $"{first.Name}/{first.Version}",
+                IndexedOn = grp.Max(s => s.ScannedAt),
+            });
+        }
         return Ok(new { configured = true, count = repos.Count, repositories = repos });
     }
 
@@ -613,12 +629,11 @@ public class ScansController : ControllerBase
     [HttpGet("repository/{repo}/artifacts")]
     public async Task<ActionResult> Artifacts(string repo, CancellationToken ct)
     {
-        if (!_nexus.IsConfigured) return Ok(new { configured = false, artifacts = Array.Empty<object>() });
-        var items = await _nexus.ListComponentsAsync(repo, ct);
+        var items = _nexus.IsConfigured ? await _nexus.ListComponentsAsync(repo, ct) : (IReadOnlyList<NexusComponent>)Array.Empty<NexusComponent>();
         var artifacts = items.Select(a =>
         {
             var scan = _scans.Get(repo, a.Name, a.Version);
-            return new
+            return (object)new
             {
                 a.Name, a.Version, a.Ecosystem, a.FileName, RepositoryPath = $"{repo}/{a.Name}",
                 Scanned = scan is not null,
@@ -629,6 +644,20 @@ public class ScansController : ControllerBase
                 Verdict = scan?.Verdict
             };
         }).ToList();
+        // Add real scanned artifacts (e.g. Docker images) the ScanStore holds for this repo but Nexus
+        // doesn't list — live scan data, not fixtures.
+        var listed = items.Select(a => $"{a.Name}|{a.Version}").ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var scan in _scans.ForRepository(repo))
+        {
+            if (listed.Contains($"{scan.Name}|{scan.Version}")) continue;
+            artifacts.Add(new
+            {
+                scan.Name, scan.Version, Ecosystem = scan.Ecosystem.ToString(), scan.FileName,
+                RepositoryPath = $"{repo}/{scan.Name}",
+                Scanned = true, ScanStatus = "Done", LastScan = (DateTimeOffset?)scan.ScannedAt,
+                Vulnerabilities = scan.Vulnerabilities.Count, scan.Critical, scan.High, Verdict = (string?)scan.Verdict
+            });
+        }
         return Ok(new { configured = true, repository = repo, count = artifacts.Count, artifacts });
     }
 
