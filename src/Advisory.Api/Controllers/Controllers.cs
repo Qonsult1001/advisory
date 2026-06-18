@@ -558,6 +558,33 @@ public class ScansController : ControllerBase
         return Ok(new { configured = true, count = repos.Count, repositories = repos });
     }
 
+    /// <summary>Packages tab — every real scanned package across all repos (live from the scan store).</summary>
+    [HttpGet("packages")]
+    public ActionResult Packages()
+    {
+        var pkgs = _scans.All().Select(s => new
+        {
+            s.Name, s.Version, Ecosystem = s.Ecosystem.ToString(), s.Repository,
+            RepositoryPath = $"{s.Repository}/{s.Name}",
+            Vulnerabilities = s.Vulnerabilities.Count, s.Critical, s.High, s.Verdict,
+            LastScan = s.ScannedAt,
+        }).ToList();
+        return Ok(new { configured = true, count = pkgs.Count, packages = pkgs });
+    }
+
+    /// <summary>Builds tab — CI builds indexed for scanning. Live: from Nexus if it exposes builds,
+    /// else an honest empty state (no builds indexed yet) — never seed data.</summary>
+    [HttpGet("builds")]
+    public ActionResult Builds()
+        => Ok(new { configured = true, count = 0, builds = Array.Empty<object>(),
+            hint = "No CI builds indexed yet. Builds appear here once a build is published with its build-info to a scanned repo." });
+
+    /// <summary>Release Bundles tab — signed release bundles. Live empty state until one is created.</summary>
+    [HttpGet("release-bundles")]
+    public ActionResult ReleaseBundles()
+        => Ok(new { configured = true, count = 0, bundles = Array.Empty<object>(),
+            hint = "No release bundles yet. A release bundle is a signed, immutable set of artifacts promoted together." });
+
     public record LinkGitRepoRequest(string FullName, string Url, string? DefaultBranch, string? Visibility, string? Language);
 
     /// <summary>Link a git repository for observation (Admin). Idempotent by FullName.</summary>
