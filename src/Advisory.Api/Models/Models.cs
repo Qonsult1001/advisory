@@ -31,7 +31,9 @@ public record PackageRef(
     string? Sha256 = null,
     string? FileName = null,
     string? LocalPath = null,
-    string? ProjectPath = null);   // consuming project source root, for npm reachability/contextual analysis
+    string? ProjectPath = null,    // consuming project source root, for npm reachability/contextual analysis
+    string? OsvEcosystem = null);  // explicit OSV ecosystem (e.g. "Debian:12", "Alpine:v3.18", "Go") for
+                                   // Docker-image OS/lang packages whose Ecosystem enum is Docker
 
 /// <summary>A categorized advisory reference link (NVD, GHSA, patch commit, exploit PoC, etc.).</summary>
 public record AdvisoryRef(string Type, string Url);  // Type: Advisory / Exploit / Patch / Web / Package / Report

@@ -22,7 +22,9 @@ public class OsvSource : IVulnSource
     public async Task<SourceResult> QueryAsync(PackageRef pkg, CancellationToken ct)
     {
         var sw = Stopwatch.StartNew();
-        var eco = EcosystemName(pkg.Ecosystem);
+        // A Docker-image package carries its real OSV ecosystem (Debian:12 / Alpine:v3.18 / Go / npm…)
+        // in OsvEcosystem — use it directly so OS + language packages match real CVEs.
+        var eco = !string.IsNullOrEmpty(pkg.OsvEcosystem) ? pkg.OsvEcosystem! : EcosystemName(pkg.Ecosystem);
         if (string.IsNullOrEmpty(eco))
             return new SourceResult(Key, SourceStatus.Skipped, Array.Empty<Finding>(),
                 $"ecosystem {pkg.Ecosystem} not covered by OSV", sw.ElapsedMilliseconds);
