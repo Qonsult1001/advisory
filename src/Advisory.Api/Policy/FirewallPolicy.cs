@@ -74,7 +74,7 @@ public class FirewallPolicy
     public List<PolicyException> Exceptions { get; set; } = new();
 
     // --- Enabled intel plugins, in priority order (pluggable org platform) ---
-    public List<string> EnabledSources { get; set; } = new() { "osv", "kev", "epss", "malware", "artifactory" };
+    public List<string> EnabledSources { get; set; } = new() { "osv", "kev", "epss", "malware", "artifactory", "vsix-scanner" };
 
     // --- Admin-managed source configuration (credentials/endpoints) for the built-in source types,
     //     keyed by source key. Credentials entered via the admin UI are stored here (self-hosted). ---

@@ -110,13 +110,16 @@ public class CatalogService
     private readonly EpssSource _epss;
     private readonly OpRiskService _opRisk;
     private readonly string? _vsixScannerUrl;
+    private readonly Advisory.Api.Policy.IPolicyStore _policy;
 
-    public CatalogService(IHttpClientFactory f, OsvSource osv, KevSource kev, EpssSource epss, OpRiskService opRisk, IConfiguration cfg)
+    public CatalogService(IHttpClientFactory f, OsvSource osv, KevSource kev, EpssSource epss, OpRiskService opRisk,
+        IConfiguration cfg, Advisory.Api.Policy.IPolicyStore policy)
     {
         _http = f.CreateClient("catalog");
         _factory = f;
         _osv = osv; _kev = kev; _epss = epss; _opRisk = opRisk;
         _vsixScannerUrl = cfg["VSIX_SCANNER_URL"];
+        _policy = policy;
     }
 
     // Every ecosystem is live: OSV covers vulnerabilities for all; rich metadata is fetched
@@ -1113,6 +1116,10 @@ public class CatalogService
     {
         if (string.IsNullOrWhiteSpace(_vsixScannerUrl))
             return ("Unavailable", Array.Empty<CodeScanFinding>(), false);
+        // Respect the operator's on/off control in Intelligence sources — if vsix-scanner is toggled
+        // off in the policy, the deep scan does not run (and the UI reports it as disabled, not clean).
+        if (!_policy.Current.EnabledSources.Contains("vsix-scanner", StringComparer.OrdinalIgnoreCase))
+            return ("Disabled", Array.Empty<CodeScanFinding>(), false);
         try
         {
             var client = _factory.CreateClient("catalog-index");

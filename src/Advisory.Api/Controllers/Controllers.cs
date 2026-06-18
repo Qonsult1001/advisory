@@ -346,15 +346,27 @@ public class SourcesController : ControllerBase
     // Built-in source catalogue (the known integration types) — the admin "registry".
     // DefaultEndpoint = the hard-coded upstream URL each source uses out of the box; an admin can
     // override it (e.g. point at an on-prem mirror) via SourceConfig.Endpoint in the signed policy.
-    private static readonly (string Key, string Label, string Scope, string Tier, bool NeedsCredential, string? CredEnv, string? DefaultEndpoint)[] Catalogue =
+    // Egress = the host data leaves to. DataSent = exactly what we transmit (for the data-flow view —
+    // proves we send coordinates, never your source/artifacts, to public feeds).
+    private static readonly (string Key, string Label, string Scope, string Tier, bool NeedsCredential, string? CredEnv, string? DefaultEndpoint, string Egress, string DataSent)[] Catalogue =
     {
-        ("osv", "OSV.dev", "Multi-ecosystem CVE", "Included", false, null, "https://api.osv.dev/v1/query"),
-        ("malware", "OpenSSF Malicious Packages", "Typosquat / malicious-package", "Included", false, null, "https://github.com/ossf/malicious-packages"),
-        ("kev", "CISA KEV", "Known-exploited catalog", "Included", false, null, "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"),
-        ("epss", "EPSS (FIRST.org)", "Exploit probability", "Included", false, null, "https://api.first.org/data/v1/epss"),
-        ("artifactory", "JFrog Artifactory scan API", "Cross-referenced CVE scan", "Included", true, "ARTIFACTORY_TOKEN", null),
-        ("vulncheck", "VulnCheck", "Pre-NVD / zero-day intel", "Licensed", true, "VULNCHECK_API_KEY", "https://api.vulncheck.com/v3"),
-        ("socket", "Socket (behavioural)", "Install-script / runtime behaviour", "Licensed", true, "SOCKET_API_KEY", "https://api.socket.dev/v0"),
+        ("osv", "OSV.dev", "Multi-ecosystem CVE", "Included", false, null, "https://api.osv.dev/v1/query",
+            "api.osv.dev (Google/OpenSSF)", "Package name + version + ecosystem only. No source code, no artifact bytes."),
+        ("malware", "OpenSSF Malicious Packages", "Typosquat / malicious-package", "Included", false, null, "https://api.osv.dev/v1/query",
+            "api.osv.dev (OpenSSF feed via OSV)", "Package name + ecosystem only (queried as MAL-* advisories). No code."),
+        ("kev", "CISA KEV", "Known-exploited catalog", "Included", false, null, "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json",
+            "cisa.gov", "Nothing is sent — the full KEV catalogue is DOWNLOADED and matched locally."),
+        ("epss", "EPSS (FIRST.org)", "Exploit probability", "Included", false, null, "https://api.first.org/data/v1/epss",
+            "api.first.org", "A CVE id only (to fetch its exploit-probability score). No package data."),
+        ("artifactory", "JFrog Artifactory scan API", "Cross-referenced CVE scan", "Included", true, "ARTIFACTORY_TOKEN", null,
+            "your configured Artifactory host", "Package coordinates to your own Artifactory (self-hosted — no third party)."),
+        ("vulncheck", "VulnCheck", "Pre-NVD / zero-day intel", "Licensed", true, "VULNCHECK_API_KEY", "https://api.vulncheck.com/v3",
+            "api.vulncheck.com", "Package PURL (coordinates) + your API key. No source code."),
+        ("socket", "Socket (behavioural)", "Install-script / runtime behaviour", "Licensed", true, "SOCKET_API_KEY", "https://api.socket.dev/v0",
+            "api.socket.dev", "Package name + version + your API key. Socket fetches the package itself upstream."),
+        ("vsix-scanner", "VS Code Extension Scanner", "Deep .vsix exfiltration / RAT / IOC code scan", "Included", false, null, "http://vsix-scanner:8099",
+            "vsix-scanner sidecar (self-hosted) → marketplace.visualstudio.com / open-vsx.org",
+            "An extension id to the local sidecar; the sidecar downloads the .vsix from the Marketplace and scans it IN YOUR INFRASTRUCTURE. No data leaves to the scanner vendor."),
     };
 
     [HttpGet]
@@ -374,6 +386,10 @@ public class SourcesController : ControllerBase
             var cfg = p.SourceConfigs.FirstOrDefault(x => x.Key.Equals(c.Key, StringComparison.OrdinalIgnoreCase));
             var hasCred = !c.NeedsCredential || !string.IsNullOrWhiteSpace(cfg?.Credential)
                           || (c.CredEnv is not null && !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(c.CredEnv)));
+            // vsix-scanner is a sidecar, not an IVulnSource — its availability is "is VSIX_SCANNER_URL set".
+            var available = c.Key == "vsix-scanner"
+                ? !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("VSIX_SCANNER_URL"))
+                : live.TryGetValue(c.Key, out var a) && a;
             return new {
                 c.Key, c.Label, c.Scope, c.Tier, c.NeedsCredential,
                 custom = false,
@@ -382,7 +398,9 @@ public class SourcesController : ControllerBase
                 endpoint = cfg?.Endpoint,              // admin override (null = using built-in default)
                 defaultEndpoint = c.DefaultEndpoint,   // the hard-coded upstream URL
                 hasCredential = hasCred,
-                available = live.TryGetValue(c.Key, out var a) && a,
+                available,
+                egress = c.Egress,                     // where data leaves to (data-flow view)
+                dataSent = c.DataSent,                  // exactly what we transmit
             };
         });
         var customs = p.CustomSources.Select(cs => new {

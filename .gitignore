@@ -63,3 +63,4 @@ tools/said/said.exe
 tools/said/said-mcp.exe
 .claude-worker/
 tools/said/said-linux
+vulncheck_known_exploited_vulnerabilities.json

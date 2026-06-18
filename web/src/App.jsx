@@ -121,6 +121,7 @@ const ALL_SOURCES = [
   { key: "epss", label: "EPSS (FIRST.org)", scope: "Exploit probability", tier: "Included" },
   { key: "vulncheck", label: "VulnCheck", scope: "Pre-NVD / zero-day intel", tier: "Licensed" },
   { key: "socket", label: "Socket (behavioural)", scope: "Install-script / runtime behaviour", tier: "Licensed" },
+  { key: "vsix-scanner", label: "VS Code Extension Scanner", scope: "Deep .vsix exfiltration / RAT / IOC code scan", tier: "Included" },
 ];
 
 // Why a source is inactive — shown on hover so "Not configured" never reads as "broken".
@@ -1057,6 +1058,7 @@ function Sources({ sources, policy, set, setPolicy, save, saving }) {
   const [admin, setAdmin] = useState(null);      // { builtins, customs }
   const [tests, setTests] = useState({});        // key -> { ok, status, elapsedMs }
   const [testing, setTesting] = useState(null);  // key currently testing
+  const [flowOpen, setFlowOpen] = useState(null); // key whose data-flow detail is expanded
   const [editor, setEditor] = useState(null);    // { key, label, endpoint, credential } | null  (built-in cred edit)
   const [customEditor, setCustomEditor] = useState(null); // a policy.customSources entry being edited | null
   const [addOpen, setAddOpen] = useState(false);
@@ -1104,13 +1106,18 @@ function Sources({ sources, policy, set, setPolicy, save, saving }) {
     // unchanged snapshot and appears stuck. Custom sources carry their own enabled flag.
     const enabled = custom ? src.enabled : (policy.enabledSources || []).includes(src.key);
     const required = custom ? false : (policy.requiredSources || []).includes(src.key);
+    const open = flowOpen === src.key;
     return (
-      <tr key={src.key} style={s.tr}>
+      <React.Fragment key={src.key}>
+      <tr style={s.tr}>
         <td style={s.td}><b>{src.label}</b>{custom && <Tag tone={C.info} >custom</Tag>}
           <div style={{ color: C.sub, fontSize: 11, marginTop: 2 }}>{src.scope}</div>
           {src.endpoint
             ? <div style={{ color: C.info, fontSize: 10.5, fontFamily: C.mono, marginTop: 2 }} title="Endpoint override (on-prem mirror)">↳ {src.endpoint} <span style={{ color: C.accentDim }}>· override</span></div>
-            : src.defaultEndpoint && <div style={{ color: C.dim, fontSize: 10.5, fontFamily: C.mono, marginTop: 2 }} title="Built-in default endpoint">↳ {src.defaultEndpoint}</div>}</td>
+            : src.defaultEndpoint && <div style={{ color: C.dim, fontSize: 10.5, fontFamily: C.mono, marginTop: 2 }} title="Built-in default endpoint">↳ {src.defaultEndpoint}</div>}
+          {(src.egress || src.dataSent) && <button onClick={() => setFlowOpen(open ? null : src.key)}
+            style={{ background: "none", border: "none", color: C.accent, fontSize: 10.5, cursor: "pointer", padding: "3px 0 0", display: "flex", alignItems: "center", gap: 4 }}>
+            {open ? "▾" : "▸"} Data flow — what is sent &amp; where</button>}</td>
         <td style={s.td}><Tag tone={src.tier === "Licensed" ? C.warn : src.tier === "Custom" ? C.info : C.allow}>{src.tier}</Tag></td>
         <td style={s.td}>
           {t ? <span style={{ color: tone(t.ok, t.status), fontWeight: 600 }} title={t.detail || ""}>{t.status}{t.elapsedMs ? ` · ${t.elapsedMs}ms` : ""}</span>
@@ -1127,6 +1134,21 @@ function Sources({ sources, policy, set, setPolicy, save, saving }) {
           {custom && <button style={{ ...s.miniBtn, marginLeft: 6, color: C.block }} onClick={() => removeCustom(src.key)}>Remove</button>}
         </td>
       </tr>
+      {open && (
+        <tr>
+          <td colSpan={6} style={{ ...s.td, background: C.surface2, padding: "12px 20px" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "120px 1fr", gap: "6px 14px", fontSize: 12 }}>
+              <span style={{ color: C.sub, fontWeight: 600 }}>Egress to</span>
+              <span style={{ fontFamily: C.mono, fontSize: 11.5 }}>{src.egress || "—"}</span>
+              <span style={{ color: C.sub, fontWeight: 600 }}>Data sent</span>
+              <span>{src.dataSent || "—"}</span>
+              <span style={{ color: C.sub, fontWeight: 600 }}>Control</span>
+              <span style={{ color: C.sub }}>{enabled ? "Enabled" : "Disabled"} via the toggle above; commit to sign into policy. {src.required ? "Required for a clean Allow." : ""}</span>
+            </div>
+          </td>
+        </tr>
+      )}
+      </React.Fragment>
     );
   };
 
@@ -3054,6 +3076,12 @@ function PackageOverview({ pkg, onVersion }) {
               </span>} />
             <KV k="Dependencies" v={`${pkg.dependencies?.length ?? 0}`} />
             <KV k="Licenses" v={pkg.license ? <Tag tone={C.sub}>{pkg.license}</Tag> : "—"} />
+            {er && <KV k="Extension Risk" v={
+              <button onClick={() => setTab("extrisk")} style={{ background: "none", border: "none", cursor: "pointer", padding: 0, display: "inline-flex", alignItems: "center", gap: 5,
+                fontWeight: 700, color: er.verdict === "High-Risk" ? C.block : er.verdict === "Caution" ? C.warn : C.allow }}>
+                {er.verdict === "High-Risk" ? "⛔" : er.verdict === "Caution" ? "⚠" : "🛡"} {er.verdict}
+                {(er.confirmedThreats || 0) > 0 && <span style={{ fontSize: 10, color: C.block }}>· {er.confirmedThreats} confirmed</span>}
+              </button>} />}
             <KV k="OpenSSF Score" v={sc?.overall != null
               ? <span style={{ fontWeight: 700, color: sc.overall >= 7 ? C.allow : sc.overall >= 4 ? C.warn : C.block }}>{sc.overall.toFixed(1)}/10</span>
               : <Tag tone={C.dim}>N/A</Tag>} last />
@@ -3280,42 +3308,48 @@ function ExtensionRiskTab({ er }) {
             ))}</tbody>
           </table>
         </div>
-        {/* REAL code-level findings from vsix-audit on the .vsix bytes (not reputation). */}
+        {/* REAL code-level findings — only CONFIRMED issues are shown. Heuristic YARA leads (which
+            false-positive on minified JS) are suppressed from the list; their count is noted only. */}
+        {(() => {
+          const all = er.codeFindings || [];
+          const confirmed = all.filter((c) => c.category !== "yara" && (c.severity === "critical" || c.severity === "high"));
+          const heuristicN = all.filter((c) => c.category === "yara").length;
+          return (
         <div style={{ ...s.card, padding: 0 }}>
           <div style={{ padding: "14px 20px", borderBottom: `1px solid ${C.lineSoft}`, fontWeight: 600, display: "flex", alignItems: "center", gap: 8 }}>
             🧬 Code scan findings (vsix-audit)
             <span style={{ fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 20,
-              color: !er.codeScanned ? C.sub : er.codeScanStatus === "Clean" ? C.allow : C.block,
-              background: `${!er.codeScanned ? C.sub : er.codeScanStatus === "Clean" ? C.allow : C.block}1f` }}>
-              {er.codeScanned ? (er.codeScanStatus === "Clean" ? "CLEAN" : `${(er.codeFindings || []).length} FINDINGS`) : "NOT RUN"}
+              color: !er.codeScanned ? C.sub : confirmed.length === 0 ? C.allow : C.block,
+              background: `${!er.codeScanned ? C.sub : confirmed.length === 0 ? C.allow : C.block}1f` }}>
+              {er.codeScanned ? (confirmed.length === 0 ? "NO CONFIRMED ISSUES" : `${confirmed.length} CONFIRMED`) : "NOT RUN"}
             </span>
           </div>
           {!er.codeScanned
             ? <div style={{ padding: "16px 20px", fontSize: 12.5, color: C.sub }}>Deep .vsix code scan not available (scanner sidecar unreachable). The assessment above is static + reputational only.</div>
-            : (er.codeFindings || []).length === 0
-              ? <div style={{ padding: "16px 20px", fontSize: 12.5, color: C.sub }}>vsix-audit downloaded and inspected the published .vsix — no exfiltration / RAT / obfuscation / IOC indicators in the code.</div>
-              : <>
-                <div style={{ padding: "10px 20px", fontSize: 11.5, color: C.sub, background: `${C.warn}10`, borderBottom: `1px solid ${C.lineSoft}` }}>
-                  <b style={{ color: C.ink }}>Reading this table:</b> <b style={{ color: C.block }}>Confirmed</b> = concrete evidence (drives the verdict). <b style={{ color: C.warn }}>Heuristic</b> = a YARA signature pattern matched — a lead for review, not proof; these routinely fire on legitimate minified JS and do <b>not</b> condemn the extension.
+            : confirmed.length === 0
+              ? <div style={{ padding: "16px 20px", fontSize: 12.5, color: C.sub }}>
+                  vsix-audit downloaded and inspected the published .vsix — <b style={{ color: C.allow }}>no confirmed exfiltration / RAT / IOC indicators</b> in the code.
+                  {heuristicN > 0 && <span style={{ color: C.dim }}> ({heuristicN} low-confidence heuristic signature{heuristicN === 1 ? "" : "s"} matched and were suppressed as routine false-positives on minified JS.)</span>}
                 </div>
-                <table style={s.table}><thead><tr>{["Type", "Severity", "Finding", "Category", "Detail"].map((c) => <th key={c} style={s.th}>{c}</th>)}</tr></thead>
-                  <tbody>{er.codeFindings.map((cf, i) => {
-                    const heuristic = cf.category === "yara";
-                    const confirmed = cf.severity === "critical" && !heuristic;
-                    const sc = confirmed ? C.block : heuristic ? C.warn : (cf.severity === "high" ? C.block : cf.severity === "medium" ? C.warn : C.sub);
+              : <>
+                <table style={s.table}><thead><tr>{["Severity", "Finding", "Category", "Detail"].map((c) => <th key={c} style={s.th}>{c}</th>)}</tr></thead>
+                  <tbody>{confirmed.map((cf, i) => {
+                    const sc = cf.severity === "critical" ? C.block : C.block;
                     return (
                       <tr key={i} style={s.tr}>
-                        <td style={s.td}><span style={{ fontSize: 9.5, fontWeight: 700, padding: "2px 7px", borderRadius: 4,
-                          color: heuristic ? C.warn : C.block, border: `1px solid ${heuristic ? C.warn : C.block}` }}>{heuristic ? "HEURISTIC" : "CONFIRMED"}</span></td>
                         <td style={s.td}><span style={{ fontFamily: C.mono, fontSize: 10, padding: "3px 9px", borderRadius: 20, color: sc, background: `${sc}1f`, fontWeight: 600 }}>{(cf.severity || "").toUpperCase()}</span></td>
                         <td style={{ ...s.td, fontWeight: 600, fontSize: 12.5 }}>{cf.title}</td>
                         <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11, color: C.sub }}>{cf.category}</td>
-                        <td style={{ ...s.td, color: C.sub, fontSize: 11.5, maxWidth: 440 }}>{cf.detail}{cf.file ? ` · ${cf.file}` : ""}</td>
+                        <td style={{ ...s.td, color: C.sub, fontSize: 11.5, maxWidth: 460 }}>{cf.detail}{cf.file ? ` · ${cf.file}` : ""}</td>
                       </tr>
                     );
                   })}</tbody>
-                </table></>}
+                </table>
+                {heuristicN > 0 && <div style={{ padding: "8px 20px", fontSize: 11, color: C.dim, borderTop: `1px solid ${C.lineSoft}` }}>{heuristicN} additional low-confidence heuristic signature(s) suppressed (routine false-positives on minified JS).</div>}
+              </>}
         </div>
+          );
+        })()}
         <div style={{ ...s.card, padding: "16px 20px" }}>
           <div style={{ fontWeight: 600, marginBottom: 10, display: "flex", alignItems: "center", gap: 8 }}>🔎 Data-exfiltration assessment</div>
           <ul style={{ margin: 0, paddingLeft: 18, display: "flex", flexDirection: "column", gap: 8 }}>
