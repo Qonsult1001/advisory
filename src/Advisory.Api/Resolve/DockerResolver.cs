@@ -56,7 +56,6 @@ public sealed class DockerResolver : IDependencyResolver
                 if (blob is { } b) { config = b; haveConfig = true; }
             }
 
-            // OS / base layer (real, from config)
             string os = "unknown", arch = "amd64";
             if (haveConfig)
             {
@@ -65,10 +64,19 @@ public sealed class DockerResolver : IDependencyResolver
             }
             nodes.Add(new(new PackageRef(Ecosystem.Docker, $"os/{os}", arch), 1, root.Name));
 
-            // Language/runtime packages declared in the config's history (apt-get/apk/npm/pip/go installs)
-            // — parsed from the real RUN/ENV lines, the closest live signal without untarring every layer.
-            if (haveConfig && config.TryGetProperty("history", out var hist))
+            // DOWNLOAD + PARSE the real layers to read the OS package DB. We pull each layer (newest
+            // first), gunzip + untar in memory, and look for the dpkg/apk database. The newest layer
+            // that contains it wins (it reflects the final installed set). Real packages → real CVEs.
+            var (osvEco, packages) = await ExtractOsPackagesAsync(http, image, layers, token, ct);
+            if (packages.Count > 0)
             {
+                _log.LogInformation("Docker {Image}:{Tag} → {N} OS packages ({Eco})", image, tag, packages.Count, osvEco);
+                foreach (var (name, ver) in packages)
+                    nodes.Add(new(new PackageRef(Ecosystem.Docker, name, ver, OsvEcosystem: osvEco), 2, $"os/{os}"));
+            }
+            else if (haveConfig && config.TryGetProperty("history", out var hist))
+            {
+                // Fallback: runtime/lang version hints from the config history (no OS DB found).
                 foreach (var h in hist.EnumerateArray())
                 {
                     var line = h.TryGetProperty("created_by", out var cb) ? (cb.GetString() ?? "") : "";
@@ -77,22 +85,137 @@ public sealed class DockerResolver : IDependencyResolver
                             nodes.Add(new(new PackageRef(Ecosystem.Docker, name, ver), 2, $"os/{os}"));
                 }
             }
-
-            // One node per real layer (digest + size) — the image's actual filesystem layers.
-            int i = 0;
-            foreach (var l in layers)
-            {
-                var dig = l.TryGetProperty("digest", out var d) ? (d.GetString() ?? "") : "";
-                if (dig.Length == 0) continue;
-                var shortDig = dig.Replace("sha256:", "")[..Math.Min(12, dig.Replace("sha256:", "").Length)];
-                nodes.Add(new(new PackageRef(Ecosystem.Docker, $"layer/{shortDig}", $"layer{++i}"), 1, root.Name));
-            }
         }
         catch (Exception ex)
         {
             _log.LogWarning(ex, "Docker resolve failed for {Image}:{Tag}", image, tag);
         }
         return nodes;
+    }
+
+    // --- LIVE layer parsing: download layers, find + parse the OS package DB ---
+
+    // Returns (osvEcosystem, [(name, version)]). Pulls layers newest→oldest, gunzips+untars in memory,
+    // and reads dpkg/status (Debian/Ubuntu) or apk/db/installed (Alpine). Caps work for safety.
+    async Task<(string eco, List<(string name, string version)> pkgs)> ExtractOsPackagesAsync(
+        HttpClient http, string image, List<JsonElement> layers, string? token, CancellationToken ct)
+    {
+        // newest layer last in the manifest; scan from the end (final filesystem state)
+        for (int li = layers.Count - 1; li >= 0 && li >= layers.Count - 12; li--)
+        {
+            var dig = layers[li].TryGetProperty("digest", out var d) ? d.GetString() : null;
+            if (dig is null) continue;
+            byte[] blob;
+            try
+            {
+                var req = new HttpRequestMessage(HttpMethod.Get, $"https://{DefaultRegistry}/v2/{image}/blobs/{dig}");
+                if (token is not null) req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+                var resp = await http.SendAsync(req, ct);
+                if (!resp.IsSuccessStatusCode) continue;
+                blob = await resp.Content.ReadAsByteArrayAsync(ct);
+                if (blob.Length > 80 * 1024 * 1024) continue; // skip huge layers
+            }
+            catch { continue; }
+
+            try
+            {
+                using var raw = new MemoryStream(blob);
+                using var gz = new System.IO.Compression.GZipStream(raw, System.IO.Compression.CompressionMode.Decompress);
+                using var tar = new System.Formats.Tar.TarReader(gz);
+                System.Formats.Tar.TarEntry? entry;
+                string? dpkg = null, apk = null, osRelease = null, alpineRelease = null;
+                while ((entry = tar.GetNextEntry()) is not null)
+                {
+                    var path = entry.Name.TrimStart('.', '/');
+                    if (path is "var/lib/dpkg/status") dpkg = ReadEntry(entry);
+                    else if (path is "lib/apk/db/installed") apk = ReadEntry(entry);
+                    else if (path is "etc/os-release") osRelease = ReadEntry(entry);
+                    else if (path is "etc/alpine-release") alpineRelease = ReadEntry(entry);
+                }
+                // Debian/Ubuntu — read the REAL release id (VERSION_ID) from os-release, not a guess.
+                if (dpkg is not null)
+                {
+                    var pkgs = ParseDpkg(dpkg);
+                    if (pkgs.Count > 0)
+                    {
+                        var (distro, ver) = DetectDebianFamily(osRelease);
+                        return ($"{distro}:{ver}", pkgs);
+                    }
+                }
+                // Alpine — the OSV ecosystem is the MAJOR.MINOR (e.g. v3.20), from alpine-release/os-release.
+                if (apk is not null)
+                {
+                    var pkgs = ParseApk(apk);
+                    if (pkgs.Count > 0)
+                        return ($"Alpine:v{DetectAlpineVer(alpineRelease, osRelease)}", pkgs);
+                }
+            }
+            catch { /* not a parseable layer — try the next */ }
+        }
+        return ("", new());
+    }
+
+    static string ReadEntry(System.Formats.Tar.TarEntry e)
+    {
+        if (e.DataStream is null) return "";
+        using var ms = new MemoryStream();
+        e.DataStream.CopyTo(ms);
+        return System.Text.Encoding.UTF8.GetString(ms.ToArray());
+    }
+
+    // Debian/Ubuntu dpkg status: paragraphs of "Package:" / "Version:" separated by blank lines.
+    static List<(string, string)> ParseDpkg(string txt)
+    {
+        var list = new List<(string, string)>();
+        string? name = null, ver = null;
+        foreach (var line in txt.Split('\n'))
+        {
+            if (line.StartsWith("Package:")) name = line[8..].Trim();
+            else if (line.StartsWith("Version:")) ver = line[8..].Trim();
+            else if (line.Length == 0) { if (name is not null && ver is not null) list.Add((name, ver)); name = ver = null; }
+        }
+        if (name is not null && ver is not null) list.Add((name, ver));
+        return list;
+    }
+    // Real Debian/Ubuntu family + release from /etc/os-release (ID + VERSION_ID).
+    static (string distro, string ver) DetectDebianFamily(string? osRelease)
+    {
+        string id = "debian", vid = "12";
+        if (osRelease is not null)
+            foreach (var l in osRelease.Split('\n'))
+            {
+                if (l.StartsWith("ID=")) id = l[3..].Trim().Trim('"').ToLowerInvariant();
+                else if (l.StartsWith("VERSION_ID=")) vid = l[11..].Trim().Trim('"');
+            }
+        // OSV ecosystems: "Debian:12", "Ubuntu:22.04". Map by ID.
+        return id == "ubuntu" ? ("Ubuntu", vid) : ("Debian", vid.Split('.')[0]);
+    }
+
+    // Real Alpine major.minor from /etc/alpine-release (e.g. "3.20.3") or os-release VERSION_ID.
+    static string DetectAlpineVer(string? alpineRelease, string? osRelease)
+    {
+        string v = "";
+        if (!string.IsNullOrWhiteSpace(alpineRelease)) v = alpineRelease.Trim();
+        else if (osRelease is not null)
+            foreach (var l in osRelease.Split('\n'))
+                if (l.StartsWith("VERSION_ID=")) { v = l[11..].Trim().Trim('"'); break; }
+        var parts = v.Split('.');
+        return parts.Length >= 2 ? $"{parts[0]}.{parts[1]}" : (parts.Length == 1 && parts[0].Length > 0 ? parts[0] : "3.20");
+    }
+
+    // Alpine apk installed DB: records of "P:name" / "V:version" lines, blank-line separated.
+    static List<(string, string)> ParseApk(string txt)
+    {
+        var list = new List<(string, string)>();
+        string? name = null, ver = null;
+        foreach (var line in txt.Split('\n'))
+        {
+            if (line.StartsWith("P:")) name = line[2..].Trim();
+            else if (line.StartsWith("V:")) ver = line[2..].Trim();
+            else if (line.Length == 0) { if (name is not null && ver is not null) list.Add((name, ver)); name = ver = null; }
+        }
+        if (name is not null && ver is not null) list.Add((name, ver));
+        return list;
     }
 
     // --- registry plumbing (real OCI v2 calls) ---
