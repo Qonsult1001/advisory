@@ -300,7 +300,7 @@ export default function App() {
 
           {tab === "sources" && (
             <Card title="Intelligence sources" desc="Feeds operate behind a single resolver interface. Included feeds carry no licence cost; licensed feeds activate on credential without code change. Run a live health probe to see real reachability + latency.">
-              <Sources sources={sources} policy={policy} set={set} setPolicy={setPolicy} />
+              <Sources sources={sources} policy={policy} set={set} setPolicy={setPolicy} save={save} saving={saving} />
               <Callout>Included feeds lag proprietary research and will miss some zero-days — an accepted
                 residual risk for production risk-tiering. Closing the gap is a credential change
                 (set <code style={s.code}>VULNCHECK_API_KEY</code>), not a redevelopment.</Callout>
@@ -1053,7 +1053,7 @@ function Exceptions({ policy, setPolicy }) {
 
 const ECOS = ["PyPI", "npm", "NuGet", "Cargo", "Go", "HuggingFace"];
 // Intelligence sources with a live health probe (real reachability + latency per feed).
-function Sources({ sources, policy, set, setPolicy }) {
+function Sources({ sources, policy, set, setPolicy, save, saving }) {
   const [admin, setAdmin] = useState(null);      // { builtins, customs }
   const [tests, setTests] = useState({});        // key -> { ok, status, elapsedMs }
   const [testing, setTesting] = useState(null);  // key currently testing
@@ -1099,7 +1099,11 @@ function Sources({ sources, policy, set, setPolicy }) {
 
   const row = (src, custom) => {
     const t = tests[src.key];
-    const enabled = custom ? src.enabled : src.enabled;
+    // Built-in enabled/required state is owned by the POLICY (the toggle's write target), not the
+    // admin snapshot — otherwise the switch flips the policy but the row re-renders from the
+    // unchanged snapshot and appears stuck. Custom sources carry their own enabled flag.
+    const enabled = custom ? src.enabled : (policy.enabledSources || []).includes(src.key);
+    const required = custom ? false : (policy.requiredSources || []).includes(src.key);
     return (
       <tr key={src.key} style={s.tr}>
         <td style={s.td}><b>{src.label}</b>{custom && <Tag tone={C.info} >custom</Tag>}
@@ -1114,7 +1118,7 @@ function Sources({ sources, policy, set, setPolicy }) {
             : <span style={{ color: C.sub }} title={SOURCE_HINT[src.key] || ""}>{src.needsCredential ? "No credential" : "Idle"}</span>}
         </td>
         <td style={s.td}><Switch on={enabled} onChange={(v) => custom ? toggleCustom(src.key, v) : toggleEnabled(src.key, v)} /></td>
-        <td style={s.td}><Switch on={src.required} disabled={custom} onChange={(v) => toggleRequired(src.key, v)} /></td>
+        <td style={s.td}><Switch on={required} disabled={custom} onChange={(v) => toggleRequired(src.key, v)} /></td>
         <td style={{ ...s.td, whiteSpace: "nowrap" }}>
           <button style={s.miniBtn} onClick={() => test(src.key)} disabled={testing === src.key}>{testing === src.key ? "…" : "Test"}</button>
           {!custom && <button style={{ ...s.miniBtn, marginLeft: 6 }}
@@ -1129,8 +1133,11 @@ function Sources({ sources, policy, set, setPolicy }) {
   return (
     <>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 0 14px" }}>
-        <div style={{ fontSize: 13, color: C.sub }}>Configure, test, enable and add intelligence sources. Changes are saved into the signed policy — commit to apply.</div>
-        <button style={s.add} onClick={() => setAddOpen(true)}>+ Add OSV source</button>
+        <div style={{ fontSize: 13, color: C.sub }}>Configure, test, enable and add intelligence sources. Toggle Enabled/Required, then commit to sign them into the policy.</div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button style={s.add} onClick={() => setAddOpen(true)}>+ Add OSV source</button>
+          {save && <button style={s.save} onClick={save} disabled={saving}>{saving ? "Signing…" : "Commit & sign policy"}</button>}
+        </div>
       </div>
       <div style={s.card}>
         <table style={s.table}><thead><tr>

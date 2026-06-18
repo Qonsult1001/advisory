@@ -30,14 +30,20 @@ public class VulnCheckSource : IVulnSource
                 "VULNCHECK_API_KEY not set — licensed feed inactive", sw.ElapsedMilliseconds);
         try
         {
-            // VulnCheck purl-based lookup (vulncheck-nvd2 index, purl filter).
+            // VulnCheck purl-based lookup (vulncheck-nvd2 index, purl filter). Uses standard PURL types
+            // so coverage spans every package ecosystem PURL defines, not just the original five.
             var type = pkg.Ecosystem switch
             {
                 Ecosystem.PyPI => "pypi", Ecosystem.npm => "npm", Ecosystem.NuGet => "nuget",
-                Ecosystem.Cargo => "cargo", Ecosystem.Go => "golang", _ => ""
+                Ecosystem.Cargo => "cargo", Ecosystem.Go => "golang",
+                Ecosystem.Maven => "maven", Ecosystem.RubyGems => "gem", Ecosystem.Composer => "composer",
+                Ecosystem.Conan => "conan", Ecosystem.CRAN => "cran", Ecosystem.DartPub => "pub",
+                Ecosystem.Alpine => "apk", Ecosystem.Debian => "deb", Ecosystem.Ubuntu => "deb",
+                _ => ""
             };
             if (type == "")
-                return new SourceResult(Key, SourceStatus.Skipped, Array.Empty<Finding>(), "ecosystem not mapped", sw.ElapsedMilliseconds);
+                return new SourceResult(Key, SourceStatus.Skipped, Array.Empty<Finding>(),
+                    $"ecosystem {pkg.Ecosystem} has no PURL type for VulnCheck", sw.ElapsedMilliseconds);
 
             var purl = Uri.EscapeDataString($"pkg:{type}/{pkg.Name}@{pkg.Version}");
             using var req = new HttpRequestMessage(HttpMethod.Get,

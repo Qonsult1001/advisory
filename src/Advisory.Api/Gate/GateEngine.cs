@@ -61,7 +61,7 @@ public class GateEngine : IGateEngine
     {
         if (!_opRisk.Supports(root.Ecosystem))
             return (new SourceCoverage("package-intel", "Skipped", 0,
-                "operational-risk / license / scorecard intel supported for npm + PyPI", 0, false), null);
+                $"operational-risk / license intel not available for {root.Ecosystem} (registry exposes no version-date metadata)", 0, false), null);
 
         var sw = System.Diagnostics.Stopwatch.StartNew();
         var risk = await _opRisk.AnalyzeAsync(root.Ecosystem, root.Name, root.Version, ct);
@@ -248,6 +248,12 @@ public class GateEngine : IGateEngine
             if (p.DowngradeUnreachable && enriched.Reachability == "NotReachable") continue;
 
             var label = node.Depth == 0 ? "" : $"[transitive d{node.Depth}:{node.Package.Name}]";
+            // SEC-MAL-01 — a malicious-package advisory (OpenSSF MAL-*, or a Socket behavioural exfil
+            // signal) is confirmed-bad, not a severity score. It ALWAYS blocks, regardless of CVSS,
+            // source, or ecosystem. This is the control that stops a malicious package being "allowed"
+            // just because it carries no high-CVSS CVE.
+            if (IsMalicious(enriched))
+            { decision = GateDecision.Block; triggered.Add($"SEC-MAL-01:MALICIOUS:{enriched.Id}{label}"); }
             if (p.BlockKnownExploited && enriched.KnownExploited)
             { decision = GateDecision.Block; triggered.Add($"SEC-VULN-02:KEV:{enriched.Id}{label}"); }
             if (enriched.EpssScore is double e && e >= p.EpssBlockThreshold)
@@ -402,6 +408,17 @@ public class GateEngine : IGateEngine
            || r.Findings.Count > 0
            || r.TriggeredRules.Count > 0
            || (r.Coverage is { AllRequiredConclusive: false });
+
+    /// <summary>
+    /// True for a confirmed-malicious finding — an OpenSSF Malicious Packages advisory (MAL-*),
+    /// GitHub's malware advisories (GHSA flagged malware via the "MAL" alias), or a Socket
+    /// behavioural exfiltration/injection signal. These are categorically bad and must hard-block
+    /// regardless of CVSS — a malicious package rarely carries a high numeric score.
+    /// </summary>
+    private static bool IsMalicious(Finding f)
+        => f.Id.StartsWith("MAL-", StringComparison.OrdinalIgnoreCase)
+           || f.Id.StartsWith("SOCKET-", StringComparison.OrdinalIgnoreCase)
+           || (f.Aliases?.Any(a => a.StartsWith("MAL-", StringComparison.OrdinalIgnoreCase)) ?? false);
 
     /// <summary>CVSS-band floor for a severity label (NVD v3 bands), for advisories with no numeric score.</summary>
     private static double SeverityFloor(Severity s) => s switch

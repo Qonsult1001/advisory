@@ -13,25 +13,15 @@ public class OsvSource : IVulnSource
     public bool IsAvailable => true;
     public OsvSource(IHttpClientFactory f) => _http = f.CreateClient("osv");
 
-    private static string EcosystemName(Ecosystem e) => e switch
-    {
-        Ecosystem.PyPI => "PyPI", Ecosystem.npm => "npm", Ecosystem.NuGet => "NuGet",
-        Ecosystem.Cargo => "crates.io", Ecosystem.Go => "Go",
-        // Full JFrog-Catalog parity — OSV's exact ecosystem identifiers:
-        Ecosystem.Maven => "Maven", Ecosystem.RubyGems => "RubyGems",
-        Ecosystem.Composer => "Packagist", Ecosystem.Conan => "ConanCenter",
-        Ecosystem.CRAN => "CRAN", Ecosystem.DartPub => "Pub",
-        // Alpine/Debian/Ubuntu need a release suffix (Debian:12) supplied via OsvEcosystem;
-        // bare distro names aren't OSV ecosystems, so they're handled by the per-image scan.
-        _ => ""
-    };
+    // Centralized in OsvEcosystems so CVE + malware coverage never drift apart per-ecosystem.
+    private static string EcosystemName(Ecosystem e) => OsvEcosystems.Name(e) ?? "";
 
     public async Task<SourceResult> QueryAsync(PackageRef pkg, CancellationToken ct)
     {
         var sw = Stopwatch.StartNew();
         // A Docker-image package carries its real OSV ecosystem (Debian:12 / Alpine:v3.18 / Go / npm…)
-        // in OsvEcosystem — use it directly so OS + language packages match real CVEs.
-        var eco = !string.IsNullOrEmpty(pkg.OsvEcosystem) ? pkg.OsvEcosystem! : EcosystemName(pkg.Ecosystem);
+        // in OsvEcosystem — OsvEcosystems.For uses it directly so OS + language packages match real CVEs.
+        var eco = OsvEcosystems.For(pkg) ?? "";
         if (string.IsNullOrEmpty(eco))
             return new SourceResult(Key, SourceStatus.Skipped, Array.Empty<Finding>(),
                 $"ecosystem {pkg.Ecosystem} not covered by OSV", sw.ElapsedMilliseconds);
