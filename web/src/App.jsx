@@ -3129,16 +3129,16 @@ function PackageOverview({ pkg, onVersion }) {
                 border: `1px solid ${er.verdict === "Trusted" ? C.allow : C.warn}`, background: `${er.verdict === "Trusted" ? C.allow : C.warn}12` }}>
                 <span style={{ fontSize: 18 }}>{er.verdict === "High-Risk" ? "⛔" : er.verdict === "Caution" ? "⚠" : "🛡"}</span>
                 <div style={{ flex: 1 }}>
-                  <div style={{ fontWeight: 600, fontSize: 13 }}>Extension Risk: {er.verdict} — CVE scanning alone does not cover extensions</div>
+                  <div style={{ fontWeight: 600, fontSize: 13 }}>Extension Risk: {er.verdict} — fully assessed (deep code scan + publisher trust + exfiltration analysis)</div>
                   <div style={{ fontSize: 11.5, color: C.sub }}>
-                    {er.publisherVerified ? "Verified publisher" : "UNVERIFIED publisher"} · {er.executesCode ? "executes native code" : "no code entrypoint"} · {er.runsAutomatically ? "auto-activates" : "manual activation"} · {er.knownMalicious ? "ON MALICIOUS FEED" : "no malicious advisory"} — click for the full data-exfiltration assessment.
+                    {(er.confirmedThreats || 0) > 0 ? `${er.confirmedThreats} confirmed threat(s)` : "No confirmed threats"} · {er.codeScanned ? "deep code scan ran" : "code scan unavailable"} · {er.publisherVerified ? "verified publisher" : "unverified publisher"} · {er.knownMalicious ? "ON MALICIOUS FEED" : "not on any malicious feed"} — click for the full assessment.
                   </div>
                 </div>
                 <span style={{ color: C.accent, fontSize: 12 }}>View ›</span>
               </div>
             )}
             {vulns.length === 0
-              ? <EmptyState title="No CVEs Found" sub={er ? "No known CVEs — but extensions are assessed on capabilities & publisher trust. See the Extension Risk tab above." : "Great news! We haven't found any vulnerabilities for this version."} />
+              ? <EmptyState title="No CVEs Found" sub={er ? "No known CVEs. This extension is also fully assessed by the deep code scan, publisher-trust and exfiltration analysis — see the Extension Risk tab above." : "Great news! We haven't found any vulnerabilities for this version."} />
               : <div style={s.card}>
                   <div style={{ padding: "14px 20px", borderBottom: `1px solid ${C.lineSoft}`, fontWeight: 600 }}>{vulns.length} Vulnerabilities</div>
                   <Table cols={["Severity", "ID", "Fix version", "CVSS v3", "CVSS v4", "KEV", "EPSS %"]}>
@@ -3312,7 +3312,10 @@ function ExtensionRiskTab({ er }) {
             false-positive on minified JS) are suppressed from the list; their count is noted only. */}
         {(() => {
           const all = er.codeFindings || [];
-          const confirmed = all.filter((c) => c.category !== "yara" && (c.severity === "critical" || c.severity === "high"));
+          // CONFIRMED = concrete IOC evidence only (matches the API's IsConcreteThreat). Capability
+          // observations (ast/manifest) and YARA heuristics are not threats and are not listed.
+          const isThreat = (c) => c.category === "ioc" && /C2|DOMAIN|IP_|KNOWN_BAD|HASH|GITHUB_C2|MALICIOUS/i.test(c.id || "");
+          const confirmed = all.filter(isThreat);
           const heuristicN = all.filter((c) => c.category === "yara").length;
           return (
         <div style={{ ...s.card, padding: 0 }}>

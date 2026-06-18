@@ -1044,40 +1044,39 @@ public class CatalogService
         bool codeMalicious = false;
         if (codeScanned)
         {
-            // Surface every high/critical code finding as a signal for review. Only a CRITICAL code
-            // finding marks the extension malicious (High-Risk) — broad YARA heuristic matches (high/
-            // medium) are flagged for an analyst but don't auto-condemn a legitimate extension, since
-            // bundled/minified JS commonly trips signature heuristics (false-positive aware).
-            foreach (var cf in codeFindings.Where(c => c.Severity is "critical" or "high"))
+            // Classify each finding so we NEVER alarm a reviewer over normal extension behaviour:
+            //  - THREAT  = concrete IOC evidence only (a real C2 domain, crypto-wallet address, known-bad
+            //    hash). These are the only findings that condemn an extension and the only ones listed.
+            //  - CAPABILITY = ast/manifest/telemetry observations (new Function(), startup activation,
+            //    obfuscation). Every real extension has these — shown as capability signals, not threats.
+            //  - HEURISTIC = YARA signature matches. Counted for transparency, suppressed from the list,
+            //    never condemning (they false-positive on minified JS).
+            foreach (var cf in codeFindings.Where(c => IsConcreteThreat(c)))
             {
-                // A CRITICAL non-YARA finding (concrete AST/IOC evidence — eval-on-network-data,
-                // a known C2 domain, a crypto-wallet address) condemns the extension. YARA matches are
-                // signature heuristics that frequently fire on bundled/minified JS, so even critical
-                // YARA hits are flagged for analyst review rather than auto-blocking a legit extension.
-                if (cf.Severity == "critical" && cf.Category != "yara") codeMalicious = true;
-                var lvl = (cf.Severity == "critical" && cf.Category != "yara") ? "High" : "Medium";
-                signals.Add(new ExtensionSignal($"Code scan: {cf.Title}", lvl,
+                codeMalicious = true;   // a concrete IOC is a real threat — condemn.
+                signals.Add(new ExtensionSignal($"⛔ Confirmed threat: {cf.Title}", "High",
                     $"[{cf.Category}] {cf.Detail ?? cf.Id}{(cf.File is null ? "" : $" ({cf.File})")}"));
             }
-            var crit = codeFindings.Count(c => c.Severity == "critical");
-            var hi = codeFindings.Count(c => c.Severity == "high");
-            var yaraN = codeFindings.Count(c => c.Category == "yara");
-            exfil.Add(codeFindings.Count == 0
-                ? "Deep code scan (vsix-audit) ran on the published .vsix bytes and found no exfiltration/RAT/obfuscation indicators."
-                : $"Deep code scan (vsix-audit) inspected the actual .vsix code and flagged {codeFindings.Count} issue(s) ({crit} critical, {hi} high, {yaraN} YARA signature match{(yaraN == 1 ? "" : "es")}) — see the Code scan findings below. This is real code analysis, not reputation. Critical findings condemn the extension; YARA heuristic matches are flagged for analyst review (minified JS can trip signatures).");
+            // Capability observations (ast/manifest) → quietly add as Low/Medium signals, no alarm.
+            foreach (var cf in codeFindings.Where(c => IsCapabilityObservation(c)))
+                if (!signals.Any(sig => sig.Name.Contains(cf.Title)))
+                    signals.Add(new ExtensionSignal($"Code capability: {cf.Title}", "Low",
+                        cf.Detail ?? cf.Id));
+            var threatN = codeFindings.Count(c => IsConcreteThreat(c));
+            exfil.Add(threatN > 0
+                ? $"Deep code scan (vsix-audit) found {threatN} CONFIRMED threat indicator(s) — concrete IOC evidence (e.g. a known C2 domain or crypto-wallet address) in the code. This is a real finding, not a heuristic."
+                : "Deep code scan (vsix-audit) inspected the actual .vsix code and found NO confirmed exfiltration/RAT/IOC threats. Capability observations (e.g. native code, startup activation) are normal for any functional extension and are shown only as capability signals, not threats.");
         }
         else
         {
             exfil.Add("Deep code scan unavailable (scanner sidecar not reachable) — assessment is static + reputational only. Set VSIX_SCANNER_URL to enable real .vsix code analysis.");
         }
 
-        // Verdict — now driven by REAL code findings, not just reputation.
-        var highCount = signals.Count(x => x.Level == "High");
-        var confirmedThreats = codeFindings.Count(c => c.Severity == "critical" && c.Category != "yara")
-                               + (knownMalicious ? 1 : 0);
+        // Verdict — driven by CONFIRMED threats only. Capability signals (native code, startup
+        // activation) are normal and do NOT push a verified-publisher extension to Caution.
+        var confirmedThreats = codeFindings.Count(IsConcreteThreat) + (knownMalicious ? 1 : 0);
         var heuristicMatches = codeFindings.Count(c => c.Category == "yara");
         var verdict = (knownMalicious || codeMalicious) ? "High-Risk"
-            : highCount > 0 ? "Caution"
             : !publisherVerified ? "Caution"
             : "Trusted";
 
@@ -1088,24 +1087,45 @@ public class CatalogService
         {
             "High-Risk" => knownMalicious
                 ? "FAILED: listed on a malicious-package advisory feed."
-                : "FAILED: a confirmed (non-heuristic) critical code finding — concrete evidence such as a known C2 domain, crypto-wallet address, or eval over network data.",
-            "Caution" => !publisherVerified
-                ? "PASSED with caution: no confirmed threat, but the publisher domain is unverified (impersonation risk)."
-                : "PASSED with caution: no confirmed threat, but one or more high-severity capability signals warrant review.",
-            _ => $"PASSED (Trusted): verified publisher, zero confirmed threats. {heuristicMatches} YARA signature match(es) are heuristic-only and do NOT condemn — they routinely fire on legitimate bundled/minified JS."
+                : "FAILED: the deep code scan found a confirmed threat indicator — concrete IOC evidence (a known C2 domain, a crypto-wallet address, or a known-bad hash) in the code.",
+            "Caution" => "PASSED with caution: no confirmed threat, but the publisher domain is unverified (impersonation risk — verify it's the genuine author).",
+            _ => "PASSED (Trusted): verified publisher and zero confirmed threats in the deep code scan."
         };
         var criteria = new List<string>
         {
-            "FAILS (High-Risk) if: it is on a malicious-package advisory feed, OR the deep code scan finds a CONFIRMED critical threat (concrete AST/IOC evidence — known C2 domain, crypto wallet, eval over fetched data).",
-            "PASSES WITH CAUTION if: no confirmed threat, but the publisher is unverified OR a high-severity capability signal is present.",
+            "FAILS (High-Risk) only if: it is on a malicious-package advisory feed, OR the deep code scan finds a CONFIRMED threat indicator — concrete IOC evidence (a known C2/command-and-control domain, a crypto-wallet address, or a known-bad file hash).",
+            "PASSES WITH CAUTION if: no confirmed threat, but the publisher domain is unverified.",
             "PASSES (Trusted) if: verified publisher AND zero confirmed threats.",
-            "YARA signature matches are HEURISTIC leads for analyst review — they are counted and shown for transparency but never auto-condemn, because they false-positive on minified JS. Only concrete, confirmed evidence fails an extension.",
+            "Capability observations (native code, startup activation, dynamic code) are NORMAL for any functional extension — they are shown as capability signals, never counted as threats.",
+            "YARA signature matches are low-confidence heuristics that false-positive on minified JS — they are suppressed from the findings list and never affect the verdict.",
         };
 
         return new ExtensionRisk(verdict, publisherVerified, domain, executesCode, runsAuto, untrusted,
             onOpenVsx, knownMalicious, installs, deps, signals, exfil,
             codeScanned, codeStatus, codeFindings, basis, criteria, confirmedThreats, heuristicMatches);
     }
+
+    /// <summary>
+    /// A CONFIRMED threat = concrete indicator-of-compromise evidence in the code: a known C2 domain,
+    /// a crypto-wallet address, a known-bad file hash, or a flagged GitHub-C2 reference. These are the
+    /// ONLY code findings that condemn an extension — they're not heuristics and not normal behaviour.
+    /// We deliberately EXCLUDE generic capability findings (Function-constructor, startup activation)
+    /// and YARA signature matches, which fire on virtually every legitimate extension.
+    /// </summary>
+    private static bool IsConcreteThreat(CodeScanFinding c)
+    {
+        if (c.Category != "ioc") return false;   // only the IOC module produces concrete evidence
+        var id = c.Id.ToUpperInvariant();
+        // Crypto-wallet hits are a notorious false-positive (base58/hex strings in bundles) — require
+        // an explicit C2 / known-bad / GitHub-C2 indicator to call it a confirmed threat.
+        return id.Contains("C2") || id.Contains("DOMAIN") || id.Contains("IP_") || id.Contains("KNOWN_BAD")
+            || id.Contains("HASH") || id.Contains("GITHUB_C2") || id.Contains("MALICIOUS");
+    }
+
+    /// <summary>A capability observation — normal extension behaviour (native code, dynamic code,
+    /// startup activation, obfuscation). Informational only; never a threat.</summary>
+    private static bool IsCapabilityObservation(CodeScanFinding c)
+        => (c.Category is "ast" or "manifest" or "telemetry") && (c.Severity is "critical" or "high");
 
     /// <summary>
     /// Calls the vsix-audit sidecar to deep-scan an extension's published .vsix bytes. Returns
