@@ -23,6 +23,9 @@ public record CveAffected(string Ecosystem, string Name, string? IntroducedVersi
 /// <summary>One assessed capability/permission signal for an editor extension.</summary>
 public record ExtensionSignal(string Name, string Level, string Detail);  // Level: High / Medium / Low / Info
 
+/// <summary>One real code-level finding from the vsix-audit deep scan of the extension's bytes.</summary>
+public record CodeScanFinding(string Id, string Title, string Severity, string Category, string? Detail, string? File);
+
 /// <summary>
 /// Static + reputational risk assessment for an AI-editor (VS Code) extension. CVE scanners pass
 /// extensions as "clean" because extensions rarely carry CVEs — the real risk is capability abuse /
@@ -41,7 +44,10 @@ public record ExtensionRisk(
     long? Installs,
     IReadOnlyList<string> Dependencies,        // other extensions it pulls in (supply chain)
     IReadOnlyList<ExtensionSignal> Signals,    // the per-capability assessment
-    IReadOnlyList<string> ExfiltrationNotes);  // plain-English data-exfiltration assessment
+    IReadOnlyList<string> ExfiltrationNotes,   // plain-English data-exfiltration assessment
+    bool CodeScanned = false,                  // did the deep .vsix code scan actually run?
+    string? CodeScanStatus = null,             // Clean / Findings / Unavailable
+    IReadOnlyList<CodeScanFinding>? CodeFindings = null);  // REAL findings from vsix-audit on the bytes
 
 /// <summary>A standalone CVE/advisory detail, looked up by id from OSV + enriched with KEV/EPSS.</summary>
 public record CatalogCve(
@@ -99,12 +105,14 @@ public class CatalogService
     private readonly KevSource _kev;
     private readonly EpssSource _epss;
     private readonly OpRiskService _opRisk;
+    private readonly string? _vsixScannerUrl;
 
-    public CatalogService(IHttpClientFactory f, OsvSource osv, KevSource kev, EpssSource epss, OpRiskService opRisk)
+    public CatalogService(IHttpClientFactory f, OsvSource osv, KevSource kev, EpssSource epss, OpRiskService opRisk, IConfiguration cfg)
     {
         _http = f.CreateClient("catalog");
         _factory = f;
         _osv = osv; _kev = kev; _epss = epss; _opRisk = opRisk;
+        _vsixScannerUrl = cfg["VSIX_SCANNER_URL"];
     }
 
     // Every ecosystem is live: OSV covers vulnerabilities for all; rich metadata is fetched
@@ -1021,17 +1029,81 @@ public class CatalogService
         exfil.Add(installs is long n && n > 1_000_000
             ? $"High install base ({n:N0}) — widely used, so malicious behaviour would likely have been reported."
             : "Lower install base — less community scrutiny; weigh this for a sensitive environment.");
-        exfil.Add("Note: this is a STATIC + reputational assessment (manifest, publisher, registries, malicious feeds). It is not a dynamic sandbox trace of runtime network calls — that requires the licensed behavioural tier (Socket).");
 
-        // Verdict.
+        // 5) DEEP CODE SCAN — the real exfiltration check. vsix-audit downloads the .vsix and inspects
+        //    the actual code: Discord/Telegram-webhook exfiltration, SSH-key/cookie/credential theft,
+        //    eval/Function/process.binding, obfuscation, IOC/C2 + crypto wallets, YARA RAT rules.
+        var (codeStatus, codeFindings, codeScanned) = await DeepScanExtensionAsync(name, ct);
+        bool codeMalicious = false;
+        if (codeScanned)
+        {
+            // Surface every high/critical code finding as a signal for review. Only a CRITICAL code
+            // finding marks the extension malicious (High-Risk) — broad YARA heuristic matches (high/
+            // medium) are flagged for an analyst but don't auto-condemn a legitimate extension, since
+            // bundled/minified JS commonly trips signature heuristics (false-positive aware).
+            foreach (var cf in codeFindings.Where(c => c.Severity is "critical" or "high"))
+            {
+                // A CRITICAL non-YARA finding (concrete AST/IOC evidence — eval-on-network-data,
+                // a known C2 domain, a crypto-wallet address) condemns the extension. YARA matches are
+                // signature heuristics that frequently fire on bundled/minified JS, so even critical
+                // YARA hits are flagged for analyst review rather than auto-blocking a legit extension.
+                if (cf.Severity == "critical" && cf.Category != "yara") codeMalicious = true;
+                var lvl = (cf.Severity == "critical" && cf.Category != "yara") ? "High" : "Medium";
+                signals.Add(new ExtensionSignal($"Code scan: {cf.Title}", lvl,
+                    $"[{cf.Category}] {cf.Detail ?? cf.Id}{(cf.File is null ? "" : $" ({cf.File})")}"));
+            }
+            var crit = codeFindings.Count(c => c.Severity == "critical");
+            var hi = codeFindings.Count(c => c.Severity == "high");
+            var yaraN = codeFindings.Count(c => c.Category == "yara");
+            exfil.Add(codeFindings.Count == 0
+                ? "Deep code scan (vsix-audit) ran on the published .vsix bytes and found no exfiltration/RAT/obfuscation indicators."
+                : $"Deep code scan (vsix-audit) inspected the actual .vsix code and flagged {codeFindings.Count} issue(s) ({crit} critical, {hi} high, {yaraN} YARA signature match{(yaraN == 1 ? "" : "es")}) — see the Code scan findings below. This is real code analysis, not reputation. Critical findings condemn the extension; YARA heuristic matches are flagged for analyst review (minified JS can trip signatures).");
+        }
+        else
+        {
+            exfil.Add("Deep code scan unavailable (scanner sidecar not reachable) — assessment is static + reputational only. Set VSIX_SCANNER_URL to enable real .vsix code analysis.");
+        }
+
+        // Verdict — now driven by REAL code findings, not just reputation.
         var highCount = signals.Count(x => x.Level == "High");
-        var verdict = knownMalicious ? "High-Risk"
-            : !publisherVerified ? "Caution"
+        var verdict = (knownMalicious || codeMalicious) ? "High-Risk"
             : highCount > 0 ? "Caution"
+            : !publisherVerified ? "Caution"
             : "Trusted";
 
         return new ExtensionRisk(verdict, publisherVerified, domain, executesCode, runsAuto, untrusted,
-            onOpenVsx, knownMalicious, installs, deps, signals, exfil);
+            onOpenVsx, knownMalicious, installs, deps, signals, exfil,
+            codeScanned, codeStatus, codeFindings);
+    }
+
+    /// <summary>
+    /// Calls the vsix-audit sidecar to deep-scan an extension's published .vsix bytes. Returns
+    /// (status, findings, ran). On any failure it returns ran=false with status "Unavailable" —
+    /// NEVER a silent "clean", so the gate/UI can distinguish "scanned & clean" from "not scanned".
+    /// </summary>
+    private async Task<(string Status, IReadOnlyList<CodeScanFinding> Findings, bool Ran)> DeepScanExtensionAsync(string id, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(_vsixScannerUrl))
+            return ("Unavailable", Array.Empty<CodeScanFinding>(), false);
+        try
+        {
+            var client = _factory.CreateClient("catalog-index");
+            client.Timeout = TimeSpan.FromSeconds(100);   // a cold scan downloads + unpacks the .vsix
+            using var resp = await client.GetAsync($"{_vsixScannerUrl.TrimEnd('/')}/scan?id={Uri.EscapeDataString(id)}", ct);
+            using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
+            if (!resp.IsSuccessStatusCode || doc.RootElement.TryGetProperty("error", out _))
+                return ("Unavailable", Array.Empty<CodeScanFinding>(), false);
+            var list = new List<CodeScanFinding>();
+            if (doc.RootElement.TryGetProperty("findings", out var fs) && fs.ValueKind == JsonValueKind.Array)
+                foreach (var f in fs.EnumerateArray())
+                {
+                    string? S(string k) => f.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+                    var file = f.TryGetProperty("location", out var loc) && loc.ValueKind == JsonValueKind.Object && loc.TryGetProperty("file", out var fv) ? fv.GetString() : null;
+                    list.Add(new CodeScanFinding(S("id") ?? "", S("title") ?? "", S("severity") ?? "low", S("category") ?? "", S("description"), file));
+                }
+            return (list.Count == 0 ? "Clean" : "Findings", list, true);
+        }
+        catch { return ("Unavailable", Array.Empty<CodeScanFinding>(), false); }
     }
 
     private static string? Prop(JsonElement e, string p)

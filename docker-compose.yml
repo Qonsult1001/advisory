@@ -57,6 +57,9 @@ services:
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
       # --- On-prem PII redaction (OpenAI Privacy Filter sidecar). Unset => Groq+regex fallback. ---
       - PRIVACY_FILTER_URL=http://privacy-filter:8071
+      # --- VS Code extension code-scanner (trailofbits/vsix-audit sidecar). Real exfiltration/RAT/
+      #     obfuscation/IOC detection on the actual .vsix bytes. Unset => reputational analysis only. ---
+      - VSIX_SCANNER_URL=http://vsix-scanner:8099
       # --- Self-evolution (PR-only). Dashboard reads tickets + dispatches the evolve.yml workflow.
       #     gh in the container authenticates from GH_TOKEN. Off by default. ---
       - EVOLUTION_ENABLED=${EVOLUTION_ENABLED:-false}
@@ -81,6 +84,14 @@ services:
       - PF_ONNX_VARIANT=${PF_ONNX_VARIANT:-model_fp16.onnx}
       - PF_CACHE=/cache
     volumes: ["pf-cache:/cache"]
+
+  # VS Code extension exfiltration scanner (trailofbits/vsix-audit). Real code-level analysis of the
+  # published .vsix: Discord/Telegram-webhook exfiltration, SSH-key/cookie/credential theft, eval/
+  # Function/process.binding, obfuscation (entropy/zero-width/bidi), IOC/C2 + crypto wallets, YARA RAT
+  # rules. The API calls it for AI Editor Extensions; honest failure (never a silent clean) on error.
+  vsix-scanner:
+    build: { context: ./tools/vsix-scanner, dockerfile: Dockerfile }
+    ports: ["8099:8099"]
 
   console:
     build: { context: ., dockerfile: web/Dockerfile }

@@ -3203,6 +3203,7 @@ function ExtensionRiskTab({ er }) {
         <InfoRow k="Untrusted workspaces" v={er.supportsUntrustedWorkspaces ? "Allowed" : "Blocked (safer)"} />
         <InfoRow k="On Open VSX" v={er.onOpenVsx ? "Yes (cross-verified)" : "No (Marketplace-only)"} />
         <InfoRow k="Malicious advisory" v={er.knownMalicious ? "YES — DO NOT INSTALL" : "None"} />
+        <InfoRow k="Deep code scan" v={er.codeScanned ? (er.codeScanStatus === "Clean" ? "Ran — clean" : `Ran — ${(er.codeFindings || []).length} finding(s)`) : "Unavailable"} />
         <InfoRow k="Installs" v={er.installs != null ? Number(er.installs).toLocaleString() : "—"} />
         {er.dependencies?.length > 0 && <InfoRow k="Extension deps" v={er.dependencies.join(", ")} />}
       </div>
@@ -3218,6 +3219,34 @@ function ExtensionRiskTab({ er }) {
               </tr>
             ))}</tbody>
           </table>
+        </div>
+        {/* REAL code-level findings from vsix-audit on the .vsix bytes (not reputation). */}
+        <div style={{ ...s.card, padding: 0 }}>
+          <div style={{ padding: "14px 20px", borderBottom: `1px solid ${C.lineSoft}`, fontWeight: 600, display: "flex", alignItems: "center", gap: 8 }}>
+            🧬 Code scan findings (vsix-audit)
+            <span style={{ fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 20,
+              color: !er.codeScanned ? C.sub : er.codeScanStatus === "Clean" ? C.allow : C.block,
+              background: `${!er.codeScanned ? C.sub : er.codeScanStatus === "Clean" ? C.allow : C.block}1f` }}>
+              {er.codeScanned ? (er.codeScanStatus === "Clean" ? "CLEAN" : `${(er.codeFindings || []).length} FINDINGS`) : "NOT RUN"}
+            </span>
+          </div>
+          {!er.codeScanned
+            ? <div style={{ padding: "16px 20px", fontSize: 12.5, color: C.sub }}>Deep .vsix code scan not available (scanner sidecar unreachable). The assessment above is static + reputational only.</div>
+            : (er.codeFindings || []).length === 0
+              ? <div style={{ padding: "16px 20px", fontSize: 12.5, color: C.sub }}>vsix-audit downloaded and inspected the published .vsix — no exfiltration / RAT / obfuscation / IOC indicators in the code.</div>
+              : <table style={s.table}><thead><tr>{["Severity", "Finding", "Category", "Detail"].map((c) => <th key={c} style={s.th}>{c}</th>)}</tr></thead>
+                  <tbody>{er.codeFindings.map((cf, i) => {
+                    const sc = cf.severity === "critical" || cf.severity === "high" ? C.block : cf.severity === "medium" ? C.warn : C.sub;
+                    return (
+                      <tr key={i} style={s.tr}>
+                        <td style={s.td}><span style={{ fontFamily: C.mono, fontSize: 10, padding: "3px 9px", borderRadius: 20, color: sc, background: `${sc}1f`, fontWeight: 600 }}>{(cf.severity || "").toUpperCase()}</span></td>
+                        <td style={{ ...s.td, fontWeight: 600, fontSize: 12.5 }}>{cf.title}</td>
+                        <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11, color: C.sub }}>{cf.category}</td>
+                        <td style={{ ...s.td, color: C.sub, fontSize: 11.5, maxWidth: 460 }}>{cf.detail}{cf.file ? ` · ${cf.file}` : ""}</td>
+                      </tr>
+                    );
+                  })}</tbody>
+                </table>}
         </div>
         <div style={{ ...s.card, padding: "16px 20px" }}>
           <div style={{ fontWeight: 600, marginBottom: 10, display: "flex", alignItems: "center", gap: 8 }}>🔎 Data-exfiltration assessment</div>
