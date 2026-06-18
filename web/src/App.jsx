@@ -358,6 +358,7 @@ export default function App() {
           {tab === "queue" && <IntakeQueue />}
 
           {tab === "scans" && <ScansList />}
+          {tab === "xrayoverview" && <XrayOverview setTab={setTab} />}
 
           {tab === "quarantine" && <Quarantine />}
 
@@ -671,7 +672,7 @@ const NAV = [
     ["applications", "Applications"], ["unifiedpolicies", "Unified Policies"], ["waivers", "Waivers"],
   ]},
   { type: "group", key: "xray", label: "Xray", icon: "◉", children: [
-    ["scans", "Scans List"], ["violations", "Watch Violations"],
+    ["scans", "Scans List"], ["xrayoverview", "Overview"], ["violations", "Watch Violations"],
     ["ondemand", "On-Demand Scanning"], ["watches", "Watches & Policies"],
   ]},
   { type: "group", key: "curation", label: "Curation", icon: "⊜", children: [
@@ -1387,20 +1388,37 @@ function PkgType({ format }) {
   );
 }
 function ConfigIcons() {
-  // Per-repo scanner configuration icons — matches JFrog's Configurations column:
-  // SCA · Contextual Analysis · Secrets · Exposures. Green = configured (with tooltip), grey = off.
-  const ico = (ch, label, on) => (
-    <span title={`${label}\n${on ? "✓ Configured" : "Not configured"}`}
-      style={{ width: 26, height: 26, borderRadius: 4, display: "grid", placeItems: "center", cursor: "pointer",
-        fontSize: 12.5, color: on ? C.accentDim : C.dim, border: `1px solid ${on ? C.line : "transparent"}`,
-        background: on ? C.surface2 : "transparent" }}>{ch}</span>
-  );
+  // Per-repo scanner configuration icons — matches JFrog's Configurations column.
+  // CLICKABLE: opens a popover with the scanner name + configured state + description.
+  const [open, setOpen] = useState(null); // which scanner's popover is open
+  const scanners = [
+    { ch: "◆", key: "sca", label: "SCA", full: "Software Composition Analysis", on: true, desc: "Resolves the full dependency tree and matches every component against CVE feeds (OSV, KEV, EPSS)." },
+    { ch: "⊙", key: "ctx", label: "Contextual Analysis", full: "Contextual Analysis (reachability)", on: false, desc: "Determines whether a vulnerable symbol is actually reachable from your code. Enable rule SEC-REACH-01." },
+    { ch: "🔑", key: "secrets", label: "Secrets", full: "Secrets detection", on: false, desc: "Scans artifact bytes for embedded credentials/tokens. Enable rule SEC-SECRET-01 (content scan)." },
+    { ch: "◎", key: "exp", label: "Exposures", full: "Exposures — IaC + malicious packages", on: true, desc: "Flags IaC misconfigurations and malicious/typosquat packages (OpenSSF Malicious Packages)." },
+  ];
   return (
-    <span style={{ display: "inline-flex", gap: 3 }}>
-      {ico("◆", "SCA — Software Composition Analysis", true)}
-      {ico("⊙", "Contextual Analysis (reachability)", false)}
-      {ico("🔑", "Secrets detection", false)}
-      {ico("◎", "Exposures / IaC + malware", true)}
+    <span style={{ display: "inline-flex", gap: 3, position: "relative" }} onMouseLeave={() => setOpen(null)}>
+      {scanners.map((sc) => (
+        <span key={sc.key} style={{ position: "relative" }}>
+          <span onClick={(e) => { e.stopPropagation(); setOpen(open === sc.key ? null : sc.key); }}
+            onMouseEnter={() => setOpen(sc.key)}
+            style={{ width: 26, height: 26, borderRadius: 4, display: "grid", placeItems: "center", cursor: "pointer",
+              fontSize: 12.5, color: sc.on ? C.accentDim : C.dim, border: `1px solid ${open === sc.key ? C.accent : sc.on ? C.line : "transparent"}`,
+              background: sc.on ? C.surface2 : "transparent" }}>{sc.ch}</span>
+          {open === sc.key && (
+            <div onClick={(e) => e.stopPropagation()} style={{ position: "absolute", top: 30, right: 0, width: 240, background: C.surface, border: `1px solid ${C.line}`, borderRadius: 10, boxShadow: "0 8px 26px rgba(0,0,0,.16)", padding: 12, zIndex: 30, textAlign: "left" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                <span style={{ fontSize: 14 }}>{sc.ch}</span>
+                <span style={{ fontSize: 13, fontWeight: 700, color: C.ink, flex: 1 }}>{sc.label}</span>
+                <Tag tone={sc.on ? C.allow : C.sub}>{sc.on ? "✓ Configured" : "Off"}</Tag>
+              </div>
+              <div style={{ fontSize: 11.5, color: C.sub, lineHeight: 1.5 }}>{sc.full}</div>
+              <div style={{ fontSize: 11, color: C.dim, marginTop: 6, lineHeight: 1.5 }}>{sc.desc}</div>
+            </div>
+          )}
+        </span>
+      ))}
     </span>
   );
 }
@@ -1667,6 +1685,95 @@ function RepoArtifacts({ repo, onOpen }) {
         </Card>
       )}
     </>
+  );
+}
+
+// Xray OVERVIEW — the security posture dashboard (matches JFrog's Xray > Overview).
+// Real data: violations (by severity/type), indexed repos/artifacts, top vulnerable components.
+function XrayOverview({ setTab }) {
+  const [v, setV] = useState(null);
+  const [repos, setRepos] = useState(null);
+  useEffect(() => {
+    api.getViolationsDetailed().then(setV).catch(() => setV({ count: 0, rows: [] }));
+    api.getScans().then(setRepos).catch(() => setRepos({ repositories: [] }));
+  }, []);
+  if (!v || !repos) return <div style={s.kevEmpty}>Loading Xray overview…</div>;
+  const rows = v.rows || [];
+  const sev = (s) => rows.filter((r) => r.severity === s).length;
+  const sevCounts = { Critical: sev("Critical"), High: sev("High"), Medium: sev("Medium"), Low: sev("Low") };
+  const byType = {}; rows.forEach((r) => { const t = r.type || "Security"; byType[t] = (byType[t] || 0) + 1; });
+  const comps = {}; rows.forEach((r) => { const c = r.component || "?"; comps[c] = (comps[c] || 0) + 1; });
+  const topComps = Object.entries(comps).sort((a, b) => b[1] - a[1]).slice(0, 8);
+  const maxComp = topComps[0]?.[1] || 1;
+  const repoList = repos.repositories || [];
+  const indexed = repoList.reduce((s, r) => s + (r.indexedArtifacts || 0), 0);
+  return (
+    <div style={{ animation: "fwfade .2s ease" }}>
+      <Crumb trail={[{ label: "Xray" }, { label: "Overview" }]} />
+      <div style={{ fontSize: 22, fontWeight: 700, letterSpacing: -0.4, margin: "4px 0 14px" }}>Security Overview</div>
+      {/* KPI tiles */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 12, marginBottom: 18 }}>
+        <KpiTile C={C} color={C.block} value={v.count} label="Total violations" sub="across all scans" />
+        <KpiTile C={C} color={sevTone("Critical")} value={sevCounts.Critical} label="Critical" />
+        <KpiTile C={C} color={sevTone("High")} value={sevCounts.High} label="High" />
+        <KpiTile C={C} color={C.info} value={repoList.length} label="Repositories" sub="indexed" />
+        <KpiTile C={C} color={C.accent} value={indexed} label="Artifacts" sub="scanned" />
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
+        <Card title="Violations by severity" desc="">
+          <div style={{ padding: 18, display: "flex", alignItems: "center", gap: 24 }}>
+            <Donut size={140} thickness={22} center={{ top: v.count, bottom: "violations" }}
+              data={[
+                { value: sevCounts.Critical, color: sevTone("Critical"), label: "Critical" },
+                { value: sevCounts.High, color: sevTone("High"), label: "High" },
+                { value: sevCounts.Medium, color: sevTone("Medium"), label: "Medium" },
+                { value: sevCounts.Low, color: sevTone("Low"), label: "Low" },
+              ]} />
+            <div style={{ flex: 1 }}>
+              {["Critical", "High", "Medium", "Low"].map((sv2) => (
+                <div key={sv2} style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "3px 0" }}>
+                  <span style={{ color: sevTone(sv2) }}>● {sv2}</span><span style={{ fontFamily: C.mono, fontWeight: 600 }}>{sevCounts[sv2]}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </Card>
+        <Card title="Violations by type" desc="">
+          <div style={{ padding: 18 }}>
+            {Object.entries(byType).map(([t, n]) => (
+              <div key={t} style={{ marginBottom: 10 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 3 }}><span>{t}</span><span style={{ fontFamily: C.mono }}>{n}</span></div>
+                <div style={{ height: 8, background: C.line, borderRadius: 4 }}><div style={{ width: `${(n / v.count) * 100}%`, height: "100%", background: C.info, borderRadius: 4 }} /></div>
+              </div>
+            ))}
+            {Object.keys(byType).length === 0 && <div style={{ color: C.sub, fontSize: 12 }}>No violations.</div>}
+          </div>
+        </Card>
+      </div>
+      <Card title="Most vulnerable components" desc="Components driving the most policy violations — click to scan.">
+        <div style={{ padding: 18 }}>
+          {topComps.length === 0 && <div style={{ color: C.allow, fontSize: 12 }}>✓ No vulnerable components.</div>}
+          {topComps.map(([c, n]) => (
+            <div key={c} style={{ marginBottom: 9 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, marginBottom: 3 }}>
+                <span style={{ fontFamily: C.mono, color: C.accent }}>{c}</span><span style={{ fontFamily: C.mono, color: C.block, fontWeight: 600 }}>{n}</span>
+              </div>
+              <div style={{ height: 7, background: C.line, borderRadius: 3 }}><div style={{ width: `${(n / maxComp) * 100}%`, height: "100%", background: C.block, borderRadius: 3 }} /></div>
+            </div>
+          ))}
+          <button onClick={() => setTab("scans")} style={{ ...s.btnGhost, marginTop: 10 }}>Open Scans List →</button>
+        </div>
+      </Card>
+    </div>
+  );
+}
+function KpiTile({ C, color, value, label, sub }) {
+  return (
+    <div style={{ background: C.surface, border: `1px solid ${C.line}`, borderTop: `3px solid ${color}`, borderRadius: 12, padding: "14px 16px" }}>
+      <div style={{ fontSize: 26, fontWeight: 800, color: C.ink, lineHeight: 1.1 }}>{Number(value || 0).toLocaleString()}</div>
+      <div style={{ fontSize: 11, color: C.sub, textTransform: "uppercase", letterSpacing: 0.4, fontWeight: 700, marginTop: 4 }}>{label}</div>
+      {sub && <div style={{ fontSize: 11, color: C.dim, marginTop: 1 }}>{sub}</div>}
+    </div>
   );
 }
 
