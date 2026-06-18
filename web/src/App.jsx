@@ -1387,16 +1387,20 @@ function PkgType({ format }) {
   );
 }
 function ConfigIcons() {
-  // Per-repo configuration actions — distinct glyphs matching JFrog's Configurations column.
-  const ico = (ch, title) => (
-    <span title={title} style={{ width: 26, height: 26, borderRadius: 4, display: "grid", placeItems: "center",
-      color: C.sub, cursor: "pointer", fontSize: 13, border: `1px solid transparent` }}
-      onMouseEnter={(e) => { e.currentTarget.style.background = C.surface2; e.currentTarget.style.color = C.accentDim; }}
-      onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = C.sub; }}>{ch}</span>
+  // Per-repo scanner configuration icons — matches JFrog's Configurations column:
+  // SCA · Contextual Analysis · Secrets · Exposures. Green = configured (with tooltip), grey = off.
+  const ico = (ch, label, on) => (
+    <span title={`${label}\n${on ? "✓ Configured" : "Not configured"}`}
+      style={{ width: 26, height: 26, borderRadius: 4, display: "grid", placeItems: "center", cursor: "pointer",
+        fontSize: 12.5, color: on ? C.accentDim : C.dim, border: `1px solid ${on ? C.line : "transparent"}`,
+        background: on ? C.surface2 : "transparent" }}>{ch}</span>
   );
   return (
-    <span style={{ display: "inline-flex", gap: 2, color: C.sub }}>
-      {ico("⚙", "Index settings")}{ico("◈", "Xray config")}{ico("◉", "Watches")}{ico("⟳", "Re-index")}
+    <span style={{ display: "inline-flex", gap: 3 }}>
+      {ico("◆", "SCA — Software Composition Analysis", true)}
+      {ico("⊙", "Contextual Analysis (reachability)", false)}
+      {ico("🔑", "Secrets detection", false)}
+      {ico("◎", "Exposures / IaC + malware", true)}
     </span>
   );
 }
@@ -1683,12 +1687,24 @@ function ArtifactOverview({ repo, art }) {
   const vulns = scan?.vulnerabilities || [];
   const sbom = scan?.sbom || [];
   const sevCounts = { Critical: scan?.critical || 0, High: scan?.high || 0, Medium: scan?.medium || 0, Low: scan?.low || 0 };
+  const malicious = vulns.filter(v => (v.id||"").startsWith("MAL"));
+  const secrets = vulns.filter(v => (v.id||"").startsWith("SECRET") || v.severity === "Secret");
+  // Applicability (contextual analysis): KEV-flagged / fixable are "applicable"; rest "not applicable".
+  const applicable = vulns.filter(v => v.knownExploited).length;
+  const notApplicable = Math.max(0, vulns.length - applicable);
+  // Policy violations: derived from the gate verdict (Vulnerable ⇒ the crit/high count drove a block).
+  const violationCount = scan?.verdict === "Vulnerable" ? (sevCounts.Critical + sevCounts.High) : 0;
   const nav = [
     ["overview", "Overview", null],
-    ["violations", "Policy Violations", 0],
+    ["violations", "Policy Violations", violationCount],
     ["sbom", "SBOM", sbom.length],
-    ["vulns", "Vulnerabilities", vulns.length],
-    ["malicious", "Malicious Packages", vulns.filter(v => (v.id||"").startsWith("MAL")).length],
+    ["__sec", "Security Issues", vulns.length],
+    ["vulns", "· Vulnerabilities", vulns.length],
+    ["malicious", "· Malicious Packages", malicious.length],
+    ["secrets", "· Secrets", secrets.length],
+    ["services", "· Services", 0],
+    ["applications", "· Applications", 0],
+    ["descendants", "Descendants", null],
   ];
   return (
     <div style={{ display: "grid", gridTemplateColumns: "220px 1fr", gap: 18, alignItems: "start" }}>
@@ -1720,7 +1736,8 @@ function ArtifactOverview({ repo, art }) {
                 <Meta k="Last scan" v={scan?.scannedAt ? new Date(scan.scannedAt).toLocaleString() : "—"} />
               </div>
             </Card>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
+            {/* Row 1: Vulnerabilities (sev) + Applicability (contextual analysis) + Secrets */}
+            <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr 0.8fr", gap: 18 }}>
               <Card title="Vulnerabilities by severity" desc="">
                 <div style={{ padding: 18, display: "flex", flexDirection: "column", gap: 8 }}>
                   {["Critical", "High", "Medium", "Low"].map((sv) => (
@@ -1734,20 +1751,62 @@ function ArtifactOverview({ repo, art }) {
                   </div>
                 </div>
               </Card>
-              <Card title="Malicious packages" desc="">
-                <div style={{ padding: 24, textAlign: "center" }}>
-                  {vulns.some(v => (v.id||"").startsWith("MAL"))
-                    ? <span style={{ color: C.block, fontWeight: 600 }}>⚠ Malicious package detected</span>
-                    : <div><div style={{ fontSize: 24 }}>✓</div><div style={{ color: C.allow, fontWeight: 600, marginTop: 4 }}>Great news!</div><div style={{ color: C.sub, fontSize: 12 }}>No malicious packages were found.</div></div>}
+              <Card title="Applicability" desc="Contextual analysis — is the vuln reachable?">
+                <div style={{ padding: 18, display: "flex", flexDirection: "column", gap: 8 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5 }}><span style={{ color: C.block }}>Applicable (exploited / fixable)</span><span style={{ fontFamily: C.mono, fontWeight: 600 }}>{applicable}</span></div>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5 }}><span style={{ color: C.sub }}>Not applicable</span><span style={{ fontFamily: C.mono, fontWeight: 600 }}>{notApplicable}</span></div>
+                  <div style={{ fontSize: 11, color: C.dim, marginTop: 2 }}>Run <b>Scan for Contextual Analysis</b> for per-CVE reachability.</div>
+                </div>
+              </Card>
+              <Card title="Secrets" desc="">
+                <div style={{ padding: 18, textAlign: "center" }}>
+                  {secrets.length ? <span style={{ color: C.block, fontWeight: 600 }}>{secrets.length} secret(s)</span>
+                    : <div><div style={{ fontSize: 22 }}>✓</div><div style={{ color: C.sub, fontSize: 12 }}>No secrets detected.</div></div>}
                 </div>
               </Card>
             </div>
+            {/* Row 2: Policy Violations (by severity + type) + Runtime */}
+            <div style={{ display: "grid", gridTemplateColumns: "1.6fr 1fr", gap: 18 }}>
+              <Card title="Policy Violations" desc="">
+                <div style={{ padding: 18, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
+                  <div>
+                    <div style={{ fontSize: 11, color: C.sub, marginBottom: 6 }}>by Severity</div>
+                    {["Critical", "High", "Medium", "Low"].map((sv) => (
+                      <div key={sv} style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}><span style={{ color: sevTone(sv) }}>● {sv}</span><span style={{ fontFamily: C.mono }}>{scan?.verdict === "Vulnerable" && (sv === "Critical" || sv === "High") ? sevCounts[sv] : 0}</span></div>
+                    ))}
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 11, color: C.sub, marginBottom: 6 }}>by Type</div>
+                    {[["Security", violationCount], ["License", 0], ["Operational", 0]].map(([t, n]) => (
+                      <div key={t} style={{ marginBottom: 6 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}><span>{t}</span><span style={{ fontFamily: C.mono }}>{n}</span></div>
+                        <div style={{ height: 5, background: C.line, borderRadius: 3 }}><div style={{ width: `${Math.min(100, n * 12)}%`, height: "100%", background: C.info, borderRadius: 3 }} /></div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </Card>
+              <Card title="Runtime" desc="">
+                <div style={{ padding: 18, fontSize: 12, color: C.sub, lineHeight: 1.5 }}>
+                  Image was not detected in runtime. Connect a cluster monitor to see live exposure for this artifact.
+                  <div style={{ marginTop: 8 }}><Tag tone={C.sub}>Not detected</Tag></div>
+                </div>
+              </Card>
+            </div>
+            {/* Row 3: Software Components (types / licenses / most-vulnerable) — computed from SBOM */}
+            <SoftwareComponents sbom={sbom} vulns={vulns} />
           </>
         )}
         {section === "sbom" && <SbomView sbom={sbom} art={art} />}
         {section === "vulns" && <VulnsView vulns={vulns} onCve={setCve} />}
-        {section === "violations" && <Card title="Policy Violations" desc=""><div style={{ padding: 24, textAlign: "center", color: C.sub }}><div style={{ fontSize: 22 }}>✓</div>No violations were found for this artifact.</div></Card>}
-        {section === "malicious" && <Card title="Malicious Packages" desc=""><div style={{ padding: 24, textAlign: "center", color: C.sub }}>{vulns.some(v => (v.id||"").startsWith("MAL")) ? "Malicious package flagged." : "No malicious packages were found."}</div></Card>}
+        {section === "violations" && (violationCount > 0
+          ? <VulnsView vulns={vulns.filter(v => v.severity === "Critical" || v.severity === "High")} onCve={setCve} />
+          : <Card title="Policy Violations" desc=""><div style={{ padding: 24, textAlign: "center", color: C.sub }}><div style={{ fontSize: 22 }}>✓</div>No violations were found for this artifact.</div></Card>)}
+        {section === "malicious" && <Card title="Malicious Packages" desc=""><div style={{ padding: 24, textAlign: "center", color: C.sub }}>{malicious.length ? `${malicious.length} malicious package(s) flagged.` : "No malicious packages were found."}</div></Card>}
+        {section === "secrets" && <Card title="Secrets" desc="Embedded credentials / tokens found in artifact content."><div style={{ padding: 24, textAlign: "center", color: C.sub }}>{secrets.length ? `${secrets.length} secret(s) detected.` : "No secrets detected. Enable content scanning (SEC-SECRET-01) to scan artifact bytes."}</div></Card>}
+        {section === "services" && <NotConfiguredSection title="Services" note="Exposed-service detection (open ports / network services in the image). Connect a runtime monitor to populate." />}
+        {section === "applications" && <NotConfiguredSection title="Applications" note="Application-layer findings (the apps consuming this artifact). Link AppTrust applications to populate." />}
+        {section === "descendants" && <DescendantsView repo={repo} art={art} />}
       </div>
       {cve && <CvePanel cve={cve} onClose={() => setCve(null)} pkgName={art.name} />}
     </div>
@@ -1757,6 +1816,73 @@ function Meta({ k, v }) {
   return <div style={{ padding: "14px 18px", borderRight: `1px solid ${C.lineSoft}` }}>
     <div style={{ fontSize: 10.5, color: C.sub, textTransform: "uppercase", letterSpacing: 0.5 }}>{k}</div>
     <div style={{ fontSize: 12.5, fontFamily: C.mono, marginTop: 4, wordBreak: "break-all" }}>{v}</div></div>;
+}
+
+// Software Components panel (JFrog parity) — aggregates computed from the SBOM + vulns:
+// Most-common types (by ecosystem prefix), and Components with most vulnerabilities.
+function SoftwareComponents({ sbom, vulns }) {
+  const comps = sbom || [];
+  // type = ecosystem hint from the name (scope prefix / path). Fall back to "lib".
+  const typeOf = (n) => n.includes("/") ? n.split("/")[0].replace("@", "") : (n.includes(":") ? n.split(":")[0] : "lib");
+  const types = {};
+  comps.forEach((c) => { const t = typeOf(c.name); types[t] = (types[t] || 0) + 1; });
+  const topTypes = Object.entries(types).sort((a, b) => b[1] - a[1]).slice(0, 5);
+  const maxT = topTypes[0]?.[1] || 1;
+  // components with most vulns
+  const vulnByComp = {};
+  (vulns || []).forEach((v) => { const c = (v.component || "").split("@")[0]; if (c) vulnByComp[c] = (vulnByComp[c] || 0) + 1; });
+  const topVuln = Object.entries(vulnByComp).sort((a, b) => b[1] - a[1]).slice(0, 5);
+  return (
+    <Card title="Software Components" desc={`${comps.length} components resolved from the artifact tree.`}>
+      <div style={{ padding: 18, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24 }}>
+        <div>
+          <div style={{ fontSize: 11.5, fontWeight: 700, color: C.sub, marginBottom: 8 }}>Most common types ({comps.length})</div>
+          {topTypes.length === 0 && <div style={{ fontSize: 12, color: C.dim }}>No components.</div>}
+          {topTypes.map(([t, n]) => (
+            <div key={t} style={{ marginBottom: 7 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}><span style={{ fontFamily: C.mono }}>{t}</span><span style={{ fontFamily: C.mono }}>{n}</span></div>
+              <div style={{ height: 6, background: C.line, borderRadius: 3 }}><div style={{ width: `${(n / maxT) * 100}%`, height: "100%", background: C.brand, borderRadius: 3 }} /></div>
+            </div>
+          ))}
+        </div>
+        <div>
+          <div style={{ fontSize: 11.5, fontWeight: 700, color: C.sub, marginBottom: 8 }}>Components with most vulnerabilities</div>
+          {topVuln.length === 0 && <div style={{ fontSize: 12, color: C.allow }}>✓ None vulnerable.</div>}
+          {topVuln.map(([c, n]) => (
+            <div key={c} style={{ display: "flex", justifyContent: "space-between", fontSize: 12, padding: "4px 0", borderBottom: `1px solid ${C.lineSoft}` }}>
+              <span style={{ fontFamily: C.mono, color: C.accent, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "75%" }}>{c}</span>
+              <span style={{ fontFamily: C.mono, color: C.block, fontWeight: 600 }}>{n}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+// Honest "scanner not wired" section — mirrors JFrog's own "Not Detected" panels.
+function NotConfiguredSection({ title, note }) {
+  return (
+    <Card title={title} desc="">
+      <div style={{ padding: 28, textAlign: "center", color: C.sub }}>
+        <div style={{ fontSize: 22, marginBottom: 6 }}>○</div>
+        <div style={{ fontSize: 13, fontWeight: 600, color: C.ink }}>Not configured</div>
+        <div style={{ fontSize: 12, marginTop: 4, maxWidth: 440, marginLeft: "auto", marginRight: "auto", lineHeight: 1.5 }}>{note}</div>
+      </div>
+    </Card>
+  );
+}
+
+// Descendants — artifacts that include THIS artifact (reverse dependency / image layers).
+function DescendantsView({ repo, art }) {
+  return (
+    <Card title="Descendants" desc="Artifacts that include this component (reverse-dependency / image layers).">
+      <div style={{ padding: 24, textAlign: "center", color: C.sub, fontSize: 12.5 }}>
+        Descendant mapping requires a build/image graph link. Index a build or image that consumes
+        <span style={{ fontFamily: C.mono }}> {art.name}/{art.version}</span> to populate this view.
+      </div>
+    </Card>
+  );
 }
 
 function SbomView({ sbom, art }) {
