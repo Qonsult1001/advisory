@@ -1736,39 +1736,56 @@ function ArtifactOverview({ repo, art }) {
                 <Meta k="Last scan" v={scan?.scannedAt ? new Date(scan.scannedAt).toLocaleString() : "—"} />
               </div>
             </Card>
-            {/* Row 1: Vulnerabilities (sev) + Applicability (contextual analysis) + Secrets */}
-            <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr 0.8fr", gap: 18 }}>
-              <Card title="Vulnerabilities by severity" desc="">
-                <div style={{ padding: 18, display: "flex", flexDirection: "column", gap: 8 }}>
-                  {["Critical", "High", "Medium", "Low"].map((sv) => (
-                    <div key={sv} style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5 }}>
-                      <span style={{ color: sevTone(sv) }}>● {sv}</span>
-                      <span style={{ fontFamily: C.mono, fontWeight: 600 }}>{sevCounts[sv]}</span>
+            {/* Row 1: Vulnerabilities donut + Applicability + Exposures donut (JFrog look) */}
+            <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr 0.9fr", gap: 18 }}>
+              <Card title="Security Issues" desc="">
+                <div style={{ padding: 18, display: "flex", alignItems: "center", gap: 22 }}>
+                  <Donut size={120} thickness={18} center={{ top: vulns.length, bottom: "issues" }}
+                    data={[
+                      { value: sevCounts.Critical, color: sevTone("Critical"), label: "Critical" },
+                      { value: sevCounts.High, color: sevTone("High"), label: "High" },
+                      { value: sevCounts.Medium, color: sevTone("Medium"), label: "Medium" },
+                      { value: sevCounts.Low, color: sevTone("Low"), label: "Low" },
+                    ]} />
+                  <div style={{ flex: 1 }}>
+                    {["Critical", "High", "Medium", "Low"].map((sv) => (
+                      <div key={sv} style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, padding: "2px 0" }}>
+                        <span style={{ color: sevTone(sv) }}>● {sv}</span><span style={{ fontFamily: C.mono, fontWeight: 600 }}>{sevCounts[sv]}</span>
+                      </div>
+                    ))}
+                    <div style={{ borderTop: `1px solid ${C.lineSoft}`, paddingTop: 6, marginTop: 4, display: "flex", justifyContent: "space-between", fontSize: 12.5 }}>
+                      <span>Verdict</span><span style={{ fontWeight: 700, color: scan?.verdict === "Vulnerable" ? C.block : scan?.verdict === "Caution" ? C.warn : C.allow }}>{scan?.verdict || "—"}</span>
                     </div>
-                  ))}
-                  <div style={{ borderTop: `1px solid ${C.lineSoft}`, paddingTop: 8, marginTop: 4, display: "flex", justifyContent: "space-between", fontSize: 12.5 }}>
-                    <span>Verdict</span><span style={{ fontWeight: 700, color: scan?.verdict === "Vulnerable" ? C.block : scan?.verdict === "Caution" ? C.warn : C.allow }}>{scan?.verdict || "—"}</span>
                   </div>
                 </div>
               </Card>
-              <Card title="Applicability" desc="Contextual analysis — is the vuln reachable?">
-                <div style={{ padding: 18, display: "flex", flexDirection: "column", gap: 8 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5 }}><span style={{ color: C.block }}>Applicable (exploited / fixable)</span><span style={{ fontFamily: C.mono, fontWeight: 600 }}>{applicable}</span></div>
-                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5 }}><span style={{ color: C.sub }}>Not applicable</span><span style={{ fontFamily: C.mono, fontWeight: 600 }}>{notApplicable}</span></div>
-                  <div style={{ fontSize: 11, color: C.dim, marginTop: 2 }}>Run <b>Scan for Contextual Analysis</b> for per-CVE reachability.</div>
+              <Card title="Applicability" desc="Contextual analysis — reachable?">
+                <div style={{ padding: 18, display: "flex", alignItems: "center", gap: 18 }}>
+                  <Donut size={92} thickness={15} center={{ top: applicable, bottom: "applic." }}
+                    data={[{ value: applicable, color: C.block, label: "Applicable" }, { value: notApplicable, color: C.lineSoft, label: "Not applicable" }]} />
+                  <div style={{ flex: 1, fontSize: 12.5 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", padding: "2px 0" }}><span style={{ color: C.block }}>Applicable</span><b>{applicable}</b></div>
+                    <div style={{ display: "flex", justifyContent: "space-between", padding: "2px 0" }}><span style={{ color: C.sub }}>Not applicable</span><b>{notApplicable}</b></div>
+                  </div>
                 </div>
               </Card>
-              <Card title="Secrets" desc="">
+              <Card title="Exposures" desc="">
                 <div style={{ padding: 18, textAlign: "center" }}>
-                  {secrets.length ? <span style={{ color: C.block, fontWeight: 600 }}>{secrets.length} secret(s)</span>
-                    : <div><div style={{ fontSize: 22 }}>✓</div><div style={{ color: C.sub, fontSize: 12 }}>No secrets detected.</div></div>}
+                  <div style={{ fontSize: 26, fontWeight: 800, color: (secrets.length + malicious.length) ? C.block : C.allow }}>{secrets.length + malicious.length}</div>
+                  <div style={{ fontSize: 11.5, color: C.sub, marginTop: 2 }}>{secrets.length} secrets · {malicious.length} malicious</div>
                 </div>
               </Card>
             </div>
             {/* Row 2: Policy Violations (by severity + type) + Runtime */}
             <div style={{ display: "grid", gridTemplateColumns: "1.6fr 1fr", gap: 18 }}>
               <Card title="Policy Violations" desc="">
-                <div style={{ padding: 18, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
+                <div style={{ padding: 18, display: "grid", gridTemplateColumns: "auto 1fr 1fr", gap: 18, alignItems: "center" }}>
+                  <Donut size={104} thickness={16} center={{ top: violationCount, bottom: "violations" }}
+                    data={[
+                      { value: scan?.verdict === "Vulnerable" ? sevCounts.Critical : 0, color: sevTone("Critical"), label: "Critical" },
+                      { value: scan?.verdict === "Vulnerable" ? sevCounts.High : 0, color: sevTone("High"), label: "High" },
+                      { value: violationCount === 0 ? 1 : 0, color: C.lineSoft, label: "none" },
+                    ]} />
                   <div>
                     <div style={{ fontSize: 11, color: C.sub, marginBottom: 6 }}>by Severity</div>
                     {["Critical", "High", "Medium", "Low"].map((sv) => (
