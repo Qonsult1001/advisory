@@ -64,7 +64,11 @@ public class CatalogService
 
     // Every ecosystem is live: OSV covers vulnerabilities for all; rich metadata is fetched
     // per-registry where a free API exists.
-    public bool IsLiveEcosystem(Ecosystem e) => e is Ecosystem.npm or Ecosystem.PyPI;
+    public bool IsLiveEcosystem(Ecosystem e) =>
+        e is Ecosystem.npm or Ecosystem.PyPI or Ecosystem.NuGet or Ecosystem.Cargo or Ecosystem.Go or Ecosystem.HuggingFace
+          or Ecosystem.Maven or Ecosystem.RubyGems or Ecosystem.Composer or Ecosystem.Conan or Ecosystem.Conda
+          or Ecosystem.CRAN or Ecosystem.DartPub or Ecosystem.Alpine or Ecosystem.Debian or Ecosystem.Ubuntu
+          or Ecosystem.AIEditorExtensions;
 
     // --- Package search (autocomplete + results list) ---
     private List<string>? _pypiNames;   // cached PyPI project names (lazy)
@@ -75,7 +79,399 @@ public class CatalogService
     public async Task<IReadOnlyList<SearchHit>> SearchAsync(Ecosystem eco, string query, int limit, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(query)) return Array.Empty<SearchHit>();
-        return eco == Ecosystem.npm ? await SearchNpm(query, limit, ct) : await SearchPyPi(query, limit, ct);
+        return eco switch
+        {
+            Ecosystem.npm => await SearchNpm(query, limit, ct),
+            Ecosystem.PyPI => await SearchPyPi(query, limit, ct),
+            Ecosystem.NuGet => await SearchNuGet(query, limit, ct),
+            Ecosystem.Cargo => await SearchCargo(query, limit, ct),
+            Ecosystem.Go => await SearchGo(query, limit, ct),
+            Ecosystem.HuggingFace => await SearchHuggingFace(query, limit, ct),
+            Ecosystem.Maven => await SearchMaven(query, limit, ct),
+            Ecosystem.RubyGems => await SearchRubyGems(query, limit, ct),
+            Ecosystem.Composer => await SearchComposer(query, limit, ct),
+            Ecosystem.Conan => await SearchConan(query, limit, ct),
+            Ecosystem.Conda => await SearchConda(query, limit, ct),
+            Ecosystem.CRAN => await SearchCran(query, limit, ct),
+            Ecosystem.DartPub => await SearchDart(query, limit, ct),
+            Ecosystem.Alpine => await SearchOsDistro(eco, query, limit, ct),
+            Ecosystem.Debian => await SearchOsDistro(eco, query, limit, ct),
+            Ecosystem.Ubuntu => await SearchOsDistro(eco, query, limit, ct),
+            Ecosystem.AIEditorExtensions => await SearchAiEditorExtensions(query, limit, ct),
+            _ => Array.Empty<SearchHit>(),
+        };
+    }
+
+    // Maven — search.maven.org Solr API (the same one the Central UI uses).
+    private async Task<IReadOnlyList<SearchHit>> SearchMaven(string q, int limit, CancellationToken ct)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(await _http.GetStringAsync(
+                $"https://search.maven.org/solrsearch/select?q={Uri.EscapeDataString(q)}&rows={limit}&wt=json", ct));
+            var hits = new List<SearchHit>();
+            if (doc.RootElement.TryGetProperty("response", out var r) && r.TryGetProperty("docs", out var docs))
+                foreach (var p in docs.EnumerateArray())
+                {
+                    string? S(string k) => p.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+                    var id = S("id") ?? "";                          // "group:artifact"
+                    var ver = S("latestVersion");
+                    var vc = p.TryGetProperty("versionCount", out var n) && n.ValueKind == JsonValueKind.Number ? n.GetInt32() : (int?)null;
+                    hits.Add(new SearchHit(id, "Maven", null, vc, ver));
+                }
+            return hits;
+        }
+        catch { return Array.Empty<SearchHit>(); }
+    }
+
+    // RubyGems — rubygems.org search API.
+    private async Task<IReadOnlyList<SearchHit>> SearchRubyGems(string q, int limit, CancellationToken ct)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(await _http.GetStringAsync(
+                $"https://rubygems.org/api/v1/search.json?query={Uri.EscapeDataString(q)}", ct));
+            var hits = new List<SearchHit>();
+            foreach (var p in doc.RootElement.EnumerateArray())
+            {
+                string? S(string k) => p.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+                hits.Add(new SearchHit(S("name") ?? "", "RubyGems", S("info"), null, S("version")));
+                if (hits.Count >= limit) break;
+            }
+            return hits;
+        }
+        catch { return Array.Empty<SearchHit>(); }
+    }
+
+    // Composer / PHP — packagist.org search API.
+    private async Task<IReadOnlyList<SearchHit>> SearchComposer(string q, int limit, CancellationToken ct)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(await _http.GetStringAsync(
+                $"https://packagist.org/search.json?q={Uri.EscapeDataString(q)}&per_page={Math.Min(limit, 30)}", ct));
+            var hits = new List<SearchHit>();
+            if (doc.RootElement.TryGetProperty("results", out var results))
+                foreach (var p in results.EnumerateArray())
+                {
+                    string? S(string k) => p.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+                    hits.Add(new SearchHit(S("name") ?? "", "Composer", S("description"), null, null));
+                }
+            return hits;
+        }
+        catch { return Array.Empty<SearchHit>(); }
+    }
+
+    // Conan — the C/C++ package index. conan.io's UI is a JS app with no public JSON search,
+    // so we use the authoritative source: the conan-center-index recipes/ folder on GitHub.
+    // Each subdirectory under recipes/ is a package name. Cached + filtered locally.
+    private List<string>? _conanNames;
+    private readonly SemaphoreSlim _conanLock = new(1, 1);
+    private async Task<IReadOnlyList<SearchHit>> SearchConan(string q, int limit, CancellationToken ct)
+    {
+        var names = await ConanNames(ct);
+        if (names.Count == 0) return Array.Empty<SearchHit>();
+        var ql = q.ToLowerInvariant();
+        return names.Where(n => n.ToLowerInvariant().Contains(ql))
+            .OrderBy(n => n.ToLowerInvariant() == ql ? 0 : n.ToLowerInvariant().StartsWith(ql) ? 1 : 2)
+            .ThenBy(n => n.Length).Take(limit)
+            .Select(n => new SearchHit(n, "Conan", null, null, null)).ToList();
+    }
+    private async Task<List<string>> ConanNames(CancellationToken ct)
+    {
+        if (_conanNames is not null) return _conanNames;
+        await _conanLock.WaitAsync(ct);
+        try
+        {
+            if (_conanNames is not null) return _conanNames;
+            var client = _factory.CreateClient("catalog-index");
+            client.Timeout = TimeSpan.FromSeconds(60);
+            async Task<JsonDocument> Get(string url)
+            {
+                using var req = new HttpRequestMessage(HttpMethod.Get, url);
+                req.Headers.Add("User-Agent", "Advisory-Catalog");
+                req.Headers.Add("Accept", "application/vnd.github+json");
+                var resp = await client.SendAsync(req, ct);
+                return JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
+            }
+            // The git-tree API returns the full recipes/ listing in one call (the contents API caps
+            // at 1000 entries; conan-center has ~1900 packages). Resolve recipes' tree SHA, then fetch it.
+            string? recipesSha = null;
+            using (var top = await Get("https://api.github.com/repos/conan-io/conan-center-index/git/trees/master"))
+                if (top.RootElement.TryGetProperty("tree", out var tt))
+                    foreach (var t in tt.EnumerateArray())
+                        if (t.TryGetProperty("path", out var pth) && pth.GetString() == "recipes"
+                            && t.TryGetProperty("sha", out var sh)) { recipesSha = sh.GetString(); break; }
+            var list = new List<string>();
+            if (recipesSha is not null)
+                using (var rec = await Get($"https://api.github.com/repos/conan-io/conan-center-index/git/trees/{recipesSha}"))
+                    if (rec.RootElement.TryGetProperty("tree", out var rt))
+                        foreach (var t in rt.EnumerateArray())
+                            if (t.TryGetProperty("type", out var ty) && ty.GetString() == "tree"
+                                && t.TryGetProperty("path", out var p) && p.GetString() is { } s) list.Add(s);
+            if (list.Count > 0) _conanNames = list;
+            return list;
+        }
+        catch { return _conanNames ?? new List<string>(); }
+        finally { _conanLock.Release(); }
+    }
+
+    // Conda — anaconda.org search API.
+    private async Task<IReadOnlyList<SearchHit>> SearchConda(string q, int limit, CancellationToken ct)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(await _http.GetStringAsync(
+                $"https://api.anaconda.org/search?name={Uri.EscapeDataString(q)}", ct));
+            var hits = new List<SearchHit>();
+            var seen = new HashSet<string>();
+            foreach (var p in doc.RootElement.EnumerateArray())
+            {
+                string? S(string k) => p.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+                var name = S("name") ?? "";
+                if (name.Length > 0 && seen.Add(name))
+                    hits.Add(new SearchHit(name, "Conda", S("summary"), null, S("latest_version") ?? S("version")));
+                if (hits.Count >= limit) break;
+            }
+            return hits;
+        }
+        catch { return Array.Empty<SearchHit>(); }
+    }
+
+    // CRAN (R) — crandb full index, filtered locally (no server-side search API).
+    private List<(string Name, string Title, string Ver)>? _cranNames;  // cached CRAN index (lazy)
+    private readonly SemaphoreSlim _cranLock = new(1, 1);
+    private async Task<IReadOnlyList<SearchHit>> SearchCran(string q, int limit, CancellationToken ct)
+    {
+        var names = await CranNames(ct);
+        if (names.Count == 0) return Array.Empty<SearchHit>();
+        var ql = q.ToLowerInvariant();
+        return names.Where(n => n.Name.ToLowerInvariant().Contains(ql))
+            .OrderBy(n => n.Name.ToLowerInvariant() == ql ? 0 : n.Name.ToLowerInvariant().StartsWith(ql) ? 1 : 2)
+            .ThenBy(n => n.Name.Length).Take(limit)
+            .Select(n => new SearchHit(n.Name, "CRAN", n.Title, null, n.Ver)).ToList();
+    }
+    private async Task<List<(string Name, string Title, string Ver)>> CranNames(CancellationToken ct)
+    {
+        if (_cranNames is not null) return _cranNames;
+        await _cranLock.WaitAsync(ct);
+        try
+        {
+            if (_cranNames is not null) return _cranNames;
+            var client = _factory.CreateClient("catalog-index");
+            client.Timeout = TimeSpan.FromSeconds(120);
+            using var doc = JsonDocument.Parse(await client.GetStringAsync("https://crandb.r-pkg.org/-/desc", ct));
+            var list = new List<(string Name, string Title, string Ver)>();
+            foreach (var p in doc.RootElement.EnumerateObject())
+            {
+                var v = p.Value;
+                string? S(string k) => v.TryGetProperty(k, out var x) && x.ValueKind == JsonValueKind.String ? x.GetString() : null;
+                list.Add((p.Name, S("title") ?? "", S("version") ?? ""));
+            }
+            _cranNames = list;
+            return list;
+        }
+        catch { return _cranNames ?? new(); }
+        finally { _cranLock.Release(); }
+    }
+
+    // Dart Pub — pub.dev search API.
+    private async Task<IReadOnlyList<SearchHit>> SearchDart(string q, int limit, CancellationToken ct)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(await _http.GetStringAsync(
+                $"https://pub.dev/api/search?q={Uri.EscapeDataString(q)}", ct));
+            var hits = new List<SearchHit>();
+            if (doc.RootElement.TryGetProperty("packages", out var pkgs))
+                foreach (var p in pkgs.EnumerateArray())
+                {
+                    var name = p.TryGetProperty("package", out var n) ? n.GetString() : null;
+                    if (!string.IsNullOrEmpty(name)) hits.Add(new SearchHit(name!, "DartPub", null, null, null));
+                    if (hits.Count >= limit) break;
+                }
+            return hits;
+        }
+        catch { return Array.Empty<SearchHit>(); }
+    }
+
+    // Alpine / Debian / Ubuntu — OS-distro packages. Source the live package list from the
+    // distro's own web package index (Debian/Ubuntu) or Alpine's pkgs.alpinelinux.org JSON.
+    private async Task<IReadOnlyList<SearchHit>> SearchOsDistro(Ecosystem eco, string q, int limit, CancellationToken ct)
+    {
+        try
+        {
+            if (eco == Ecosystem.Alpine)
+            {
+                // pkgs.alpinelinux.org has no JSON API — scrape the package table. Each result row
+                // links to /package/<branch>/<repo>/<arch>/<name>; the last path segment is the name.
+                var html = await _http.GetStringAsync(
+                    $"https://pkgs.alpinelinux.org/packages?name=*{Uri.EscapeDataString(q)}*&branch=edge&arch=x86_64", ct);
+                var hits = new List<SearchHit>();
+                var seen = new HashSet<string>();
+                foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(
+                    html, "href=\"/package/[^/\"]+/[^/\"]+/[^/\"]+/([^\"/?]+)\""))
+                {
+                    var name = m.Groups[1].Value;
+                    if (name.Length > 0 && seen.Add(name)) hits.Add(new SearchHit(name, "Alpine", null, null, null));
+                    if (hits.Count >= limit) break;
+                }
+                return hits;
+            }
+            // Debian / Ubuntu — sources.debian.org / Ubuntu's search both expose a JSON suggest.
+            var host = eco == Ecosystem.Ubuntu ? "https://api.launchpad.net/1.0" : "https://sources.debian.org";
+            if (eco == Ecosystem.Debian)
+            {
+                using var doc = JsonDocument.Parse(await _http.GetStringAsync(
+                    $"https://sources.debian.org/api/search/{Uri.EscapeDataString(q)}/", ct));
+                var hits = new List<SearchHit>();
+                if (doc.RootElement.TryGetProperty("results", out var res))
+                {
+                    var seen = new HashSet<string>();
+                    void AddOne(JsonElement p)
+                    {
+                        var name = p.ValueKind == JsonValueKind.Object && p.TryGetProperty("name", out var n) ? n.GetString() : null;
+                        if (!string.IsNullOrEmpty(name) && seen.Add(name!) && hits.Count < limit)
+                            hits.Add(new SearchHit(name!, "Debian", null, null, null));
+                    }
+                    // "exact" is a single object; "other" is an array.
+                    if (res.TryGetProperty("exact", out var ex) && ex.ValueKind == JsonValueKind.Object) AddOne(ex);
+                    if (res.TryGetProperty("other", out var oth) && oth.ValueKind == JsonValueKind.Array)
+                        foreach (var p in oth.EnumerateArray()) AddOne(p);
+                }
+                return hits;
+            }
+            // Ubuntu — Launchpad source-package name search.
+            using var udoc = JsonDocument.Parse(await _http.GetStringAsync(
+                $"https://api.launchpad.net/1.0/ubuntu/+archive/primary?ws.op=getPublishedSources&source_name={Uri.EscapeDataString(q)}&exact_match=false&status=Published&ws.size={limit}", ct));
+            var uhits = new List<SearchHit>();
+            var useen = new HashSet<string>();
+            if (udoc.RootElement.TryGetProperty("entries", out var entries))
+                foreach (var p in entries.EnumerateArray())
+                {
+                    string? S(string k) => p.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+                    var name = S("source_package_name") ?? "";
+                    if (name.Length > 0 && useen.Add(name))
+                        uhits.Add(new SearchHit(name, "Ubuntu", null, null, S("source_package_version")));
+                    if (uhits.Count >= limit) break;
+                }
+            return uhits;
+        }
+        catch { return Array.Empty<SearchHit>(); }
+    }
+
+    // AI Editor Extensions — VS Code Marketplace (.vsix). Scans Copilot/Cursor/AI editor extensions.
+    private async Task<IReadOnlyList<SearchHit>> SearchAiEditorExtensions(string q, int limit, CancellationToken ct)
+    {
+        try
+        {
+            var body = new
+            {
+                filters = new[] { new { criteria = new[] { new { filterType = 10, value = q } }, pageSize = Math.Min(limit, 50), pageNumber = 1 } },
+                flags = 914
+            };
+            using var req = new HttpRequestMessage(HttpMethod.Post,
+                "https://marketplace.visualstudio.com/_apis/public/gallery/extensionquery");
+            req.Content = new StringContent(JsonSerializer.Serialize(body));
+            req.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
+            req.Headers.TryAddWithoutValidation("Accept", "application/json;api-version=3.0-preview.1");
+            using var resp = await _http.SendAsync(req, ct);
+            using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
+            var hits = new List<SearchHit>();
+            if (doc.RootElement.TryGetProperty("results", out var results) && results.GetArrayLength() > 0
+                && results[0].TryGetProperty("extensions", out var exts))
+                foreach (var e in exts.EnumerateArray())
+                {
+                    string? S(string k) => e.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+                    var pub = e.TryGetProperty("publisher", out var pp) && pp.TryGetProperty("publisherName", out var pn) ? pn.GetString() : null;
+                    var ext = S("extensionName") ?? "";
+                    var full = pub is null ? ext : $"{pub}.{ext}";
+                    string? ver = e.TryGetProperty("versions", out var vs) && vs.GetArrayLength() > 0 && vs[0].TryGetProperty("version", out var vv) ? vv.GetString() : null;
+                    if (full.Length > 0) hits.Add(new SearchHit(full, "AIEditorExtensions", S("shortDescription") ?? S("displayName"), null, ver));
+                    if (hits.Count >= limit) break;
+                }
+            return hits;
+        }
+        catch { return Array.Empty<SearchHit>(); }
+    }
+
+    // NuGet — Azure Search query API (the same one the nuget.org gallery uses).
+    private async Task<IReadOnlyList<SearchHit>> SearchNuGet(string q, int limit, CancellationToken ct)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(await _http.GetStringAsync(
+                $"https://azuresearch-usnc.nuget.org/query?q={Uri.EscapeDataString(q)}&take={limit}&prerelease=false", ct));
+            var hits = new List<SearchHit>();
+            if (doc.RootElement.TryGetProperty("data", out var data))
+                foreach (var p in data.EnumerateArray())
+                {
+                    string? S(string k) => p.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+                    hits.Add(new SearchHit(S("id") ?? "", "NuGet", S("description"), null, S("version")));
+                }
+            return hits;
+        }
+        catch { return Array.Empty<SearchHit>(); }
+    }
+
+    // Cargo — crates.io search API (requires a User-Agent).
+    private async Task<IReadOnlyList<SearchHit>> SearchCargo(string q, int limit, CancellationToken ct)
+    {
+        try
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Get,
+                $"https://crates.io/api/v1/crates?q={Uri.EscapeDataString(q)}&per_page={Math.Min(limit, 30)}");
+            req.Headers.Add("User-Agent", "Advisory-Catalog");
+            using var resp = await _http.SendAsync(req, ct);
+            using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
+            var hits = new List<SearchHit>();
+            if (doc.RootElement.TryGetProperty("crates", out var crates))
+                foreach (var c in crates.EnumerateArray())
+                {
+                    string? S(string k) => c.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+                    hits.Add(new SearchHit(S("name") ?? "", "Cargo", S("description"), null, S("max_stable_version") ?? S("newest_version")));
+                }
+            return hits;
+        }
+        catch { return Array.Empty<SearchHit>(); }
+    }
+
+    // Go — pkg.go.dev has no JSON search; use its HTML search and extract module paths.
+    private async Task<IReadOnlyList<SearchHit>> SearchGo(string q, int limit, CancellationToken ct)
+    {
+        try
+        {
+            var html = await _http.GetStringAsync($"https://pkg.go.dev/search?q={Uri.EscapeDataString(q)}&m=package", ct);
+            var hits = new List<SearchHit>();
+            // module paths appear as data-test-id="snippet-title" links: <a href="/<module>">
+            foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(
+                html, "<a[^>]+href=\"/([a-zA-Z0-9._\\-/]+@?[^\"?]*)\"[^>]*data-test-id=\"snippet-title\""))
+            {
+                var mod = m.Groups[1].Value.TrimEnd('/');
+                if (mod.Length > 0 && !hits.Any(h => h.Name == mod)) hits.Add(new SearchHit(mod, "Go", null, null, null));
+                if (hits.Count >= limit) break;
+            }
+            return hits;
+        }
+        catch { return Array.Empty<SearchHit>(); }
+    }
+
+    // HuggingFace — models search API.
+    private async Task<IReadOnlyList<SearchHit>> SearchHuggingFace(string q, int limit, CancellationToken ct)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(await _http.GetStringAsync(
+                $"https://huggingface.co/api/models?search={Uri.EscapeDataString(q)}&limit={limit}&full=false", ct));
+            var hits = new List<SearchHit>();
+            foreach (var m in doc.RootElement.EnumerateArray())
+            {
+                var id = m.TryGetProperty("id", out var i) ? i.GetString() : null;
+                if (!string.IsNullOrEmpty(id)) hits.Add(new SearchHit(id!, "HuggingFace", null, null, null));
+            }
+            return hits;
+        }
+        catch { return Array.Empty<SearchHit>(); }
     }
 
     private async Task<IReadOnlyList<SearchHit>> SearchNpm(string q, int limit, CancellationToken ct)

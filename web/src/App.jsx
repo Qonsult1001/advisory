@@ -1374,8 +1374,47 @@ function BrandIcon({ format }) {
   if (k === "pypi") return (
     <svg width={sz} height={sz} viewBox="0 0 24 24"><path fill="#3775a9" d="M11.9 2c-1.9 0-3.4.4-3.4 2.5v2h3.5v.5H5.6C3.4 7 2 8.4 2 11.6c0 3.1 1.2 4.6 3.4 4.6h1.1v-2.4c0-1.6 1.4-3 3-3h3.5c1.4 0 2.5-1.1 2.5-2.5V4.5C15.5 2.7 14 2 11.9 2M9.9 3.6c.4 0 .7.3.7.7s-.3.6-.7.6-.6-.3-.6-.6.3-.7.6-.7"/><path fill="#ffd43b" d="M12.1 22c1.9 0 3.4-.4 3.4-2.5v-2H12v-.5h6.4c2.2 0 3.6-1.4 3.6-4.6 0-3.1-1.2-4.6-3.4-4.6h-1.1v2.4c0 1.6-1.4 3-3 3H11c-1.4 0-2.5 1.1-2.5 2.5v4.3c0 1.8 1.5 2.5 3.6 2.5m2-1.6c-.4 0-.7-.3-.7-.7s.3-.6.7-.6.6.3.6.6-.3.7-.6.7"/></svg>
   );
-  // generic monogram tile for cargo/go/nuget/others
-  const mono = { nuget: "nu", cargo: "rs", go: "Go", r: "R", conda: "C" }[k] || (format || "?").slice(0, 2);
+  if (k === "go") return (
+    <svg width={sz} height={sz} viewBox="0 0 24 24"><rect width="24" height="24" rx="3" fill="#00add8"/><text x="12" y="16" fontSize="9" fontWeight="700" fill="#fff" textAnchor="middle" fontFamily="sans-serif">GO</text></svg>
+  );
+  if (k === "nuget") return (
+    <svg width={sz} height={sz} viewBox="0 0 24 24"><circle cx="12" cy="12" r="11" fill="#004880"/><text x="12" y="16" fontSize="9" fontWeight="700" fill="#fff" textAnchor="middle" fontFamily="sans-serif">N</text></svg>
+  );
+  if (k === "cargo") return (
+    <svg width={sz} height={sz} viewBox="0 0 24 24"><rect width="24" height="24" rx="3" fill="#000"/><text x="12" y="16" fontSize="8" fontWeight="700" fill="#fff" textAnchor="middle" fontFamily="sans-serif">▣</text></svg>
+  );
+  if (k === "rubygems") return (
+    <svg width={sz} height={sz} viewBox="0 0 24 24"><rect width="24" height="24" rx="3" fill="#e9573f"/><path fill="#fff" d="M12 4 4 9l8 11 8-11zm0 2.7L17 9l-5 7-5-7z"/></svg>
+  );
+  if (k === "composer") return (
+    <svg width={sz} height={sz} viewBox="0 0 24 24"><rect width="24" height="24" rx="3" fill="#885630"/><text x="12" y="16" fontSize="9" fontWeight="700" fill="#fff" textAnchor="middle" fontFamily="sans-serif">php</text></svg>
+  );
+  if (k === "conan") return (
+    <svg width={sz} height={sz} viewBox="0 0 24 24"><rect width="24" height="24" rx="3" fill="#6699cb"/><text x="12" y="16" fontSize="9" fontWeight="700" fill="#fff" textAnchor="middle" fontFamily="sans-serif">C</text></svg>
+  );
+  if (k === "conda") return (
+    <svg width={sz} height={sz} viewBox="0 0 24 24"><rect width="24" height="24" rx="3" fill="#43b02a"/><text x="12" y="16" fontSize="9" fontWeight="700" fill="#fff" textAnchor="middle" fontFamily="sans-serif">∿</text></svg>
+  );
+  if (k === "cran") return (
+    <svg width={sz} height={sz} viewBox="0 0 24 24"><rect width="24" height="24" rx="3" fill="#276dc3"/><text x="12" y="16" fontSize="10" fontWeight="700" fill="#fff" textAnchor="middle" fontFamily="sans-serif">R</text></svg>
+  );
+  if (k === "dartpub" || k === "pub" || k === "dart") return (
+    <svg width={sz} height={sz} viewBox="0 0 24 24"><rect width="24" height="24" rx="3" fill="#0175c2"/><text x="12" y="16" fontSize="8" fontWeight="700" fill="#fff" textAnchor="middle" fontFamily="sans-serif">{`{}`}</text></svg>
+  );
+  if (k === "alpine") return (
+    <svg width={sz} height={sz} viewBox="0 0 24 24"><rect width="24" height="24" rx="3" fill="#0d597f"/><path fill="#fff" d="m8 16 2.4-4 1.6 2.6L14 11l3 5zm-2 0 3-5 1 1.6L8.5 16z"/></svg>
+  );
+  if (k === "debian") return (
+    <svg width={sz} height={sz} viewBox="0 0 24 24"><rect width="24" height="24" rx="3" fill="#a80030"/><circle cx="12" cy="12" r="6" fill="none" stroke="#fff" strokeWidth="1.6" strokeDasharray="26 6"/></svg>
+  );
+  if (k === "ubuntu") return (
+    <svg width={sz} height={sz} viewBox="0 0 24 24"><circle cx="12" cy="12" r="11" fill="#e95420"/><circle cx="12" cy="12" r="3.4" fill="none" stroke="#fff" strokeWidth="1.6"/><circle cx="18.5" cy="12" r="1.7" fill="#fff"/><circle cx="8.7" cy="6.5" r="1.7" fill="#fff"/><circle cx="8.7" cy="17.5" r="1.7" fill="#fff"/></svg>
+  );
+  if (k === "aieditorextensions") return (
+    <svg width={sz} height={sz} viewBox="0 0 24 24"><rect width="24" height="24" rx="3" fill="#6c3fc6"/><path fill="#fff" d="m12 5 1.4 3.1L16.5 9.5 13.4 11 12 14l-1.4-3L7.5 9.5 10.6 8.1zM16 14l.7 1.6 1.6.7-1.6.7-.7 1.6-.7-1.6-1.6-.7 1.6-.7z"/></svg>
+  );
+  // generic monogram tile
+  const mono = (format || "?").slice(0, 2);
   return <span style={{ width: 20, height: 20, borderRadius: 4, background: C.surface2, border: `1px solid ${C.line}`,
     display: "inline-grid", placeItems: "center", fontSize: 9, fontWeight: 700, color: C.sub }}>{mono}</span>;
 }
@@ -2318,10 +2357,26 @@ function IntakeQueue() {
 }
 
 // OSS Catalog — JFrog-style package overview from free public sources (npm + PyPI live).
+// Full JFrog-Catalog ecosystem list (carbon-copy). Order & labels mirror demo.jfrog.io.
+// `key` is the Ecosystem enum value the API expects; all are live.
 const CATALOG_ECOS = [
-  { key: "npm", label: "npm", live: true }, { key: "PyPI", label: "PyPI", live: true },
-  { key: "NuGet", label: "NuGet", live: false }, { key: "Cargo", label: "Cargo", live: false },
-  { key: "Go", label: "Go", live: false }, { key: "HuggingFace", label: "Hugging Face", live: false },
+  { key: "AIEditorExtensions", label: "AI Editor Extensions", live: true },
+  { key: "Maven", label: "Maven", live: true },
+  { key: "npm", label: "npm", live: true },
+  { key: "PyPI", label: "PyPI", live: true },
+  { key: "NuGet", label: "NuGet", live: true },
+  { key: "Go", label: "Go", live: true },
+  { key: "Cargo", label: "Cargo (crates.io)", live: true },
+  { key: "Conan", label: "Conan", live: true },
+  { key: "RubyGems", label: "RubyGems", live: true },
+  { key: "Composer", label: "PHP (Composer)", live: true },
+  { key: "CRAN", label: "CRAN (R)", live: true },
+  { key: "DartPub", label: "Dart (Pub)", live: true },
+  { key: "Conda", label: "Conda", live: true },
+  { key: "HuggingFace", label: "Hugging Face", live: true },
+  { key: "Alpine", label: "Alpine", live: true },
+  { key: "Debian", label: "Debian", live: true },
+  { key: "Ubuntu", label: "Ubuntu", live: true },
 ];
 function Catalog() {
   const [eco, setEco] = useState("npm");
@@ -2373,10 +2428,10 @@ function Catalog() {
       {crumb}
       {/* hero */}
       <div style={{ textAlign: "center", padding: "14px 0 4px" }}>
-        <div style={{ fontSize: 24, fontWeight: 700, letterSpacing: -0.5 }}>Search for open-source packages and CVEs</div>
+        <div style={{ fontSize: 24, fontWeight: 700, letterSpacing: -0.5 }}>Search for over 16 million packages and CVEs</div>
         <div style={{ display: "inline-flex", alignItems: "center", gap: 12, color: C.sub, fontSize: 13, marginTop: 8 }}>
-          Search npm &amp; PyPI packages, vulnerabilities, and project health
-          <span style={{ ...s.capPill, cursor: "pointer" }} onClick={() => setView("insights")}>All from free open sources ›</span>
+          Search packages across 17 ecosystems, their vulnerabilities, and project health
+          <span style={{ ...s.capPill, cursor: "pointer" }} onClick={() => setView("insights")}>See the Full Capabilities ›</span>
         </div>
       </div>
       {/* search row + autocomplete */}
@@ -2533,11 +2588,7 @@ function SecurityInsights({ onClose, onPick }) {
     { t: "Malicious packages", n: "OpenSSF", d: "Typosquats, dependency-confusion and malicious releases — caught even without a CVE.", icon: "☠" },
     { t: "Project health", n: "OpenSSF Scorecard", d: "18 automated security-health checks per repository, via deps.dev.", icon: "❤" },
   ];
-  const ecos = [
-    { k: "npm", label: "npm", live: true, pop: true }, { k: "PyPI", label: "PyPI", live: true, pop: true },
-    { k: "NuGet", label: "NuGet", live: false }, { k: "Cargo", label: "Cargo", live: false },
-    { k: "Go", label: "Go", live: false }, { k: "HuggingFace", label: "Hugging Face", live: false },
-  ];
+  const ecos = CATALOG_ECOS.map((e) => ({ k: e.key, label: e.label, live: e.live, pop: e.live }));
   return (
     <div style={{ animation: "fwfade .2s ease" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", margin: "10px 0 16px" }}>
@@ -2576,13 +2627,30 @@ function SecurityInsights({ onClose, onPick }) {
 }
 
 function CatalogLanding({ eco, setQ, search, onSample, onInsights }) {
-  const samples = eco === "PyPI"
-    ? [["requests", "clean"], ["pyyaml", "vuln"], ["urllib3", "vuln"], ["flask", "clean"]]
-    : [["express", "clean"], ["lodash@4.17.15", "vuln"], ["left-pad", "clean"], ["minimist@1.2.0", "vuln"]];
+  const SAMPLES = {
+    npm: [["express", "clean"], ["lodash@4.17.15", "vuln"], ["left-pad", "clean"], ["minimist@1.2.0", "vuln"]],
+    PyPI: [["requests", "clean"], ["pyyaml", "vuln"], ["urllib3", "vuln"], ["flask", "clean"]],
+    Maven: [["com.google.guava:guava", "clean"], ["org.apache.logging.log4j:log4j-core", "vuln"], ["org.springframework:spring-core", "clean"]],
+    NuGet: [["Newtonsoft.Json", "clean"], ["Serilog", "clean"], ["System.Text.Json", "clean"]],
+    Go: [["github.com/gin-gonic/gin", "clean"], ["golang.org/x/text", "vuln"], ["github.com/gorilla/websocket", "clean"]],
+    Cargo: [["serde", "clean"], ["tokio", "clean"], ["regex", "clean"]],
+    Conan: [["zlib", "clean"], ["openssl", "vuln"], ["boost", "clean"]],
+    RubyGems: [["rails", "clean"], ["nokogiri", "vuln"], ["devise", "clean"]],
+    Composer: [["laravel/framework", "clean"], ["symfony/http-kernel", "vuln"], ["guzzlehttp/guzzle", "clean"]],
+    CRAN: [["ggplot2", "clean"], ["dplyr", "clean"], ["shiny", "clean"]],
+    DartPub: [["http", "clean"], ["dio", "clean"], ["provider", "clean"]],
+    Conda: [["numpy", "clean"], ["pandas", "clean"], ["scipy", "clean"]],
+    HuggingFace: [["bert-base-uncased", "clean"], ["gpt2", "clean"]],
+    Alpine: [["openssl", "vuln"], ["busybox", "clean"], ["musl", "clean"]],
+    Debian: [["nginx", "clean"], ["openssl", "vuln"], ["curl", "clean"]],
+    Ubuntu: [["curl", "clean"], ["openssl", "vuln"], ["bash", "clean"]],
+    AIEditorExtensions: [["GitHub.copilot", "clean"], ["ms-python.python", "clean"]],
+  };
+  const samples = SAMPLES[eco] || SAMPLES.npm;
   const run = (term) => (onSample ? onSample(term) : (setQ(term), setTimeout(search, 0)));
   const cards = [
-    { iconKind: "oss", t: "Centralized OSS Intelligence", d: "A single source of truth for open-source packages and their CVEs — research and vet packages before they enter your org. npm and PyPI live today; more coming.",
-      foot: <span style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", justifyContent: "center" }}><Tag tone={C.allow}>npm</Tag><Tag tone={C.allow}>PyPI</Tag><span style={{ fontSize: 10, color: C.dim }}>NuGet · Cargo · Go · HF soon</span></span> },
+    { iconKind: "oss", t: "Centralized OSS Intelligence", d: "A single source of truth for open-source packages and their CVEs — research and vet packages before they enter your org, across every major ecosystem.",
+      foot: <span style={{ display: "flex", gap: 5, alignItems: "center", flexWrap: "wrap", justifyContent: "center" }}>{CATALOG_ECOS.slice(0, 5).map((e) => <BrandIcon key={e.key} format={e.key} />)}<span style={{ fontSize: 10, color: C.dim }}>+{CATALOG_ECOS.length - 5} more</span></span> },
     { iconKind: "sec", t: "Enriched Security & Remediation", d: "Deep vulnerability analysis with CVSS, KEV exploited-status, and the exact fixed-in version to upgrade to — actionable mitigation, not just a list.",
       foot: <span style={{ color: C.sub, fontSize: 11.5 }}>CVE example <a onClick={() => run("lodash@4.17.15")} style={{ color: C.accent, cursor: "pointer" }}>GHSA-29mw-wpgm-hmr9 ›</a></span> },
     { iconKind: "ctrl", t: "Custom Control & Policy", d: "Map packages to watches and policy rules to enforce fine-grained gate decisions, with violations attributed back to the watch that caught them.",
@@ -2619,7 +2687,7 @@ function CatalogLanding({ eco, setQ, search, onSample, onInsights }) {
         ))}
       </div>
       <div style={{ textAlign: "center", color: C.dim, fontSize: 11.5, marginTop: 20 }}>
-        Last catalog index updated just now · sourced from npm, PyPI, OSV.dev, CISA KEV &amp; OpenSSF — all free.
+        Last Public Catalog update just now · 17 ecosystems · sourced live from each public registry + OSV.dev, CISA KEV &amp; OpenSSF — all free.
       </div>
     </>
   );

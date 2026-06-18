@@ -2,7 +2,12 @@ using System.Text.Json.Serialization;
 
 namespace Advisory.Api.Models;
 
-public enum Ecosystem { PyPI, npm, NuGet, Cargo, Go, HuggingFace, Docker }
+public enum Ecosystem {
+    PyPI, npm, NuGet, Cargo, Go, HuggingFace, Docker,
+    // Full JFrog-Catalog ecosystem parity:
+    Maven, RubyGems, Composer, Conan, Conda, CRAN, DartPub,
+    Alpine, Debian, Ubuntu, AIEditorExtensions
+}
 
 public enum Severity { None, Low, Medium, High, Critical }
 

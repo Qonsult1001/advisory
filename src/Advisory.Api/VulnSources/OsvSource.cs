@@ -16,7 +16,14 @@ public class OsvSource : IVulnSource
     private static string EcosystemName(Ecosystem e) => e switch
     {
         Ecosystem.PyPI => "PyPI", Ecosystem.npm => "npm", Ecosystem.NuGet => "NuGet",
-        Ecosystem.Cargo => "crates.io", Ecosystem.Go => "Go", _ => ""
+        Ecosystem.Cargo => "crates.io", Ecosystem.Go => "Go",
+        // Full JFrog-Catalog parity — OSV's exact ecosystem identifiers:
+        Ecosystem.Maven => "Maven", Ecosystem.RubyGems => "RubyGems",
+        Ecosystem.Composer => "Packagist", Ecosystem.Conan => "ConanCenter",
+        Ecosystem.CRAN => "CRAN", Ecosystem.DartPub => "Pub",
+        // Alpine/Debian/Ubuntu need a release suffix (Debian:12) supplied via OsvEcosystem;
+        // bare distro names aren't OSV ecosystems, so they're handled by the per-image scan.
+        _ => ""
     };
 
     public async Task<SourceResult> QueryAsync(PackageRef pkg, CancellationToken ct)
