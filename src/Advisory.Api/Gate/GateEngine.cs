@@ -27,6 +27,7 @@ public class GateEngine : IGateEngine
     private readonly IEnumerable<IDependencyResolver> _resolvers;
     private readonly KevSource _kev;
     private readonly EpssSource _epss;
+    private readonly VulnCheckSource _vc;
     private readonly PickleScanner _pickle;
     private readonly SecretScanner _secrets;
     private readonly IacScanner _iac;
@@ -39,11 +40,11 @@ public class GateEngine : IGateEngine
     private readonly ICurrentUser _user;
 
     public GateEngine(IEnumerable<IVulnSource> sources, IEnumerable<IDependencyResolver> resolvers,
-                      KevSource kev, EpssSource epss, PickleScanner pickle, SecretScanner secrets,
+                      KevSource kev, EpssSource epss, VulnCheckSource vc, PickleScanner pickle, SecretScanner secrets,
                       IacScanner iac, ReachabilityAnalyzer reach, OpRiskService opRisk, IPolicyStore policy,
                       IAuditLog audit, IResearchAgent agent, IItsmNotifier itsm, ICurrentUser user)
     {
-        _sources = sources; _resolvers = resolvers; _kev = kev; _epss = epss;
+        _sources = sources; _resolvers = resolvers; _kev = kev; _epss = epss; _vc = vc;
         _pickle = pickle; _secrets = secrets; _iac = iac; _reach = reach; _opRisk = opRisk;
         _policy = policy; _audit = audit; _agent = agent; _itsm = itsm; _user = user;
     }
@@ -217,12 +218,13 @@ public class GateEngine : IGateEngine
             foreach (var src in _sources.Where(s => p.EnabledSources.Contains(s.Key)))
             {
                 if (!src.IsAvailable) { Merge(src.Key, SourceStatus.NotConfigured, 0, "source not configured", 0); continue; }
-                if (src.Key is "kev" or "epss") continue; // enrichment, handled separately
+                if (src.Key is "kev" or "epss" or "vulncheck") continue; // enrichment, handled separately (per-CVE)
                 var res = await src.QueryAsync(node.Package, ct);
                 Merge(src.Key, res.Status, res.Findings.Count, res.Detail, res.ElapsedMs);
                 nodeFindings.AddRange(res.Findings);
             }
 
+            var vcOn = p.EnabledSources.Contains("vulncheck") && _vc.IsAvailable;
             foreach (var f in nodeFindings)
             {
                 var kev = p.EnabledSources.Contains("kev") && _kev.IsKnownExploited(f.Id);
@@ -232,7 +234,21 @@ public class GateEngine : IGateEngine
                     var (sc, st, detail) = await _epss.ScoreAsync(f.Id, ct);
                     epss = sc; Merge("epss", st, sc is null ? 0 : 1, detail, 0);
                 }
-                collected.Add((f with { KnownExploited = f.KnownExploited || kev, EpssScore = epss }, node));
+                // VulnCheck exploited-in-the-wild enrichment (per-CVE, free vulncheck-kev index). VulnCheck
+                // KEV is a SUPERSET of CISA KEV, so a hit here marks the finding exploited and strengthens
+                // the SEC-VULN-02 block rule even when CISA hasn't listed it.
+                bool vcExploited = false;
+                if (vcOn)
+                {
+                    var cve = f.Aliases?.FirstOrDefault(a => a.StartsWith("CVE", StringComparison.OrdinalIgnoreCase))
+                              ?? (f.Id.StartsWith("CVE", StringComparison.OrdinalIgnoreCase) ? f.Id : null);
+                    if (cve is not null)
+                    {
+                        var hit = await _vc.LookupCveAsync(cve, ct);
+                        if (hit is not null) { vcExploited = true; Merge("vulncheck", SourceStatus.Ok, 1, "exploited-in-the-wild (VulnCheck KEV)", 0); }
+                    }
+                }
+                collected.Add((f with { KnownExploited = f.KnownExploited || kev || vcExploited, EpssScore = epss }, node));
             }
         }
 

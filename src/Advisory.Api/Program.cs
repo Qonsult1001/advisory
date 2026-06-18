@@ -62,6 +62,7 @@ builder.Services.AddHttpClient("nexus", c => c.Timeout = TimeSpan.FromSeconds(60
 builder.Services.AddHttpClient("github", c => { c.Timeout = TimeSpan.FromSeconds(15); c.DefaultRequestHeaders.Add("User-Agent", "Advisory-GitRepos"); });
 builder.Services.AddHttpClient("catalog", c => { c.Timeout = TimeSpan.FromSeconds(12); c.DefaultRequestHeaders.Add("User-Agent", "Advisory-Catalog"); });
 builder.Services.AddHttpClient("oprisk", c => { c.Timeout = TimeSpan.FromSeconds(10); c.DefaultRequestHeaders.Add("User-Agent", "Advisory-OpRisk"); });
+builder.Services.AddHttpClient("vulncheck", c => { c.Timeout = TimeSpan.FromSeconds(15); c.DefaultRequestHeaders.Add("User-Agent", "Advisory-VulnCheck"); c.DefaultRequestHeaders.Add("Accept", "application/json"); });
 builder.Services.AddHttpClient("hf", c => { c.Timeout = TimeSpan.FromSeconds(15); c.DefaultRequestHeaders.Add("User-Agent", "Advisory-AiCatalog"); });
 builder.Services.AddHttpClient("hf-dl", c => { c.Timeout = TimeSpan.FromMinutes(10); c.DefaultRequestHeaders.Add("User-Agent", "Advisory-WeightVerify"); });
 
@@ -97,7 +98,9 @@ builder.Services.AddSingleton<OsvSource>();
 builder.Services.AddSingleton<IVulnSource>(sp => sp.GetRequiredService<OsvSource>());
 builder.Services.AddSingleton<IVulnSource>(sp => sp.GetRequiredService<KevSource>());
 builder.Services.AddSingleton<IVulnSource>(sp => sp.GetRequiredService<EpssSource>());
-builder.Services.AddSingleton<IVulnSource, VulnCheckSource>();
+// VulnCheck registered as a concrete singleton too, so the gate + Catalog can call LookupCveAsync.
+builder.Services.AddSingleton<VulnCheckSource>();
+builder.Services.AddSingleton<IVulnSource>(sp => sp.GetRequiredService<VulnCheckSource>());
 builder.Services.AddSingleton<IVulnSource, MalwareSource>();
 builder.Services.AddSingleton<IVulnSource, ArtifactorySource>();
 

@@ -119,7 +119,7 @@ const ALL_SOURCES = [
   { key: "artifactory", label: "JFrog Artifactory scan API", scope: "Cross-referenced CVE scan", tier: "Included" },
   { key: "kev", label: "CISA KEV", scope: "Known-exploited catalog", tier: "Included" },
   { key: "epss", label: "EPSS (FIRST.org)", scope: "Exploit probability", tier: "Included" },
-  { key: "vulncheck", label: "VulnCheck", scope: "Pre-NVD / zero-day intel", tier: "Licensed" },
+  { key: "vulncheck", label: "VulnCheck (exploited intel)", scope: "Exploited-in-the-wild enrichment (vulncheck-kev — superset of CISA KEV)", tier: "Included" },
   { key: "socket", label: "Socket (behavioural)", scope: "Install-script / runtime behaviour", tier: "Licensed" },
   { key: "vsix-scanner", label: "Code Exfiltration Scanner (extensions)", scope: "Deep code scan: data-exfiltration, RAT, credential-theft, IOC", tier: "Included" },
 ];
@@ -127,7 +127,7 @@ const ALL_SOURCES = [
 // Why a source is inactive — shown on hover so "Not configured" never reads as "broken".
 const SOURCE_HINT = {
   artifactory: "Inactive until ARTIFACTORY_URL + ARTIFACTORY_TOKEN are set (point at your JFrog instance). Not an error.",
-  vulncheck: "Licensed feed — activates when VULNCHECK_API_KEY is set. No code change.",
+  vulncheck: "Enriches CVEs with VulnCheck's exploited-in-the-wild intel (ransomware use, reported exploitations, exploit refs). Free vulncheck-kev index — activates when VULNCHECK_API_KEY is set.",
   socket: "Licensed behavioural feed — activates when SOCKET_API_KEY is set.",
 };
 
@@ -2798,12 +2798,20 @@ function CveDetail({ cve, onPkg }) {
         <div style={{ fontSize: 18, fontWeight: 700, fontFamily: C.mono, marginBottom: 10 }}>{cve.id}</div>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
           <SevPill sev={sevTitle} />
-          {cve.knownExploited && <span style={{ fontSize: 10, fontWeight: 700, padding: "3px 9px", borderRadius: 20, color: C.block, background: `${C.block}1f` }}>● CISA KEV — EXPLOITED</span>}
+          {cve.knownExploited && <span style={{ fontSize: 10, fontWeight: 700, padding: "3px 9px", borderRadius: 20, color: C.block, background: `${C.block}1f` }}>● EXPLOITED</span>}
+          {cve.vcRansomware && <span style={{ fontSize: 10, fontWeight: 700, padding: "3px 9px", borderRadius: 20, color: C.block, background: `${C.block}1f` }}>☠ RANSOMWARE</span>}
         </div>
         <InfoRow k="CVSS base score" v={cve.cvss != null ? `${cve.cvss.toFixed(1)} / 10` : "—"} />
         <InfoRow k="CVSS vector" v={cve.cvssVector || "—"} mono />
         <InfoRow k="EPSS (exploit prob.)" v={cve.epss != null ? `${(cve.epss * 100).toFixed(2)}%` : "—"} />
-        <InfoRow k="Known exploited" v={cve.knownExploited ? "Yes (CISA KEV)" : "Not on KEV"} />
+        <InfoRow k="Known exploited" v={cve.knownExploited ? "Yes" : "No"} />
+        {/* VulnCheck exploited-in-the-wild intel (richer than CISA KEV). */}
+        {cve.vcExploited && <>
+          <InfoRow k="VulnCheck KEV" v="Exploited in the wild" />
+          <InfoRow k="Ransomware use" v={cve.vcRansomware ? "Known" : "Not reported"} />
+          <InfoRow k="Reported exploitations" v={Number(cve.vcReportedExploitationCount || 0).toLocaleString()} />
+          <InfoRow k="Exploit references" v={Number(cve.vcExploitRefCount || 0).toLocaleString()} />
+        </>}
         <InfoRow k="Published" v={cve.published ? new Date(cve.published).toLocaleDateString() : "—"} />
         <InfoRow k="Modified" v={cve.modified ? new Date(cve.modified).toLocaleDateString() : "—"} />
         {cve.cwes?.length > 0 && <InfoRow k="CWE" v={cve.cwes.join(", ")} />}

@@ -71,7 +71,12 @@ public record CatalogCve(
     IReadOnlyList<string> Cwes,
     IReadOnlyList<CveAffected> Affected,
     IReadOnlyList<AdvisoryRef> References,
-    bool Found);
+    bool Found,
+    // VulnCheck exploited-in-the-wild intel (free vulncheck-kev index) — richer than CISA KEV.
+    bool VcExploited = false,
+    bool VcRansomware = false,
+    int VcReportedExploitationCount = 0,
+    int VcExploitRefCount = 0);
 
 public record CatalogOverview(
     string Ecosystem,
@@ -111,15 +116,16 @@ public class CatalogService
     private readonly KevSource _kev;
     private readonly EpssSource _epss;
     private readonly OpRiskService _opRisk;
+    private readonly VulnCheckSource _vc;
     private readonly string? _vsixScannerUrl;
     private readonly Advisory.Api.Policy.IPolicyStore _policy;
 
     public CatalogService(IHttpClientFactory f, OsvSource osv, KevSource kev, EpssSource epss, OpRiskService opRisk,
-        IConfiguration cfg, Advisory.Api.Policy.IPolicyStore policy)
+        VulnCheckSource vc, IConfiguration cfg, Advisory.Api.Policy.IPolicyStore policy)
     {
         _http = f.CreateClient("catalog");
         _factory = f;
-        _osv = osv; _kev = kev; _epss = epss; _opRisk = opRisk;
+        _osv = osv; _kev = kev; _epss = epss; _opRisk = opRisk; _vc = vc;
         _vsixScannerUrl = cfg["VSIX_SCANNER_URL"];
         _policy = policy;
     }
@@ -1348,10 +1354,18 @@ public class CatalogService
 
             var exploited = _kev.IsKnownExploited(id) || aliases.Any(_kev.IsKnownExploited);
 
+            // VulnCheck exploited-in-the-wild intel (free vulncheck-kev) — richer than CISA KEV, and
+            // marks exploited even when CISA hasn't. Only runs when the source is enabled + keyed.
+            VcKevHit? vc = null;
+            if (_policy.Current.EnabledSources.Contains("vulncheck", StringComparer.OrdinalIgnoreCase) && _vc.IsAvailable && cveId is not null)
+                try { vc = await _vc.LookupCveAsync(cveId, ct); } catch { }
+            if (vc is not null) exploited = true;
+
         return new CatalogCve(
             S("id") ?? id, aliases, sevLabel, cvss, vector, epss, exploited,
             S("summary"), S("details"), S("published"), S("modified"),
-            cwes, affected, refs, true);
+            cwes, affected, refs, true,
+            vc is not null, vc?.Ransomware ?? false, vc?.ReportedExploitationCount ?? 0, vc?.ExploitRefCount ?? 0);
     }
 
     private static string SeverityFromCvss(double? cvss) => cvss switch

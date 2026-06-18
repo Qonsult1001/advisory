@@ -1,18 +1,40 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text.Json;
 using Advisory.Api.Models;
 
 namespace Advisory.Api.VulnSources;
 
+/// <summary>One VulnCheck-KEV record's exploited-in-the-wild intel for a CVE.</summary>
+public record VcKevHit(
+    string Cve,
+    bool Exploited,
+    bool Ransomware,
+    int ReportedExploitationCount,
+    int ExploitRefCount,
+    string? VulnerabilityName,
+    string? DateAdded,
+    IReadOnlyList<string> Cwes);
+
 /// <summary>
-/// VulnCheck — PAID pre-NVD / zero-day intelligence. Now wired to VulnCheck's index API.
-/// Queries the NVD2 index filtered by package; maps results to Findings with KnownExploited
-/// set from VulnCheck's exploit intelligence. Inactive until VULNCHECK_API_KEY is set.
+/// VulnCheck exploited-in-the-wild intelligence via the FREE community-tier `vulncheck-kev` index.
+///
+/// The paid `/v3/purl` endpoint returns HTTP 402 for community keys, so this source does NOT do a
+/// per-package CVE lookup (there is no CVE to query from a bare package coordinate anyway). Instead it
+/// exposes <see cref="LookupCveAsync"/> — a per-CVE query against
+/// `GET /v3/index/vulncheck-kev?cve={id}` — which the gate and Catalog call during ENRICHMENT to mark
+/// findings exploited and surface VulnCheck's richer intel (ransomware use, reported-exploitation count,
+/// exploit references). VulnCheck-KEV is a superset of CISA-KEV. Inactive until VULNCHECK_API_KEY is set.
 /// </summary>
 public class VulnCheckSource : IVulnSource
 {
     private readonly HttpClient _http;
     private readonly string? _apiKey;
+    // 24 h per-CVE cache so we stay well under the 1000 req/min community limit. null value = looked up,
+    // not in KEV (cache the negative too).
+    private readonly ConcurrentDictionary<string, (VcKevHit? Hit, DateTimeOffset At)> _cache = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly TimeSpan Ttl = TimeSpan.FromHours(24);
+
     public string Key => "vulncheck";
     public bool IsAvailable => !string.IsNullOrWhiteSpace(_apiKey);
 
@@ -22,72 +44,66 @@ public class VulnCheckSource : IVulnSource
         _apiKey = cfg["VULNCHECK_API_KEY"];
     }
 
-    public async Task<SourceResult> QueryAsync(PackageRef pkg, CancellationToken ct)
+    /// <summary>
+    /// The per-package contract. VulnCheck-KEV is keyed by CVE, not by package coordinate, and the
+    /// community tier cannot call the paid package endpoint — so per-package this source is a no-op
+    /// (Skipped, never a silent clean). Its value is delivered through <see cref="LookupCveAsync"/>
+    /// during the gate's enrichment pass, after a CVE has been discovered.
+    /// </summary>
+    public Task<SourceResult> QueryAsync(PackageRef pkg, CancellationToken ct)
     {
-        var sw = Stopwatch.StartNew();
         if (!IsAvailable)
-            return new SourceResult(Key, SourceStatus.NotConfigured, Array.Empty<Finding>(),
-                "VULNCHECK_API_KEY not set — licensed feed inactive", sw.ElapsedMilliseconds);
-        try
-        {
-            // VulnCheck purl-based lookup (vulncheck-nvd2 index, purl filter). Uses standard PURL types
-            // so coverage spans every package ecosystem PURL defines, not just the original five.
-            var type = pkg.Ecosystem switch
-            {
-                Ecosystem.PyPI => "pypi", Ecosystem.npm => "npm", Ecosystem.NuGet => "nuget",
-                Ecosystem.Cargo => "cargo", Ecosystem.Go => "golang",
-                Ecosystem.Maven => "maven", Ecosystem.RubyGems => "gem", Ecosystem.Composer => "composer",
-                Ecosystem.Conan => "conan", Ecosystem.CRAN => "cran", Ecosystem.DartPub => "pub",
-                Ecosystem.Alpine => "apk", Ecosystem.Debian => "deb", Ecosystem.Ubuntu => "deb",
-                _ => ""
-            };
-            if (type == "")
-                return new SourceResult(Key, SourceStatus.Skipped, Array.Empty<Finding>(),
-                    $"ecosystem {pkg.Ecosystem} has no PURL type for VulnCheck", sw.ElapsedMilliseconds);
-
-            var purl = Uri.EscapeDataString($"pkg:{type}/{pkg.Name}@{pkg.Version}");
-            using var req = new HttpRequestMessage(HttpMethod.Get,
-                $"https://api.vulncheck.com/v3/purl?purl={purl}");
-            req.Headers.Add("Authorization", $"Bearer {_apiKey}");
-
-            using var resp = await _http.SendAsync(req, ct);
-            if (resp.StatusCode == System.Net.HttpStatusCode.Unauthorized)
-                return new SourceResult(Key, SourceStatus.Errored, Array.Empty<Finding>(), "401 — check VULNCHECK_API_KEY", sw.ElapsedMilliseconds);
-            if (!resp.IsSuccessStatusCode)
-                return new SourceResult(Key, SourceStatus.Errored, Array.Empty<Finding>(), $"HTTP {(int)resp.StatusCode}", sw.ElapsedMilliseconds);
-
-            var findings = Parse(await resp.Content.ReadAsStringAsync(ct));
-            return new SourceResult(Key, findings.Count == 0 ? SourceStatus.Empty : SourceStatus.Ok,
-                findings, "VulnCheck purl index", sw.ElapsedMilliseconds);
-        }
-        catch (OperationCanceledException)
-        { return new SourceResult(Key, SourceStatus.Timeout, Array.Empty<Finding>(), "timed out", sw.ElapsedMilliseconds); }
-        catch (Exception ex)
-        { return new SourceResult(Key, SourceStatus.Errored, Array.Empty<Finding>(), ex.Message, sw.ElapsedMilliseconds); }
+            return Task.FromResult(new SourceResult(Key, SourceStatus.NotConfigured, Array.Empty<Finding>(),
+                "VULNCHECK_API_KEY not set — exploited-intel enrichment inactive", 0));
+        return Task.FromResult(new SourceResult(Key, SourceStatus.Skipped, Array.Empty<Finding>(),
+            "VulnCheck-KEV is queried per-CVE during enrichment, not per-package", 0));
     }
 
-    private List<Finding> Parse(string json)
+    /// <summary>
+    /// Live per-CVE lookup against the free `vulncheck-kev` index. Returns null when the CVE is not in
+    /// VulnCheck-KEV (i.e. not known-exploited), or when the key is missing/insufficient. Cached 24 h.
+    /// </summary>
+    public async Task<VcKevHit?> LookupCveAsync(string cve, CancellationToken ct)
     {
-        var findings = new List<Finding>();
+        if (!IsAvailable || string.IsNullOrWhiteSpace(cve) || !cve.StartsWith("CVE", StringComparison.OrdinalIgnoreCase))
+            return null;
+        if (_cache.TryGetValue(cve, out var cached) && DateTimeOffset.UtcNow - cached.At < Ttl)
+            return cached.Hit;
         try
         {
-            using var doc = JsonDocument.Parse(json);
-            if (!doc.RootElement.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Array)
-                return findings;
-            foreach (var v in data.EnumerateArray())
-            {
-                var id = (v.TryGetProperty("cve", out var c) ? c.GetString() : null)
-                       ?? (v.TryGetProperty("id", out var i) ? i.GetString() : null) ?? "VULNCHECK-UNKNOWN";
-                bool exploited = v.TryGetProperty("exploitation", out var ex) &&
-                                 ex.ValueKind != JsonValueKind.Null;
-                double? cvss = v.TryGetProperty("cvss_base_score", out var cs) && cs.ValueKind == JsonValueKind.Number
-                    ? cs.GetDouble() : null;
-                // VulnCheck's edge is early/exploited intel — mark KnownExploited so KEV-style policy fires.
-                findings.Add(new Finding(id, cvss is double d ? OsvSource.FromCvss(d) : Severity.High,
-                    cvss, null, exploited, Key, "VulnCheck early-warning entry"));
-            }
+            using var req = new HttpRequestMessage(HttpMethod.Get,
+                $"https://api.vulncheck.com/v3/index/vulncheck-kev?cve={Uri.EscapeDataString(cve)}");
+            req.Headers.Add("Authorization", $"Bearer {_apiKey}");
+            using var resp = await _http.SendAsync(req, ct);
+            // 402/403 = tier lacks the index, 401 = bad key, 429 = rate-limited. None should poison the
+            // cache as a permanent negative — return null and let the next call retry.
+            if (!resp.IsSuccessStatusCode) return null;
+            using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
+            VcKevHit? hit = null;
+            if (doc.RootElement.TryGetProperty("data", out var data) && data.ValueKind == JsonValueKind.Array && data.GetArrayLength() > 0)
+                hit = ParseRecord(data[0], cve);
+            _cache[cve] = (hit, DateTimeOffset.UtcNow);
+            return hit;
         }
-        catch { }
-        return findings;
+        catch { return null; }
+    }
+
+    private static VcKevHit ParseRecord(JsonElement r, string queriedCve)
+    {
+        string? S(string k) => r.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+        int ArrLen(string k) => r.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.Array ? v.GetArrayLength() : 0;
+        var ransom = (S("knownRansomwareCampaignUse") ?? "").Equals("Known", StringComparison.OrdinalIgnoreCase);
+        var cwes = new List<string>();
+        if (r.TryGetProperty("cwes", out var cw) && cw.ValueKind == JsonValueKind.Array)
+            foreach (var c in cw.EnumerateArray())
+                if (c.ValueKind == JsonValueKind.String && c.GetString() is { } s) cwes.Add(s);
+        // `cve` is an array of ids in vulncheck-kev; prefer the queried id.
+        return new VcKevHit(
+            queriedCve, true, ransom,
+            ArrLen("vulncheck_reported_exploitation"),
+            ArrLen("vulncheck_xdb"),
+            S("vulnerabilityName"),
+            S("date_added"),
+            cwes);
     }
 }

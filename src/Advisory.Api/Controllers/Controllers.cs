@@ -360,8 +360,8 @@ public class SourcesController : ControllerBase
             "api.first.org", "A CVE id only (to fetch its exploit-probability score). No package data."),
         ("artifactory", "JFrog Artifactory scan API", "Cross-referenced CVE scan", "Included", true, "ARTIFACTORY_TOKEN", null,
             "your configured Artifactory host", "Package coordinates to your own Artifactory (self-hosted — no third party)."),
-        ("vulncheck", "VulnCheck", "Pre-NVD / zero-day intel", "Licensed", true, "VULNCHECK_API_KEY", "https://api.vulncheck.com/v3",
-            "api.vulncheck.com", "Package PURL (coordinates) + your API key. No source code."),
+        ("vulncheck", "VulnCheck (exploited intel)", "Exploited-in-the-wild enrichment (vulncheck-kev — superset of CISA KEV)", "Included", true, "VULNCHECK_API_KEY", "https://api.vulncheck.com/v3/index/vulncheck-kev",
+            "api.vulncheck.com", "A CVE id to the free vulncheck-kev index + your API key. No package data, no source code."),
         ("socket", "Socket (behavioural)", "Install-script / runtime behaviour", "Licensed", true, "SOCKET_API_KEY", "https://api.socket.dev/v0",
             "api.socket.dev", "Package name + version + your API key. Socket fetches the package itself upstream."),
         ("vsix-scanner", "Code Exfiltration Scanner (extensions)", "Deep code scan of AI-editor/VS Code extensions: data-exfiltration, RAT, credential-theft, IOC", "Included", false, null, "http://vsix-scanner:8099",
@@ -435,6 +435,23 @@ public class SourcesController : ControllerBase
             }
             catch (Exception ex) { return Ok(new { key, ok = false, status = "Errored", detail = $"scanner unreachable: {ex.Message}" }); }
         }
+        // VulnCheck is queried per-CVE (vulncheck-kev index), not per-package — probe it with a known
+        // exploited CVE so Test reflects real reachability of the free index.
+        if (key.Equals("vulncheck", StringComparison.OrdinalIgnoreCase)
+            && _sources.FirstOrDefault(s => s.Key == "vulncheck") is VulnCheckSource vc)
+        {
+            if (!vc.IsAvailable) return Ok(new { key, ok = false, status = "NotConfigured", detail = "VULNCHECK_API_KEY not set" });
+            var sw3 = System.Diagnostics.Stopwatch.StartNew();
+            try
+            {
+                var hit = await vc.LookupCveAsync("CVE-2021-44228", ct);
+                return hit is not null
+                    ? Ok(new { key, ok = true, status = "Ok", elapsedMs = sw3.ElapsedMilliseconds, detail = $"vulncheck-kev reachable ({hit.ExploitRefCount} exploit refs for the probe CVE)" })
+                    : Ok(new { key, ok = false, status = "Errored", elapsedMs = sw3.ElapsedMilliseconds, detail = "no data — key may lack the vulncheck-kev index or was rate-limited" });
+            }
+            catch (Exception ex) { return Ok(new { key, ok = false, status = "Errored", detail = ex.Message }); }
+        }
+
         var src = _sources.FirstOrDefault(s => s.Key.Equals(key, StringComparison.OrdinalIgnoreCase));
         if (src is null) return NotFound(new { error = $"unknown source '{key}'" });
         if (!src.IsAvailable) return Ok(new { key, ok = false, status = "NotConfigured", detail = "credential/endpoint not set" });
