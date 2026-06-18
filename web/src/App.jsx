@@ -2435,10 +2435,12 @@ function SearchResults({ data, eco, onOpen }) {
   return (
     <div style={{ animation: "fwfade .15s ease" }}>
       <div style={{ display: "flex", gap: 4, borderBottom: `1px solid ${C.line}`, marginBottom: 18 }}>
-        {subTabs.map(([k, l]) => <button key={k} onClick={() => k === "packages" && setSub(k)}
-          style={{ ...s.hTab, ...(sub === k ? s.hTabOn : {}), cursor: k === "packages" ? "pointer" : "default", opacity: k === "packages" ? 1 : 0.5 }}>
-          {l}{k !== "packages" && <span style={{ fontSize: 9, marginLeft: 4 }}>soon</span>}</button>)}
+        {subTabs.map(([k, l]) => <button key={k} onClick={() => setSub(k)}
+          style={{ ...s.hTab, ...(sub === k ? s.hTabOn : {}), cursor: "pointer" }}>{l}</button>)}
       </div>
+      {sub === "ondemand" && <OnDemandPackages onOpen={onOpen} />}
+      {sub === "cves" && <SearchCves rows={rows} />}
+      {sub === "packages" && (
       <div style={s.card}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "16px 20px", borderBottom: `1px solid ${C.lineSoft}` }}>
           <div style={{ fontSize: 16, fontWeight: 600 }}>{rows.length} results found for “{data?.query}”</div>
@@ -2458,7 +2460,68 @@ function SearchResults({ data, eco, onOpen }) {
           ))}
         </tbody></table>
       </div>
+      )}
     </div>
+  );
+}
+
+// LIVE On Demand Packages — real on-demand scan history from /ondemand/list (no seed).
+function OnDemandPackages({ onOpen }) {
+  const [data, setData] = useState(null);
+  useEffect(() => { api.odsList().then(setData).catch(() => setData({ scans: [] })); }, []);
+  if (!data) return <div style={s.kevEmpty}>Loading on-demand scans…</div>;
+  const scans = data.scans || [];
+  return (
+    <Card title={`On Demand Packages (${scans.length})`} desc="Packages scanned on demand (not from a repo) — live history.">
+      <Table cols={["Package", "Version", "Ecosystem", "Vulnerabilities", "Verdict", "Scanned"]}>
+        {scans.length === 0 && <tr><td style={s.td} colSpan={6}>No on-demand scans yet. Use On-Demand Scanning to scan a package by name.</td></tr>}
+        {scans.map((sc, i) => (
+          <tr key={i} style={{ ...s.tr, cursor: onOpen ? "pointer" : "default" }} onClick={() => onOpen && onOpen(sc.name, sc.version)}>
+            <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11.5, color: C.accent }}>{sc.name}</td>
+            <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11.5 }}>{sc.version}</td>
+            <td style={s.td}><Tag tone={C.accent}>{sc.ecosystem}</Tag></td>
+            <td style={{ ...s.td, fontFamily: C.mono, color: (sc.vulnerabilities ?? sc.vulns ?? 0) > 0 ? C.block : C.allow }}>{sc.vulnerabilities ?? sc.vulns ?? 0}</td>
+            <td style={s.td}><span style={{ color: sc.verdict === "Vulnerable" ? C.block : sc.verdict === "Caution" ? C.warn : C.allow, fontWeight: 600, fontSize: 12 }}>{sc.verdict || "—"}</span></td>
+            <td style={{ ...s.td, fontSize: 11, color: C.sub }}>{sc.scannedAt ? new Date(sc.scannedAt).toLocaleDateString() : "—"}</td>
+          </tr>
+        ))}
+      </Table>
+    </Card>
+  );
+}
+
+// LIVE CVEs — every CVE across the matched packages, aggregated from their real scans.
+function SearchCves({ rows }) {
+  const [cves, setCves] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    Promise.all((rows || []).slice(0, 12).map((r) =>
+      api.getArtifactScan("search", r.ecosystem, r.name, r.latestVersion || "latest", false).catch(() => null)
+    )).then((scans) => {
+      if (!alive) return;
+      const all = [];
+      scans.filter(Boolean).forEach((sc) => (sc.vulnerabilities || []).forEach((v) => all.push({ ...v, pkg: sc.name })));
+      setCves(all);
+    });
+    return () => { alive = false; };
+  }, [rows]);
+  if (!cves) return <div style={s.kevEmpty}>Resolving CVEs across results…</div>;
+  return (
+    <Card title={`CVEs (${cves.length})`} desc="Vulnerabilities found across the matched packages.">
+      <Table cols={["Severity", "CVSS", "CVE", "Package", "Component", "Fix"]}>
+        {cves.length === 0 && <tr><td style={s.td} colSpan={6}>No CVEs in the matched packages.</td></tr>}
+        {cves.map((v, i) => (
+          <tr key={i} style={s.tr}>
+            <td style={s.td}><SevPill sev={v.severity} /></td>
+            <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11 }}>{v.cvss ?? "—"}</td>
+            <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11.5, color: C.accent }}>{(v.aliases || []).find((a) => a.startsWith("CVE")) || v.id}</td>
+            <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11.5 }}>{v.pkg}</td>
+            <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11 }}>{v.component || "—"}</td>
+            <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11.5, color: v.fixedVersion ? C.allow : C.sub }}>{v.fixedVersion || "—"}</td>
+          </tr>
+        ))}
+      </Table>
+    </Card>
   );
 }
 
