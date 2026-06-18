@@ -107,6 +107,8 @@ builder.Services.AddSingleton<IDependencyResolver, NpmResolver>();
 builder.Services.AddSingleton<IDependencyResolver, NuGetResolver>();
 builder.Services.AddSingleton<IDependencyResolver, CargoResolver>();
 builder.Services.AddSingleton<IDependencyResolver, GoResolver>();
+builder.Services.AddSingleton<IDependencyResolver, DockerResolver>();
+builder.Services.AddHttpClient("docker", c => { c.Timeout = TimeSpan.FromSeconds(30); c.DefaultRequestHeaders.Add("User-Agent", "Advisory-Docker"); });
 
 // Scanners
 builder.Services.AddSingleton<Advisory.Api.Scan.PickleScanner>();

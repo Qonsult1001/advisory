@@ -2,7 +2,7 @@ using System.Text.Json.Serialization;
 
 namespace Advisory.Api.Models;
 
-public enum Ecosystem { PyPI, npm, NuGet, Cargo, Go, HuggingFace }
+public enum Ecosystem { PyPI, npm, NuGet, Cargo, Go, HuggingFace, Docker }
 
 public enum Severity { None, Low, Medium, High, Critical }
 
