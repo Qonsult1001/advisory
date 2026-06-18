@@ -100,6 +100,15 @@ public class CatalogController : ControllerBase
         if (!Enum.TryParse<Ecosystem>(ecosystem, true, out var eco)) eco = Ecosystem.npm;
         return Ok(await _catalog.OverviewAsync(eco, name.Trim(), string.IsNullOrWhiteSpace(version) ? null : version.Trim(), ct));
     }
+
+    /// <summary>Live CVE/advisory detail by id (CVE-…, GHSA-…, PYSEC-…). Real OSV lookup +
+    /// CISA-KEV exploited flag + EPSS probability. ?id=CVE-2021-44228</summary>
+    [HttpGet("cve")]
+    public async Task<ActionResult> Cve([FromQuery] string id, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(id)) return BadRequest(new { error = "id is required" });
+        return Ok(await _catalog.CveDetailAsync(id.Trim(), ct));
+    }
 }
 
 /// <summary>

@@ -18,6 +18,7 @@ const api = {
   getEcosystems: () => fetch(`${API}/catalog/ecosystems`).then((r) => r.json()),
   getPackage: (eco, name, version) => fetch(`${API}/catalog/package?ecosystem=${eco}&name=${encodeURIComponent(name)}${version ? `&version=${encodeURIComponent(version)}` : ""}`).then((r) => r.json()),
   searchPackages: (eco, q, limit) => fetch(`${API}/catalog/search?ecosystem=${eco}&q=${encodeURIComponent(q)}${limit ? `&limit=${limit}` : ""}`).then((r) => r.json()),
+  getCve: (id) => fetch(`${API}/catalog/cve?id=${encodeURIComponent(id)}`).then((r) => r.json()),
   enqueue: (pkg) => fetch(`${API}/queue/enqueue`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(pkg) }).then((r) => r.json()),
   getQueueDepth: () => fetch(`${API}/queue/depth`).then((r) => r.json()),
   getScans: () => fetch(`${API}/scans/repositories`).then((r) => r.json()),
@@ -2408,6 +2409,11 @@ function Catalog() {
     setAcOpen(false); setLoading(true); setView("package"); setPkg(null);
     api.getPackage(eco, name, version).then(setPkg).catch(() => setPkg({ verdict: "Unknown", name, ecosystem: eco, notes: ["Lookup failed."] })).finally(() => setLoading(false));
   };
+  const [cve, setCve] = useState(null);
+  const openCve = (id) => {
+    setAcOpen(false); setLoading(true); setView("cve"); setCve(null);
+    api.getCve(id).then(setCve).catch(() => setCve({ id, found: false })).finally(() => setLoading(false));
+  };
 
   const crumb = (
     <div style={s.crumb}>
@@ -2417,6 +2423,7 @@ function Catalog() {
         onClick={() => { setView("landing"); setPkg(null); setResults(null); }}>Explore</span>
       {view === "results" && <><span style={{ color: C.dim }}>›</span><span style={{ color: C.ink }}>{results?.query || q}</span></>}
       {view === "package" && <><span style={{ color: C.dim }}>›</span><span style={{ color: C.ink }}>{pkg?.name || "Package"}</span></>}
+      {view === "cve" && <><span style={{ color: C.dim }}>›</span><span style={{ color: C.ink }}>{cve?.id || "CVE"}</span></>}
       {view === "insights" && <><span style={{ color: C.dim }}>›</span><span style={{ color: C.ink }}>Security Insights</span></>}
     </div>
   );
@@ -2475,15 +2482,16 @@ function Catalog() {
       </div>
 
       {loading && view !== "landing" && <div style={s.kevEmpty}>Loading…</div>}
-      {!loading && view === "landing" && <CatalogLanding eco={eco} setQ={setQ} search={() => runSearch()} onSample={(t) => { const at = t.lastIndexOf("@"); at > 0 ? openPkg(t.slice(0, at), t.slice(at + 1)) : runSearch(t); }} onInsights={() => setView("insights")} />}
-      {!loading && view === "results" && <SearchResults data={results} eco={eco} onOpen={openPkg} />}
+      {!loading && view === "landing" && <CatalogLanding eco={eco} setQ={setQ} search={() => runSearch()} onSample={(t) => { const at = t.lastIndexOf("@"); at > 0 ? openPkg(t.slice(0, at), t.slice(at + 1)) : runSearch(t); }} onInsights={() => setView("insights")} onCve={openCve} onPick={setEco} />}
+      {!loading && view === "results" && <SearchResults data={results} eco={eco} onOpen={openPkg} onCve={openCve} />}
       {!loading && view === "package" && pkg && <PackageOverview pkg={pkg} onVersion={(v) => openPkg(pkg.name, v)} />}
+      {!loading && view === "cve" && cve && <CveDetail cve={cve} onPkg={(eco2, name) => { setEco(eco2); openPkg(name); }} />}
     </div>
   );
 }
 
 // Search-results list (image 4): "N Results Found", sub-tabs, package table.
-function SearchResults({ data, eco, onOpen }) {
+function SearchResults({ data, eco, onOpen, onCve }) {
   const [sub, setSub] = useState("packages");
   const rows = data?.results || [];
   const subTabs = [["packages", `Packages (${rows.length})`], ["ondemand", "On Demand Packages"], ["cves", "CVEs"]];
@@ -2494,7 +2502,7 @@ function SearchResults({ data, eco, onOpen }) {
           style={{ ...s.hTab, ...(sub === k ? s.hTabOn : {}), cursor: "pointer" }}>{l}</button>)}
       </div>
       {sub === "ondemand" && <OnDemandPackages onOpen={onOpen} />}
-      {sub === "cves" && <SearchCves rows={rows} />}
+      {sub === "cves" && <SearchCves rows={rows} onCve={onCve} />}
       {sub === "packages" && (
       <div style={s.card}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "16px 20px", borderBottom: `1px solid ${C.lineSoft}` }}>
@@ -2546,7 +2554,7 @@ function OnDemandPackages({ onOpen }) {
 }
 
 // LIVE CVEs — every CVE across the matched packages, aggregated from their real scans.
-function SearchCves({ rows }) {
+function SearchCves({ rows, onCve }) {
   const [cves, setCves] = useState(null);
   useEffect(() => {
     let alive = true;
@@ -2565,16 +2573,18 @@ function SearchCves({ rows }) {
     <Card title={`CVEs (${cves.length})`} desc="Vulnerabilities found across the matched packages.">
       <Table cols={["Severity", "CVSS", "CVE", "Package", "Component", "Fix"]}>
         {cves.length === 0 && <tr><td style={s.td} colSpan={6}>No CVEs in the matched packages.</td></tr>}
-        {cves.map((v, i) => (
-          <tr key={i} style={s.tr}>
+        {cves.map((v, i) => {
+          const cveId = (v.aliases || []).find((a) => a.startsWith("CVE")) || v.id;
+          return (
+          <tr key={i} style={{ ...s.tr, cursor: onCve ? "pointer" : "default" }} onClick={() => onCve && onCve(cveId)}>
             <td style={s.td}><SevPill sev={v.severity} /></td>
             <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11 }}>{v.cvss ?? "—"}</td>
-            <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11.5, color: C.accent }}>{(v.aliases || []).find((a) => a.startsWith("CVE")) || v.id}</td>
+            <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11.5, color: C.accent }}>{cveId}</td>
             <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11.5 }}>{v.pkg}</td>
             <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11 }}>{v.component || "—"}</td>
             <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11.5, color: v.fixedVersion ? C.allow : C.sub }}>{v.fixedVersion || "—"}</td>
           </tr>
-        ))}
+        );})}
       </Table>
     </Card>
   );
@@ -2626,7 +2636,112 @@ function SecurityInsights({ onClose, onPick }) {
   );
 }
 
-function CatalogLanding({ eco, setQ, search, onSample, onInsights }) {
+// CVE / advisory detail — live OSV record + KEV exploited flag + EPSS. JFrog-style layout.
+function CveDetail({ cve, onPkg }) {
+  if (!cve.found) return (
+    <div style={{ ...s.card, padding: "26px 24px", textAlign: "center" }}>
+      <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 6 }}>{cve.id}</div>
+      <div style={{ color: C.sub, fontSize: 13 }}>No advisory found in OSV for this id{cve.knownExploited ? " — but it IS on the CISA KEV list." : "."}</div>
+    </div>
+  );
+  const sevTitle = (cve.severity || "Unknown").charAt(0).toUpperCase() + (cve.severity || "Unknown").slice(1).toLowerCase();
+  const refType = (t) => ({ ADVISORY: "Advisory", Advisory: "Advisory", FIX: "Patch", Patch: "Patch", REPORT: "Report", PACKAGE: "Package", WEB: "Web", ARTICLE: "Article", EVIDENCE: "Evidence" }[t] || t || "Web");
+  return (
+    <div style={{ animation: "fwfade .15s ease", display: "grid", gridTemplateColumns: "300px 1fr", gap: 20, alignItems: "start" }}>
+      {/* left info card */}
+      <div style={{ ...s.card, padding: "18px 18px" }}>
+        <div style={{ fontSize: 18, fontWeight: 700, fontFamily: C.mono, marginBottom: 10 }}>{cve.id}</div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
+          <SevPill sev={sevTitle} />
+          {cve.knownExploited && <span style={{ fontSize: 10, fontWeight: 700, padding: "3px 9px", borderRadius: 20, color: C.block, background: `${C.block}1f` }}>● CISA KEV — EXPLOITED</span>}
+        </div>
+        <InfoRow k="CVSS base score" v={cve.cvss != null ? `${cve.cvss.toFixed(1)} / 10` : "—"} />
+        <InfoRow k="CVSS vector" v={cve.cvssVector || "—"} mono />
+        <InfoRow k="EPSS (exploit prob.)" v={cve.epss != null ? `${(cve.epss * 100).toFixed(2)}%` : "—"} />
+        <InfoRow k="Known exploited" v={cve.knownExploited ? "Yes (CISA KEV)" : "Not on KEV"} />
+        <InfoRow k="Published" v={cve.published ? new Date(cve.published).toLocaleDateString() : "—"} />
+        <InfoRow k="Modified" v={cve.modified ? new Date(cve.modified).toLocaleDateString() : "—"} />
+        {cve.cwes?.length > 0 && <InfoRow k="CWE" v={cve.cwes.join(", ")} />}
+        {cve.aliases?.length > 0 && <InfoRow k="Aliases" v={cve.aliases.join(", ")} mono />}
+      </div>
+      {/* right detail */}
+      <div>
+        {(cve.summary || cve.details) && (
+          <div style={{ ...s.card, padding: "18px 20px" }}>
+            {cve.summary && <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 8 }}>{cve.summary}</div>}
+            {cve.details && <div style={{ color: C.sub, fontSize: 12.5, lineHeight: 1.6, whiteSpace: "pre-wrap" }}>{cve.details.length > 1400 ? cve.details.slice(0, 1400) + "…" : cve.details}</div>}
+          </div>
+        )}
+        <div style={{ ...s.card, padding: 0 }}>
+          <div style={{ padding: "14px 20px", borderBottom: `1px solid ${C.lineSoft}`, fontWeight: 600 }}>Affected packages ({cve.affected?.length || 0})</div>
+          <table style={s.table}><thead><tr>
+            {["Type", "Package", "Introduced", "Fixed in"].map((c) => <th key={c} style={s.th}>{c}</th>)}
+          </tr></thead><tbody>
+            {(!cve.affected || cve.affected.length === 0) && <tr><td style={s.td} colSpan={4}>No affected-package ranges recorded in OSV for this advisory.</td></tr>}
+            {(cve.affected || []).slice(0, 40).map((a, i) => (
+              <tr key={i} style={{ ...s.tr, cursor: onPkg ? "pointer" : "default" }} onClick={() => onPkg && onPkg(a.ecosystem, a.name)}>
+                <td style={s.td}><span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}><BrandIcon format={a.ecosystem} />{a.ecosystem || "—"}</span></td>
+                <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11.5, color: C.accent }}>{a.name}</td>
+                <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11 }}>{a.introducedVersion || "0"}</td>
+                <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11, color: a.fixedVersion ? C.allow : C.dim }}>{a.fixedVersion || "no fix"}</td>
+              </tr>
+            ))}
+          </tbody></table>
+        </div>
+        {cve.references?.length > 0 && (
+          <div style={{ ...s.card, padding: "16px 20px" }}>
+            <div style={{ fontWeight: 600, marginBottom: 10 }}>References ({cve.references.length})</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+              {cve.references.slice(0, 30).map((r, i) => (
+                <a key={i} href={r.url} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: C.accent, textDecoration: "none", display: "flex", gap: 8, alignItems: "center" }}>
+                  <span style={{ fontSize: 9, color: C.sub, border: `1px solid ${C.line}`, borderRadius: 4, padding: "1px 6px", minWidth: 56, textAlign: "center" }}>{refType(r.type)}</span>
+                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.url}</span>
+                </a>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+function InfoRow({ k, v, mono }) {
+  return (
+    <div style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "6px 0", borderBottom: `1px solid ${C.lineSoft}`, fontSize: 12 }}>
+      <span style={{ color: C.sub }}>{k}</span>
+      <span style={{ fontFamily: mono ? C.mono : C.sans, fontSize: mono ? 10.5 : 12, textAlign: "right", wordBreak: "break-word", maxWidth: 180 }}>{v}</span>
+    </div>
+  );
+}
+
+// Real, known-exploited CVEs (all resolve live via /catalog/cve → OSV + KEV). No fixtures.
+const SAMPLE_CVES = [
+  ["CVE-2021-44228", "Log4Shell — Log4j RCE"],
+  ["CVE-2014-0160", "Heartbleed — OpenSSL"],
+  ["CVE-2021-3156", "Sudo Baron Samedit"],
+  ["CVE-2022-22965", "Spring4Shell"],
+  ["CVE-2018-1000007", "curl/libcurl"],
+];
+
+// Live sample repositories — pulls the real Nexus repos from the running stack (no seed data).
+function SampleRepoChips({ onPick }) {
+  const [repos, setRepos] = useState(null);
+  useEffect(() => { api.getScans().then((d) => setRepos(d.repositories || [])).catch(() => setRepos([])); }, []);
+  if (repos === null) return <span style={{ fontSize: 11, color: C.dim }}>loading live repos…</span>;
+  if (repos.length === 0) return <span style={{ fontSize: 11, color: C.dim }}>no repositories indexed yet</span>;
+  return <>{repos.slice(0, 6).map((r) => {
+    const name = r.name || r.Name; const fmt = r.format || r.Format || "";
+    return (
+      <button key={name} onClick={() => fmt && onPick && onPick(fmt)} title={`${fmt} · ${r.type || r.Type || "repo"}`}
+        style={{ ...s.sampleChip, display: "inline-flex", alignItems: "center", gap: 6 }}>
+        <BrandIcon format={fmt} />{name}
+      </button>
+    );
+  })}</>;
+}
+
+function CatalogLanding({ eco, setQ, search, onSample, onInsights, onCve, onPick }) {
+  const [sampleTab, setSampleTab] = useState("packages");
   const SAMPLES = {
     npm: [["express", "clean"], ["lodash@4.17.15", "vuln"], ["left-pad", "clean"], ["minimist@1.2.0", "vuln"]],
     PyPI: [["requests", "clean"], ["pyyaml", "vuln"], ["urllib3", "vuln"], ["flask", "clean"]],
@@ -2660,16 +2775,22 @@ function CatalogLanding({ eco, setQ, search, onSample, onInsights }) {
   ];
   return (
     <>
-      {/* Sample row: tabs (Packages/Repositories/CVEs) + Try Now, like JFrog */}
+      {/* Sample row: tabs (Packages/Repositories/CVEs) — each backed by real data, like JFrog */}
       <div style={{ display: "flex", alignItems: "center", gap: 18, margin: "0 0 6px" }}>
-        <span style={{ fontSize: 14, fontWeight: 600 }}>Sample packages</span>
-        <span style={{ ...s.hTabOn, fontSize: 13, paddingBottom: 6 }}>Packages</span>
-        <span style={{ color: C.dim, fontSize: 13, cursor: "default" }} title="Coming soon">Repositories <span style={{ fontSize: 9, color: C.dim }}>soon</span></span>
-        <span style={{ color: C.dim, fontSize: 13, cursor: "default" }} title="Coming soon">CVEs <span style={{ fontSize: 9, color: C.dim }}>soon</span></span>
-        <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6 }}>
-          {samples.map(([term, kind]) => (
+        <span style={{ fontSize: 14, fontWeight: 600 }}>Samples</span>
+        {[["packages", "Packages"], ["repositories", "Repositories"], ["cves", "CVEs"]].map(([k, l]) => (
+          <span key={k} onClick={() => setSampleTab(k)}
+            style={{ ...(sampleTab === k ? s.hTabOn : {}), fontSize: 13, paddingBottom: 6, cursor: "pointer", color: sampleTab === k ? undefined : C.sub }}>{l}</span>
+        ))}
+        <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", justifyContent: "flex-end", maxWidth: 560 }}>
+          {sampleTab === "packages" && samples.map(([term, kind]) => (
             <button key={term} onClick={() => run(term)} style={{ ...s.sampleChip,
               borderColor: kind === "vuln" ? C.block : C.line, color: kind === "vuln" ? C.block : C.ink }}>{term}</button>
+          ))}
+          {sampleTab === "repositories" && <SampleRepoChips onPick={onPick} />}
+          {sampleTab === "cves" && SAMPLE_CVES.map(([id, label]) => (
+            <button key={id} onClick={() => onCve && onCve(id)} title={label}
+              style={{ ...s.sampleChip, borderColor: C.block, color: C.block }}>{id}</button>
           ))}
         </span>
       </div>

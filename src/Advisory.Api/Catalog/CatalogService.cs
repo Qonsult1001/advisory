@@ -17,6 +17,27 @@ public record CatalogVuln(string Id, string Severity, double? Cvss, string? Summ
     string? FixedVersion, bool KnownExploited, IReadOnlyList<AdvisoryRef>? References,
     double? Epss = null, IReadOnlyList<string>? Aliases = null, IReadOnlyList<string>? Cwes = null);
 
+/// <summary>One affected package range for a CVE (from OSV's affected[] list).</summary>
+public record CveAffected(string Ecosystem, string Name, string? IntroducedVersion, string? FixedVersion);
+
+/// <summary>A standalone CVE/advisory detail, looked up by id from OSV + enriched with KEV/EPSS.</summary>
+public record CatalogCve(
+    string Id,
+    IReadOnlyList<string> Aliases,
+    string Severity,
+    double? Cvss,
+    string? CvssVector,
+    double? Epss,
+    bool KnownExploited,
+    string? Summary,
+    string? Details,
+    string? Published,
+    string? Modified,
+    IReadOnlyList<string> Cwes,
+    IReadOnlyList<CveAffected> Affected,
+    IReadOnlyList<AdvisoryRef> References,
+    bool Found);
+
 public record CatalogOverview(
     string Ecosystem,
     string Name,
@@ -811,6 +832,151 @@ public class CatalogService
         }
         return list;
     }
+
+    /// <summary>
+    /// Live CVE/advisory detail by id (CVE-…, GHSA-…, PYSEC-…, etc.) — a real OSV /v1/vulns/{id}
+    /// lookup, enriched with the CISA-KEV exploited flag and EPSS exploit probability. No fixtures.
+    /// </summary>
+    public async Task<CatalogCve> CveDetailAsync(string id, CancellationToken ct)
+    {
+        await _kev.EnsureLoaded(ct);
+        id = id.Trim();
+        try
+        {
+            var json = await OsvVulnJson(id, ct);
+            if (json is null)
+                return new CatalogCve(id, Array.Empty<string>(), "Unknown", null, null, null,
+                    _kev.IsKnownExploited(id), null, null, null, null,
+                    Array.Empty<string>(), Array.Empty<CveAffected>(), Array.Empty<AdvisoryRef>(), false);
+
+            using var doc = json;
+            var r = doc.RootElement;
+
+            // OSV's "CVE-…" records are often thin (no affected[], no summary). If this record is sparse
+            // but names a richer alias (GHSA-…/PYSEC-…), fetch that and prefer its detail — same vuln,
+            // fuller data. We keep the queried id as the canonical id and union the aliases.
+            bool sparse = !(r.TryGetProperty("affected", out var a0) && a0.ValueKind == JsonValueKind.Array && a0.GetArrayLength() > 0)
+                          || !(r.TryGetProperty("summary", out var s0) && s0.ValueKind == JsonValueKind.String && s0.GetString()!.Length > 0);
+            if (sparse && r.TryGetProperty("aliases", out var al0) && al0.ValueKind == JsonValueKind.Array)
+            {
+                var richAlias = al0.EnumerateArray().Select(x => x.GetString())
+                    .FirstOrDefault(x => x is not null && (x.StartsWith("GHSA", StringComparison.OrdinalIgnoreCase)
+                        || x.StartsWith("PYSEC", StringComparison.OrdinalIgnoreCase)
+                        || x.StartsWith("GO-", StringComparison.OrdinalIgnoreCase)
+                        || x.StartsWith("RUSTSEC", StringComparison.OrdinalIgnoreCase)));
+                if (richAlias is not null)
+                {
+                    var altJson = await OsvVulnJson(richAlias, ct);
+                    if (altJson is not null)
+                    {
+                        // Keep the original queried id; merge its aliases into the richer record's view.
+                        var merged = await BuildCve(id, altJson.RootElement, ct);
+                        altJson.Dispose();
+                        var unionAliases = merged.Aliases.Concat(new[] { id })
+                            .Where(x => !x.Equals(merged.Id, StringComparison.OrdinalIgnoreCase))
+                            .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+                        return merged with { Id = id, Aliases = unionAliases };
+                    }
+                }
+            }
+            return await BuildCve(id, r, ct);
+        }
+        catch
+        {
+            return new CatalogCve(id, Array.Empty<string>(), "Unknown", null, null, null,
+                _kev.IsKnownExploited(id), null, null, null, null,
+                Array.Empty<string>(), Array.Empty<CveAffected>(), Array.Empty<AdvisoryRef>(), false);
+        }
+    }
+
+    private async Task<JsonDocument?> OsvVulnJson(string id, CancellationToken ct)
+    {
+        using var resp = await _http.GetAsync($"https://api.osv.dev/v1/vulns/{Uri.EscapeDataString(id)}", ct);
+        if (!resp.IsSuccessStatusCode) return null;
+        return JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
+    }
+
+    private async Task<CatalogCve> BuildCve(string id, JsonElement r, CancellationToken ct)
+    {
+        string? S(string k) => r.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+
+            var aliases = r.TryGetProperty("aliases", out var al) && al.ValueKind == JsonValueKind.Array
+                ? al.EnumerateArray().Select(a => a.GetString() ?? "").Where(s => s.Length > 0).ToList() : new List<string>();
+
+            // CVSS vector + numeric base score (parse the v3 vector).
+            string? vector = null; double? cvss = null;
+            if (r.TryGetProperty("severity", out var sev) && sev.ValueKind == JsonValueKind.Array)
+                foreach (var se in sev.EnumerateArray())
+                {
+                    var t = se.TryGetProperty("type", out var tt) ? tt.GetString() : null;
+                    var sc = se.TryGetProperty("score", out var ss) ? ss.GetString() : null;
+                    if (sc is null) continue;
+                    if (t is "CVSS_V3" or "CVSS_V4" or "CVSS_V2") { vector = sc; cvss = OsvSource.CvssFromVector(sc); break; }
+                }
+
+            // Severity label: OSV database_specific.severity, else derive from CVSS.
+            var sevLabel = (r.TryGetProperty("database_specific", out var dsp) && dsp.TryGetProperty("severity", out var dsev)
+                ? dsev.GetString() : null) ?? SeverityFromCvss(cvss);
+
+            // CWEs (database_specific.cwe_ids on many OSV records).
+            var cwes = new List<string>();
+            if (r.TryGetProperty("database_specific", out var ds2) && ds2.TryGetProperty("cwe_ids", out var cw) && cw.ValueKind == JsonValueKind.Array)
+                cwes.AddRange(cw.EnumerateArray().Select(c => c.GetString() ?? "").Where(s => s.Length > 0));
+
+            // Affected packages (ecosystem + name + introduced/fixed).
+            var affected = new List<CveAffected>();
+            if (r.TryGetProperty("affected", out var aff) && aff.ValueKind == JsonValueKind.Array)
+                foreach (var a in aff.EnumerateArray())
+                {
+                    if (!a.TryGetProperty("package", out var pk)) continue;
+                    var pkgEco = pk.TryGetProperty("ecosystem", out var pe) ? pe.GetString() : null;
+                    var pkgName = pk.TryGetProperty("name", out var pn) ? pn.GetString() : null;
+                    if (string.IsNullOrEmpty(pkgName)) continue;
+                    string? intro = null, fixedVer = null;
+                    if (a.TryGetProperty("ranges", out var rng) && rng.ValueKind == JsonValueKind.Array)
+                        foreach (var rg in rng.EnumerateArray())
+                            if (rg.TryGetProperty("events", out var ev) && ev.ValueKind == JsonValueKind.Array)
+                                foreach (var e in ev.EnumerateArray())
+                                {
+                                    if (e.TryGetProperty("introduced", out var iv)) intro ??= iv.GetString();
+                                    if (e.TryGetProperty("fixed", out var fv)) fixedVer = fv.GetString();
+                                }
+                    affected.Add(new CveAffected(pkgEco ?? "", pkgName!, intro, fixedVer));
+                }
+
+            // Reference links, categorized as OSV provides them.
+            var refs = new List<AdvisoryRef>();
+            if (r.TryGetProperty("references", out var rf) && rf.ValueKind == JsonValueKind.Array)
+                foreach (var rr in rf.EnumerateArray())
+                {
+                    var url = rr.TryGetProperty("url", out var ru) ? ru.GetString() : null;
+                    var ty = rr.TryGetProperty("type", out var rt) ? rt.GetString() : "WEB";
+                    if (!string.IsNullOrEmpty(url)) refs.Add(new AdvisoryRef(ty ?? "WEB", url!));
+                }
+
+            // EPSS keyed on the CVE id (prefer a CVE alias).
+            var cveId = aliases.FirstOrDefault(a => a.StartsWith("CVE", StringComparison.OrdinalIgnoreCase))
+                ?? (id.StartsWith("CVE", StringComparison.OrdinalIgnoreCase) ? id : null);
+            double? epss = null;
+            if (cveId is not null) { try { var (esc, est, _) = await _epss.ScoreAsync(cveId, ct); if (est == SourceStatus.Ok) epss = esc; } catch { } }
+
+            var exploited = _kev.IsKnownExploited(id) || aliases.Any(_kev.IsKnownExploited);
+
+        return new CatalogCve(
+            S("id") ?? id, aliases, sevLabel, cvss, vector, epss, exploited,
+            S("summary"), S("details"), S("published"), S("modified"),
+            cwes, affected, refs, true);
+    }
+
+    private static string SeverityFromCvss(double? cvss) => cvss switch
+    {
+        null => "Unknown",
+        >= 9.0 => "Critical",
+        >= 7.0 => "High",
+        >= 4.0 => "Medium",
+        > 0.0 => "Low",
+        _ => "None",
+    };
 
     /// <summary>
     /// Project health. Resolves the GitHub slug from the package's repo URL, then:
