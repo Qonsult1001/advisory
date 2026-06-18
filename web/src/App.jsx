@@ -19,6 +19,7 @@ const api = {
   getPackage: (eco, name, version) => fetch(`${API}/catalog/package?ecosystem=${eco}&name=${encodeURIComponent(name)}${version ? `&version=${encodeURIComponent(version)}` : ""}`).then((r) => r.json()),
   searchPackages: (eco, q, limit) => fetch(`${API}/catalog/search?ecosystem=${eco}&q=${encodeURIComponent(q)}${limit ? `&limit=${limit}` : ""}`).then((r) => r.json()),
   getCve: (id) => fetch(`${API}/catalog/cve?id=${encodeURIComponent(id)}`).then((r) => r.json()),
+  myPackages: () => fetch(`${API}/scans/packages`).then((r) => r.json()),
   enqueue: (pkg) => fetch(`${API}/queue/enqueue`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(pkg) }).then((r) => r.json()),
   getQueueDepth: () => fetch(`${API}/queue/depth`).then((r) => r.json()),
   getScans: () => fetch(`${API}/scans/repositories`).then((r) => r.json()),
@@ -2493,6 +2494,7 @@ function Catalog() {
 // Search-results list (image 4): "N Results Found", sub-tabs, package table.
 function SearchResults({ data, eco, onOpen, onCve }) {
   const [sub, setSub] = useState("packages");
+  const [pkgView, setPkgView] = useState("catalog");   // catalog (public) | mine (our repositories)
   const rows = data?.results || [];
   const subTabs = [["packages", `Packages (${rows.length})`], ["ondemand", "On Demand Packages"], ["cves", "CVEs"]];
   return (
@@ -2504,26 +2506,81 @@ function SearchResults({ data, eco, onOpen, onCve }) {
       {sub === "ondemand" && <OnDemandPackages onOpen={onOpen} />}
       {sub === "cves" && <SearchCves rows={rows} onCve={onCve} />}
       {sub === "packages" && (
-      <div style={s.card}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "16px 20px", borderBottom: `1px solid ${C.lineSoft}` }}>
-          <div style={{ fontSize: 16, fontWeight: 600 }}>{rows.length} results found for “{data?.query}”</div>
-          <span style={{ width: 32, height: 32, border: `1px solid ${C.line}`, borderRadius: 6, display: "grid", placeItems: "center", color: C.sub }}>⚙</span>
-        </div>
-        <table style={s.table}><thead><tr>
-          {["Package name", "Type", "Description", "Latest version"].map((c) => <th key={c} style={s.th}>{c}</th>)}
-        </tr></thead><tbody>
-          {rows.length === 0 && <tr><td style={s.td} colSpan={4}>No packages matched.</td></tr>}
-          {rows.map((r, i) => (
-            <tr key={i} style={{ ...s.tr, cursor: "pointer" }} onClick={() => onOpen(r.name, r.latestVersion)}>
-              <td style={{ ...s.td, fontWeight: 600, color: C.accentDim }}>{r.name}</td>
-              <td style={s.td}><BrandIcon format={r.ecosystem} /></td>
-              <td style={{ ...s.td, color: C.sub, fontSize: 12.5, maxWidth: 520 }}>{r.description || "—"}</td>
-              <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11.5 }}>{r.latestVersion || "—"}</td>
-            </tr>
+      <>
+        {/* Public catalog vs. My repositories — JFrog shows both your repos and the public catalog. */}
+        <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+          {[["catalog", "Public catalog", rows.length], ["mine", "My repositories", null]].map(([k, l, n]) => (
+            <button key={k} onClick={() => setPkgView(k)} style={{ ...s.sampleChip,
+              borderColor: pkgView === k ? C.accent : C.line, color: pkgView === k ? C.accentDim : C.sub,
+              background: pkgView === k ? `${C.accent}10` : "transparent", fontWeight: 600 }}>
+              {l}{n != null ? ` (${n})` : ""}
+            </button>
           ))}
-        </tbody></table>
-      </div>
+        </div>
+        {pkgView === "mine" ? <MyPackages query={data?.query} onOpen={onOpen} onCve={onCve} />
+        : (
+        <div style={s.card}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "16px 20px", borderBottom: `1px solid ${C.lineSoft}` }}>
+            <div style={{ fontSize: 16, fontWeight: 600 }}>{rows.length} results found for “{data?.query}”</div>
+            <span style={{ width: 32, height: 32, border: `1px solid ${C.line}`, borderRadius: 6, display: "grid", placeItems: "center", color: C.sub }}>⚙</span>
+          </div>
+          <table style={s.table}><thead><tr>
+            {["Package name", "Type", "Description", "Latest version"].map((c) => <th key={c} style={s.th}>{c}</th>)}
+          </tr></thead><tbody>
+            {rows.length === 0 && <tr><td style={s.td} colSpan={4}>No packages matched.</td></tr>}
+            {rows.map((r, i) => (
+              <tr key={i} style={{ ...s.tr, cursor: "pointer" }} onClick={() => onOpen(r.name, r.latestVersion)}>
+                <td style={{ ...s.td, fontWeight: 600, color: C.accentDim }}>{r.name}</td>
+                <td style={s.td}><BrandIcon format={r.ecosystem} /></td>
+                <td style={{ ...s.td, color: C.sub, fontSize: 12.5, maxWidth: 520 }}>{r.description || "—"}</td>
+                <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11.5 }}>{r.latestVersion || "—"}</td>
+              </tr>
+            ))}
+          </tbody></table>
+        </div>
+        )}
+      </>
       )}
+    </div>
+  );
+}
+
+// LIVE "My repositories" — the real packages WE'VE ingested + scanned (Nexus/ScanStore), not the
+// public registry. This is "my own packages": every artifact that flowed through the gate.
+function MyPackages({ query, onOpen, onCve }) {
+  const [data, setData] = useState(null);
+  const [q, setQ] = useState(query || "");
+  useEffect(() => { api.myPackages().then(setData).catch(() => setData({ packages: [] })); }, []);
+  if (!data) return <div style={s.kevEmpty}>Loading your repository packages…</div>;
+  const all = data.packages || [];
+  const ql = (q || "").toLowerCase();
+  const rows = ql ? all.filter((p) => (p.name || "").toLowerCase().includes(ql) || (p.repository || "").toLowerCase().includes(ql)) : all;
+  return (
+    <div style={s.card}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "16px 20px", borderBottom: `1px solid ${C.lineSoft}`, gap: 12 }}>
+        <div style={{ fontSize: 16, fontWeight: 600 }}>{rows.length} of {all.length} packages in your repositories</div>
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Filter your packages…"
+          style={{ ...s.formInput, width: 240 }} />
+      </div>
+      <table style={s.table}><thead><tr>
+        {["Package", "Type", "Version", "Repository", "Vulns", "Verdict", "Last scan"].map((c) => <th key={c} style={s.th}>{c}</th>)}
+      </tr></thead><tbody>
+        {all.length === 0 && <tr><td style={s.td} colSpan={7}>No packages ingested yet. Pull packages through a quarantine repo to populate this.</td></tr>}
+        {all.length > 0 && rows.length === 0 && <tr><td style={s.td} colSpan={7}>None of your {all.length} packages match “{q}”.</td></tr>}
+        {rows.slice(0, 200).map((p, i) => (
+          <tr key={i} style={{ ...s.tr, cursor: "pointer" }} onClick={() => onOpen(p.name, p.version)}>
+            <td style={{ ...s.td, fontWeight: 600, color: C.accentDim }}>{p.name}</td>
+            <td style={s.td}><BrandIcon format={p.ecosystem} /></td>
+            <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11.5 }}>{p.version}</td>
+            <td style={{ ...s.td, fontSize: 12, color: C.sub }}>{p.repository}</td>
+            <td style={{ ...s.td, fontFamily: C.mono, color: (p.vulnerabilities ?? 0) > 0 ? C.block : C.allow }}>
+              {p.vulnerabilities ?? 0}{(p.critical ?? 0) + (p.high ?? 0) > 0 ? ` (${(p.critical ?? 0) + (p.high ?? 0)} C/H)` : ""}
+            </td>
+            <td style={s.td}><span style={{ color: p.verdict === "Vulnerable" || p.verdict === "Block" ? C.block : p.verdict === "Caution" || p.verdict === "Quarantine" ? C.warn : C.allow, fontWeight: 600, fontSize: 12 }}>{p.verdict || "—"}</span></td>
+            <td style={{ ...s.td, fontSize: 11, color: C.sub }}>{p.lastScan ? new Date(p.lastScan).toLocaleDateString() : "—"}</td>
+          </tr>
+        ))}
+      </tbody></table>
     </div>
   );
 }
@@ -2891,7 +2948,11 @@ function PackageOverview({ pkg, onVersion }) {
   const approved = pkg.verdict === "Clean" || pkg.verdict === "Caution";
   const installCmd = installCommand(pkg.ecosystem, pkg.name, pkg.version);
   const lic = licenseInfo(pkg.license);
-  const tabs = [["vulnerabilities", "Vulnerabilities"], ["dependencies", "Dependencies"], ["openssf", "OpenSSF"], ["licenses", "Licenses"], ["oprisk", "Operational Risk"]];
+  const er = pkg.extensionRisk;
+  const tabs = [
+    ["vulnerabilities", "Vulnerabilities"],
+    ...(er ? [["extrisk", "Extension Risk"]] : []),
+    ["dependencies", "Dependencies"], ["openssf", "OpenSSF"], ["licenses", "Licenses"], ["oprisk", "Operational Risk"]];
 
   return (
     <div style={{ display: "grid", gridTemplateColumns: "340px 1fr", gap: 20, alignItems: "start", animation: "fwfade .2s ease" }}>
@@ -2992,8 +3053,21 @@ function PackageOverview({ pkg, onVersion }) {
               <SumCard title="Transitive Vulnerabilities" n={0} />
               <SumCard title="Enriched (EPSS + KEV)" n={vulns.filter(v => v.knownExploited || v.epss != null).length} enriched />
             </div>
+            {er && (
+              <div onClick={() => setTab("extrisk")} style={{ cursor: "pointer", marginBottom: 16, padding: "12px 16px", borderRadius: 10, display: "flex", alignItems: "center", gap: 12,
+                border: `1px solid ${er.verdict === "Trusted" ? C.allow : C.warn}`, background: `${er.verdict === "Trusted" ? C.allow : C.warn}12` }}>
+                <span style={{ fontSize: 18 }}>{er.verdict === "High-Risk" ? "⛔" : er.verdict === "Caution" ? "⚠" : "🛡"}</span>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 600, fontSize: 13 }}>Extension Risk: {er.verdict} — CVE scanning alone does not cover extensions</div>
+                  <div style={{ fontSize: 11.5, color: C.sub }}>
+                    {er.publisherVerified ? "Verified publisher" : "UNVERIFIED publisher"} · {er.executesCode ? "executes native code" : "no code entrypoint"} · {er.runsAutomatically ? "auto-activates" : "manual activation"} · {er.knownMalicious ? "ON MALICIOUS FEED" : "no malicious advisory"} — click for the full data-exfiltration assessment.
+                  </div>
+                </div>
+                <span style={{ color: C.accent, fontSize: 12 }}>View ›</span>
+              </div>
+            )}
             {vulns.length === 0
-              ? <EmptyState title="No Vulnerabilities Found" sub="Great news! We haven't found any vulnerabilities for this version." />
+              ? <EmptyState title="No CVEs Found" sub={er ? "No known CVEs — but extensions are assessed on capabilities & publisher trust. See the Extension Risk tab above." : "Great news! We haven't found any vulnerabilities for this version."} />
               : <div style={s.card}>
                   <div style={{ padding: "14px 20px", borderBottom: `1px solid ${C.lineSoft}`, fontWeight: 600 }}>{vulns.length} Vulnerabilities</div>
                   <Table cols={["Severity", "ID", "Fix version", "CVSS v3", "CVSS v4", "KEV", "EPSS %"]}>
@@ -3092,6 +3166,58 @@ function PackageOverview({ pkg, onVersion }) {
         )}
 
         {tab === "oprisk" && <OpRiskTab risk={pkg.operationalRisk} />}
+        {tab === "extrisk" && <ExtensionRiskTab er={er} />}
+      </div>
+    </div>
+  );
+}
+
+// Extension Risk tab — capability + publisher + exfiltration assessment for AI-editor extensions.
+// This is the real "is it safe" answer for a VSIX, where CVE scanning alone says nothing.
+function ExtensionRiskTab({ er }) {
+  if (!er) return <EmptyState title="No Extension Risk Data" sub="Capability analysis is available for AI Editor Extensions only." />;
+  const lvlColor = { High: C.block, Medium: C.warn, Low: C.sub, Info: C.allow }[""] || C.sub;
+  const tone = (lvl) => ({ High: C.block, Medium: C.warn, Low: C.sub, Info: C.allow })[lvl] || C.sub;
+  const vColor = er.verdict === "High-Risk" ? C.block : er.verdict === "Caution" ? C.warn : C.allow;
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "300px 1fr", gap: 20, alignItems: "start" }}>
+      <div style={{ ...s.card, padding: "18px 18px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
+          <span style={{ fontSize: 22 }}>{er.verdict === "High-Risk" ? "⛔" : er.verdict === "Caution" ? "⚠" : "🛡"}</span>
+          <div>
+            <div style={{ fontSize: 18, fontWeight: 700, color: vColor }}>{er.verdict}</div>
+            <div style={{ fontSize: 11, color: C.sub }}>Capability & reputation assessment</div>
+          </div>
+        </div>
+        <InfoRow k="Publisher verified" v={er.publisherVerified ? "Yes (domain-verified)" : "NO — unverified"} />
+        {er.publisherDomain && <InfoRow k="Publisher domain" v={er.publisherDomain} />}
+        <InfoRow k="Executes native code" v={er.executesCode ? "Yes (FS/network/proc)" : "No"} />
+        <InfoRow k="Runs automatically" v={er.runsAutomatically ? "Yes (on startup)" : "No (manual)"} />
+        <InfoRow k="Untrusted workspaces" v={er.supportsUntrustedWorkspaces ? "Allowed" : "Blocked (safer)"} />
+        <InfoRow k="On Open VSX" v={er.onOpenVsx ? "Yes (cross-verified)" : "No (Marketplace-only)"} />
+        <InfoRow k="Malicious advisory" v={er.knownMalicious ? "YES — DO NOT INSTALL" : "None"} />
+        <InfoRow k="Installs" v={er.installs != null ? Number(er.installs).toLocaleString() : "—"} />
+        {er.dependencies?.length > 0 && <InfoRow k="Extension deps" v={er.dependencies.join(", ")} />}
+      </div>
+      <div>
+        <div style={{ ...s.card, padding: 0 }}>
+          <div style={{ padding: "14px 20px", borderBottom: `1px solid ${C.lineSoft}`, fontWeight: 600 }}>Capability signals</div>
+          <table style={s.table}><thead><tr>{["Signal", "Level", "Detail"].map((c) => <th key={c} style={s.th}>{c}</th>)}</tr></thead>
+            <tbody>{er.signals.map((sg, i) => (
+              <tr key={i} style={s.tr}>
+                <td style={{ ...s.td, fontWeight: 600 }}>{sg.name}</td>
+                <td style={s.td}><span style={{ fontFamily: C.mono, fontSize: 10, padding: "3px 9px", borderRadius: 20, color: tone(sg.level), background: `${tone(sg.level)}1f`, fontWeight: 600 }}>{sg.level.toUpperCase()}</span></td>
+                <td style={{ ...s.td, color: C.sub, fontSize: 12, maxWidth: 520 }}>{sg.detail}</td>
+              </tr>
+            ))}</tbody>
+          </table>
+        </div>
+        <div style={{ ...s.card, padding: "16px 20px" }}>
+          <div style={{ fontWeight: 600, marginBottom: 10, display: "flex", alignItems: "center", gap: 8 }}>🔎 Data-exfiltration assessment</div>
+          <ul style={{ margin: 0, paddingLeft: 18, display: "flex", flexDirection: "column", gap: 8 }}>
+            {er.exfiltrationNotes.map((n, i) => <li key={i} style={{ fontSize: 12.5, color: C.sub, lineHeight: 1.55 }}>{n}</li>)}
+          </ul>
+        </div>
       </div>
     </div>
   );

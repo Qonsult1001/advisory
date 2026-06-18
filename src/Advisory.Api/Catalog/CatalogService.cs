@@ -20,6 +20,29 @@ public record CatalogVuln(string Id, string Severity, double? Cvss, string? Summ
 /// <summary>One affected package range for a CVE (from OSV's affected[] list).</summary>
 public record CveAffected(string Ecosystem, string Name, string? IntroducedVersion, string? FixedVersion);
 
+/// <summary>One assessed capability/permission signal for an editor extension.</summary>
+public record ExtensionSignal(string Name, string Level, string Detail);  // Level: High / Medium / Low / Info
+
+/// <summary>
+/// Static + reputational risk assessment for an AI-editor (VS Code) extension. CVE scanners pass
+/// extensions as "clean" because extensions rarely carry CVEs — the real risk is capability abuse /
+/// data exfiltration / publisher impersonation. This inspects the published .vsix manifest + publisher
+/// trust signals (all from the Marketplace + Open VSX, free) and rates the exfiltration surface.
+/// </summary>
+public record ExtensionRisk(
+    string Verdict,                 // Trusted / Caution / High-Risk
+    bool PublisherVerified,
+    string? PublisherDomain,
+    bool ExecutesCode,              // has a node entrypoint (full FS/network/child_process)
+    bool RunsAutomatically,         // activates on startup / "*" (no user action needed)
+    bool SupportsUntrustedWorkspaces,
+    bool OnOpenVsx,                 // also published to the open registry (cross-checked)
+    bool KnownMalicious,            // on a malicious-extension advisory
+    long? Installs,
+    IReadOnlyList<string> Dependencies,        // other extensions it pulls in (supply chain)
+    IReadOnlyList<ExtensionSignal> Signals,    // the per-capability assessment
+    IReadOnlyList<string> ExfiltrationNotes);  // plain-English data-exfiltration assessment
+
 /// <summary>A standalone CVE/advisory detail, looked up by id from OSV + enriched with KEV/EPSS.</summary>
 public record CatalogCve(
     string Id,
@@ -59,7 +82,8 @@ public record CatalogOverview(
     CatalogScorecard? Scorecard,
     string Verdict,            // Clean / Vulnerable / Caution
     IReadOnlyList<string> Notes,
-    OperationalRisk? OperationalRisk = null);  // JFrog Xray-style operational-risk analysis
+    OperationalRisk? OperationalRisk = null,    // JFrog Xray-style operational-risk analysis
+    ExtensionRisk? ExtensionRisk = null);       // AI-editor extension capability/exfiltration analysis
 
 /// <summary>
 /// Aggregates a JFrog-Catalog-style package overview entirely from FREE public sources:
@@ -843,7 +867,10 @@ public class CatalogService
         var e = exts[0];
         string? S(JsonElement el, string k) => el.ValueKind == JsonValueKind.Object && el.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
 
-        var publisher = e.TryGetProperty("publisher", out var pub) ? S(pub, "publisherName") : null;
+        var pubEl = e.TryGetProperty("publisher", out var pub) ? pub : default;
+        var publisher = pubEl.ValueKind == JsonValueKind.Object ? S(pubEl, "publisherName") : null;
+        var publisherDomain = pubEl.ValueKind == JsonValueKind.Object ? S(pubEl, "domain") : null;
+        var publisherVerified = pubEl.ValueKind == JsonValueKind.Object && pubEl.TryGetProperty("isDomainVerified", out var dv) && dv.ValueKind == JsonValueKind.True;
         var displayName = S(e, "displayName");
         var shortDesc = S(e, "shortDescription");
         var lastUpdated = S(e, "lastUpdated");
@@ -880,21 +907,131 @@ public class CatalogService
             }
         homepage ??= $"https://marketplace.visualstudio.com/items?itemName={name}";
 
+        // The Code.Manifest asset is the published package.json — read its real capabilities.
+        string? manifestUrl = null;
+        if (e.TryGetProperty("versions", out var vs3) && vs3.GetArrayLength() > 0 && vs3[0].TryGetProperty("files", out var files) && files.ValueKind == JsonValueKind.Array)
+            foreach (var f in files.EnumerateArray())
+                if ((S(f, "assetType") ?? "").EndsWith("Code.Manifest", StringComparison.OrdinalIgnoreCase)) { manifestUrl = S(f, "source"); break; }
+
         var maintainers = string.IsNullOrEmpty(publisher) ? new List<CatalogMaintainer>() : new() { new CatalogMaintainer(publisher!, null) };
         var vulns = await Vulns(Ecosystem.AIEditorExtensions, name, resolved ?? "", ct);
+
+        // The real risk for an extension isn't a CVE — it's capability abuse / exfiltration / publisher
+        // impersonation. Run the static + reputational analysis so "no CVE" is never mistaken for "safe".
+        var extRisk = await AnalyzeExtensionRiskAsync(name, publisher, publisherDomain, publisherVerified, installs, manifestUrl, ct);
+
         var notes = new List<string>
         {
-            $"VS Code Marketplace extension — install: ext install {name} (or via the Extensions view).",
-            "AI-editor extensions run with editor privileges; vet the publisher + requested permissions before allowing."
+            $"VS Code Marketplace extension — install: code --install-extension {name}.",
         };
-        if (!string.IsNullOrEmpty(displayName)) notes.Add($"Display name: {displayName}.");
+        if (!string.IsNullOrEmpty(displayName)) notes.Add($"Display name: {displayName} (publisher: {publisher}{(publisherVerified ? ", domain-verified" : ", UNVERIFIED publisher")}).");
+        notes.Add(extRisk.Verdict == "Trusted"
+            ? "Extension-risk analysis: Trusted — verified publisher, capabilities reviewed, no malicious advisory."
+            : $"Extension-risk analysis: {extRisk.Verdict} — review the capability & exfiltration assessment below before allowing.");
 
         // Marketplace returns versions newest-first; Finalize reverses its allVersions input to build
         // the dropdown — so pass an oldest-first copy to get a newest-first dropdown.
         var oldestFirst = Enumerable.Reverse(allVersions).ToList();
-        return Finalize("AIEditorExtensions", name, resolved, shortDesc, null,
+        var ov = Finalize("AIEditorExtensions", name, resolved, shortDesc, null,
             homepage, repo, allVersions.FirstOrDefault(), allVersions.Count,
             recent, maintainers, installs, false, null, new(), vulns, null, notes, oldestFirst);
+        return ov with { ExtensionRisk = extRisk };
+    }
+
+    /// <summary>
+    /// Static + reputational risk for a VS Code / AI-editor extension. Reads the published package.json
+    /// (capabilities, activation, entrypoint, dependencies), the Marketplace publisher-trust flags, and
+    /// cross-checks Open VSX + the OpenSSF malicious feed. Returns a capability-based exfiltration verdict.
+    /// </summary>
+    private async Task<ExtensionRisk> AnalyzeExtensionRiskAsync(string name, string? publisher, string? domain,
+        bool publisherVerified, long? installs, string? manifestUrl, CancellationToken ct)
+    {
+        var signals = new List<ExtensionSignal>();
+        var exfil = new List<string>();
+        bool executesCode = false, runsAuto = false, untrusted = false;
+        var deps = new List<string>();
+
+        // 1) Static capability analysis from the published package.json manifest.
+        if (manifestUrl is not null)
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(await _http.GetStringAsync(manifestUrl, ct));
+                var m = doc.RootElement;
+                executesCode = (m.TryGetProperty("main", out var mn) && mn.ValueKind == JsonValueKind.String)
+                            || (m.TryGetProperty("browser", out var br) && br.ValueKind == JsonValueKind.String);
+                if (m.TryGetProperty("activationEvents", out var ae) && ae.ValueKind == JsonValueKind.Array)
+                {
+                    var evs = ae.EnumerateArray().Select(x => x.GetString() ?? "").ToList();
+                    runsAuto = evs.Any(x => x == "*" || x.StartsWith("onStartupFinished") || x.StartsWith("onStartup"));
+                    if (evs.Contains("*"))
+                        signals.Add(new ExtensionSignal("Activates on '*'", "High", "Loads on every editor start, regardless of context — maximal attack surface."));
+                    else if (runsAuto)
+                        signals.Add(new ExtensionSignal("Activates on startup", "Medium", "Runs automatically when the editor finishes loading (no user action required)."));
+                }
+                if (m.TryGetProperty("capabilities", out var cap) && cap.TryGetProperty("untrustedWorkspaces", out var uw)
+                    && uw.TryGetProperty("supported", out var sup))
+                    untrusted = sup.ValueKind == JsonValueKind.True || (sup.ValueKind == JsonValueKind.String && sup.GetString() == "limited");
+                if (m.TryGetProperty("extensionDependencies", out var ed) && ed.ValueKind == JsonValueKind.Array)
+                    deps.AddRange(ed.EnumerateArray().Select(x => x.GetString() ?? "").Where(x => x.Length > 0));
+                if (m.TryGetProperty("contributes", out var con) && con.TryGetProperty("configuration", out _)) { /* benign */ }
+
+                if (executesCode)
+                    signals.Add(new ExtensionSignal("Executes native code", "Medium",
+                        "Has a Node entrypoint — full access to the filesystem, network, and child processes. Can read source, env vars, tokens."));
+                signals.Add(new ExtensionSignal("Untrusted-workspace support", untrusted ? "Info" : "Low",
+                    untrusted ? "Runs in untrusted workspaces." : "Disabled in untrusted workspaces (safer default)."));
+            }
+            catch { signals.Add(new ExtensionSignal("Manifest", "Info", "Could not fetch the published manifest for static analysis.")); }
+        }
+
+        // 2) Publisher trust — the primary impersonation / supply-chain signal.
+        signals.Add(new ExtensionSignal("Publisher verification",
+            publisherVerified ? "Info" : "High",
+            publisherVerified ? $"Domain-verified publisher{(domain is null ? "" : $" ({domain})")}."
+                              : "Publisher domain is NOT verified — high impersonation/typosquat risk. Confirm this is the genuine author."));
+
+        // 3) Open VSX cross-reference (a second independent registry).
+        bool onOpenVsx = false;
+        try
+        {
+            var parts = name.Split('.', 2);
+            if (parts.Length == 2)
+            {
+                using var resp = await _http.GetAsync($"https://open-vsx.org/api/{parts[0]}/{parts[1]}", ct);
+                onOpenVsx = resp.IsSuccessStatusCode;
+            }
+        }
+        catch { }
+        signals.Add(new ExtensionSignal("Open VSX presence", onOpenVsx ? "Info" : "Low",
+            onOpenVsx ? "Also published to the open registry (Open VSX) — cross-verified." : "Not found on Open VSX (Marketplace-only)."));
+
+        // 4) Malicious-advisory check via OSV (MAL-*) — extensions named in malicious feeds.
+        bool knownMalicious = (await Vulns(Ecosystem.AIEditorExtensions, name, "", ct)).Any(v => v.Id.StartsWith("MAL-", StringComparison.OrdinalIgnoreCase));
+        if (knownMalicious) signals.Add(new ExtensionSignal("Malicious advisory", "High", "This extension appears in a malicious-package advisory — DO NOT INSTALL."));
+
+        // Data-exfiltration assessment, in plain English.
+        if (executesCode)
+            exfil.Add("Has native code execution, so it CAN technically read files, environment variables (API keys/tokens), and make outbound network calls. The Marketplace does not sandbox this.");
+        if (runsAuto)
+            exfil.Add("Activates automatically on startup — any exfiltration logic would run without you opening a specific file.");
+        exfil.Add(publisherVerified
+            ? "Publisher is domain-verified, which is the strongest available anti-impersonation signal — but verification is NOT a behavioural guarantee."
+            : "Publisher is unverified: the single biggest exfiltration red flag is an impostor publishing a look-alike of a trusted extension. Verify the publisher before allowing.");
+        exfil.Add(installs is long n && n > 1_000_000
+            ? $"High install base ({n:N0}) — widely used, so malicious behaviour would likely have been reported."
+            : "Lower install base — less community scrutiny; weigh this for a sensitive environment.");
+        exfil.Add("Note: this is a STATIC + reputational assessment (manifest, publisher, registries, malicious feeds). It is not a dynamic sandbox trace of runtime network calls — that requires the licensed behavioural tier (Socket).");
+
+        // Verdict.
+        var highCount = signals.Count(x => x.Level == "High");
+        var verdict = knownMalicious ? "High-Risk"
+            : !publisherVerified ? "Caution"
+            : highCount > 0 ? "Caution"
+            : "Trusted";
+
+        return new ExtensionRisk(verdict, publisherVerified, domain, executesCode, runsAuto, untrusted,
+            onOpenVsx, knownMalicious, installs, deps, signals, exfil);
     }
 
     private static string? Prop(JsonElement e, string p)
