@@ -565,6 +565,7 @@ public class CatalogService
                 Ecosystem.Cargo => await CargoOverview(name, version, ct),
                 Ecosystem.Go => await GoOverview(name, version, ct),
                 Ecosystem.HuggingFace => await HuggingFaceOverview(name, version, ct),
+                Ecosystem.AIEditorExtensions => await AiEditorExtensionOverview(name, version, ct),
                 _ => await VulnsOnlyOverview(eco, name, version, ct),
             };
             // JFrog-style operational risk (EOL, version age, # new versions, cadence health).
@@ -808,6 +809,92 @@ public class CatalogService
         return Finalize("HuggingFace", name, version ?? sha, Prop(root, "pipeline_tag"), null,
             $"https://huggingface.co/{name}", $"https://huggingface.co/{name}", "main", 0,
             new(), maintainers, downloads ?? likes, false, null, new(), vulns, null, notes);
+    }
+
+    // ---------- AI Editor Extensions (VS Code Marketplace .vsix) ----------
+    private async Task<CatalogOverview> AiEditorExtensionOverview(string name, string? version, CancellationToken ct)
+    {
+        // name is "<publisher>.<extensionName>" (e.g. "anthropic.claude-code").
+        // flags=307 = IncludeVersions(1)|IncludeFiles(2)|IncludeVersionProperties(16)|IncludeAssetUri(32)
+        //            |IncludeStatistics(256). Returns the real version history + install statistics
+        // (latest-only flags collapse the list to one version).
+        var body = new
+        {
+            filters = new[] { new { criteria = new[] { new { filterType = 7, value = name } }, pageSize = 1, pageNumber = 1 } },
+            flags = 307
+        };
+        using var req = new HttpRequestMessage(HttpMethod.Post,
+            "https://marketplace.visualstudio.com/_apis/public/gallery/extensionquery");
+        req.Content = new StringContent(JsonSerializer.Serialize(body));
+        req.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
+        req.Headers.TryAddWithoutValidation("Accept", "application/json;api-version=3.0-preview.1");
+        using var resp = await _http.SendAsync(req, ct);
+        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
+
+        var results = doc.RootElement.TryGetProperty("results", out var rs) && rs.GetArrayLength() > 0 ? rs[0] : default;
+        if (results.ValueKind != JsonValueKind.Object || !results.TryGetProperty("extensions", out var exts) || exts.GetArrayLength() == 0)
+        {
+            // Not found in the Marketplace — honest empty overview (still OSV-checked).
+            var v0 = await Vulns(Ecosystem.AIEditorExtensions, name, version ?? "", ct);
+            return Finalize("AIEditorExtensions", name, version, null, null, null, null, version, 0,
+                new(), new(), null, false, null, new(), v0, null,
+                new List<string> { "Extension not found in the VS Code Marketplace." });
+        }
+        var e = exts[0];
+        string? S(JsonElement el, string k) => el.ValueKind == JsonValueKind.Object && el.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+
+        var publisher = e.TryGetProperty("publisher", out var pub) ? S(pub, "publisherName") : null;
+        var displayName = S(e, "displayName");
+        var shortDesc = S(e, "shortDescription");
+        var lastUpdated = S(e, "lastUpdated");
+
+        // Distinct versions newest-first, with publish timestamps.
+        var recent = new List<CatalogVersion>();
+        var allVersions = new List<string>();
+        if (e.TryGetProperty("versions", out var vs) && vs.ValueKind == JsonValueKind.Array)
+            foreach (var v in vs.EnumerateArray())
+            {
+                var ver = S(v, "version");
+                if (ver is null || allVersions.Contains(ver)) continue;   // collapse per-platform dupes
+                allVersions.Add(ver);
+                if (recent.Count < 12) recent.Add(new CatalogVersion(ver, S(v, "lastUpdated"), false));
+            }
+        var resolved = version ?? allVersions.FirstOrDefault();
+
+        // Statistics (install count, rating) → use installs as the "downloads" signal.
+        long? installs = null;
+        if (e.TryGetProperty("statistics", out var st) && st.ValueKind == JsonValueKind.Array)
+            foreach (var stat in st.EnumerateArray())
+                if (S(stat, "statisticName") == "install" && stat.TryGetProperty("value", out var sv) && sv.ValueKind == JsonValueKind.Number)
+                    installs = (long)sv.GetDouble();
+
+        // Resolve homepage/repo from the latest version's properties (Links.Source / Links.Support).
+        string? homepage = null, repo = null;
+        if (e.TryGetProperty("versions", out var vs2) && vs2.GetArrayLength() > 0 && vs2[0].TryGetProperty("properties", out var props) && props.ValueKind == JsonValueKind.Array)
+            foreach (var p in props.EnumerateArray())
+            {
+                var key = S(p, "key"); var val = S(p, "value");
+                if (key is null || string.IsNullOrEmpty(val)) continue;
+                if (key.EndsWith("Links.Source", StringComparison.OrdinalIgnoreCase)) repo = val;
+                if (key.EndsWith("Links.Getstarted", StringComparison.OrdinalIgnoreCase) || key.EndsWith("Links.Learn", StringComparison.OrdinalIgnoreCase)) homepage ??= val;
+            }
+        homepage ??= $"https://marketplace.visualstudio.com/items?itemName={name}";
+
+        var maintainers = string.IsNullOrEmpty(publisher) ? new List<CatalogMaintainer>() : new() { new CatalogMaintainer(publisher!, null) };
+        var vulns = await Vulns(Ecosystem.AIEditorExtensions, name, resolved ?? "", ct);
+        var notes = new List<string>
+        {
+            $"VS Code Marketplace extension — install: ext install {name} (or via the Extensions view).",
+            "AI-editor extensions run with editor privileges; vet the publisher + requested permissions before allowing."
+        };
+        if (!string.IsNullOrEmpty(displayName)) notes.Add($"Display name: {displayName}.");
+
+        // Marketplace returns versions newest-first; Finalize reverses its allVersions input to build
+        // the dropdown — so pass an oldest-first copy to get a newest-first dropdown.
+        var oldestFirst = Enumerable.Reverse(allVersions).ToList();
+        return Finalize("AIEditorExtensions", name, resolved, shortDesc, null,
+            homepage, repo, allVersions.FirstOrDefault(), allVersions.Count,
+            recent, maintainers, installs, false, null, new(), vulns, null, notes, oldestFirst);
     }
 
     private static string? Prop(JsonElement e, string p)

@@ -2855,6 +2855,31 @@ function licenseInfo(name) {
 const RISK_TONE = { H: C.block, M: C.warn, L: C.allow };
 
 // Package detail — JFrog two-column layout: left info card + right tabbed content.
+// Per-ecosystem install command — matches each ecosystem's real package manager.
+function installCommand(eco, name, version) {
+  const v = version || "latest";
+  switch (eco) {
+    case "npm": return `npm install ${name}@${v}`;
+    case "PyPI": return `pip install ${name}==${v}`;
+    case "Conda": return `conda install ${name}=${v}`;
+    case "NuGet": return `dotnet add package ${name} --version ${v}`;
+    case "Cargo": return `cargo add ${name}@${v}`;
+    case "Go": return `go get ${name}@v${v}`;
+    case "Maven": { const [g, a] = (name || "").split(":"); return `<dependency>\n  <groupId>${g || name}</groupId>\n  <artifactId>${a || ""}</artifactId>\n  <version>${v}</version>\n</dependency>`; }
+    case "RubyGems": return `gem install ${name} -v ${v}`;
+    case "Composer": return `composer require ${name}:${v}`;
+    case "CRAN": return `install.packages("${name}")`;
+    case "DartPub": return `dart pub add ${name}:${v}`;
+    case "Conan": return `conan install --requires=${name}/${v}`;
+    case "HuggingFace": return `huggingface-cli download ${name}`;
+    case "Alpine": return `apk add ${name}=${v}`;
+    case "Debian":
+    case "Ubuntu": return `apt-get install ${name}=${v}`;
+    case "AIEditorExtensions": return `code --install-extension ${name}@${v}`;
+    case "Docker": return `docker pull ${name}:${v}`;
+    default: return `# install ${name} ${v} (${eco})`;
+  }
+}
 function PackageOverview({ pkg, onVersion }) {
   const [tab, setTab] = useState("vulnerabilities");
   const [verOpen, setVerOpen] = useState(false);
@@ -2864,7 +2889,7 @@ function PackageOverview({ pkg, onVersion }) {
   const high = vulns.filter((v) => v.severity === "High").length;
   const med = vulns.filter((v) => v.severity === "Medium").length + vulns.filter((v) => v.severity === "Low").length;
   const approved = pkg.verdict === "Clean" || pkg.verdict === "Caution";
-  const installCmd = pkg.ecosystem === "npm" ? `npm install ${pkg.name}@${pkg.version}` : `pip install ${pkg.name}==${pkg.version}`;
+  const installCmd = installCommand(pkg.ecosystem, pkg.name, pkg.version);
   const lic = licenseInfo(pkg.license);
   const tabs = [["vulnerabilities", "Vulnerabilities"], ["dependencies", "Dependencies"], ["openssf", "OpenSSF"], ["licenses", "Licenses"], ["oprisk", "Operational Risk"]];
 
