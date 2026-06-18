@@ -1652,10 +1652,54 @@ function ScansRepos({ onOpen }) {
           </tbody></table>
         </div>
       )}
-      {!loading && data?.configured && sub !== "repositories" && sub !== "git" && (
-        <Card title={subTabs.find(([k]) => k === sub)?.[1]} desc=""><div style={{ padding: 22, color: C.sub, fontSize: 12.5 }}>Populates as artifacts of this kind are indexed from Nexus.</div></Card>
+      {!loading && (sub === "packages" || sub === "builds" || sub === "bundles") && (
+        <ScansSubTab sub={sub} onOpen={onOpen} />
       )}
     </>
+  );
+}
+
+// LIVE Packages / Builds / Release Bundles tabs — real data from the scan store; honest empty
+// state otherwise. No seed.
+function ScansSubTab({ sub, onOpen }) {
+  const [data, setData] = useState(null);
+  useEffect(() => {
+    const url = sub === "packages" ? "packages" : sub === "builds" ? "builds" : "release-bundles";
+    setData(null);
+    fetch(`${API}/scans/${url}`).then((r) => r.json()).then(setData).catch(() => setData({ count: 0 }));
+  }, [sub]);
+  if (!data) return <div style={s.kevEmpty}>Loading…</div>;
+  if (sub === "packages") {
+    const pkgs = data.packages || [];
+    return (
+      <Card title={`Packages (${pkgs.length})`} desc="Every package scanned across all repositories.">
+        <Table cols={["Package", "Version", "Ecosystem", "Repository", "Vulnerabilities", "Verdict", "Last scan"]}>
+          {pkgs.length === 0 && <tr><td style={s.td} colSpan={7}>No packages scanned yet.</td></tr>}
+          {pkgs.map((p, i) => (
+            <tr key={i} style={{ ...s.tr, cursor: "pointer" }} onClick={() => onOpen && onOpen(p.repository, { name: p.name, version: p.version, ecosystem: p.ecosystem })}>
+              <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11.5, color: C.accent }}>{p.name}</td>
+              <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11.5 }}>{p.version}</td>
+              <td style={s.td}><Tag tone={C.accent}>{p.ecosystem}</Tag></td>
+              <td style={{ ...s.td, fontSize: 11.5, color: C.sub }}>{p.repository}</td>
+              <td style={{ ...s.td, fontFamily: C.mono, color: p.vulnerabilities > 0 ? C.block : C.allow }}>{p.vulnerabilities}</td>
+              <td style={s.td}><span style={{ color: p.verdict === "Vulnerable" ? C.block : p.verdict === "Caution" ? C.warn : C.allow, fontWeight: 600, fontSize: 12 }}>{p.verdict}</span></td>
+              <td style={{ ...s.td, fontSize: 11, color: C.sub }}>{p.lastScan ? new Date(p.lastScan).toLocaleDateString() : "—"}</td>
+            </tr>
+          ))}
+        </Table>
+      </Card>
+    );
+  }
+  // builds / bundles — live empty state with the real hint
+  const label = sub === "builds" ? "Builds" : "Release Bundles";
+  return (
+    <Card title={`${label} (${data.count || 0})`} desc="">
+      <div style={{ padding: 28, textAlign: "center", color: C.sub }}>
+        <div style={{ fontSize: 22, marginBottom: 6 }}>○</div>
+        <div style={{ fontSize: 13, fontWeight: 600, color: C.ink }}>No {label.toLowerCase()} indexed</div>
+        <div style={{ fontSize: 12, marginTop: 4, maxWidth: 460, marginLeft: "auto", marginRight: "auto", lineHeight: 1.5 }}>{data.hint}</div>
+      </div>
+    </Card>
   );
 }
 
