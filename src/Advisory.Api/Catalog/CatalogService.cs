@@ -1094,17 +1094,19 @@ public class CatalogService
         bool knownMalicious = (await Vulns(Ecosystem.AIEditorExtensions, name, "", ct)).Any(v => v.Id.StartsWith("MAL-", StringComparison.OrdinalIgnoreCase));
         if (knownMalicious) signals.Add(new ExtensionSignal("Malicious advisory", "High", "This extension appears in a malicious-package advisory — DO NOT INSTALL."));
 
-        // Data-exfiltration assessment, in plain English.
+        // Data-exfiltration assessment, in plain English. These describe the ATTACK SURFACE (what an
+        // extension of this shape COULD do) — the deep-scan note added below states what was actually
+        // FOUND. The two together answer "could it?" and "did it?".
         if (executesCode)
-            exfil.Add("Has native code execution, so it CAN technically read files, environment variables (API keys/tokens), and make outbound network calls. The Marketplace does not sandbox this.");
+            exfil.Add("Attack surface: has native code execution, so it COULD read files, environment variables (API keys/tokens), and make outbound network calls — the Marketplace doesn't sandbox this. (Whether it actually does is answered by the code scan below.)");
         if (runsAuto)
-            exfil.Add("Activates automatically on startup — any exfiltration logic would run without you opening a specific file.");
+            exfil.Add("Attack surface: activates automatically on startup, so any such logic would run without you opening a specific file.");
         exfil.Add(publisherVerified
-            ? "Publisher is domain-verified, which is the strongest available anti-impersonation signal — but verification is NOT a behavioural guarantee."
-            : "Publisher is unverified: the single biggest exfiltration red flag is an impostor publishing a look-alike of a trusted extension. Verify the publisher before allowing.");
+            ? "Trust signal: publisher is domain-verified — the strongest available anti-impersonation signal (though verification is not a behavioural guarantee)."
+            : "Trust signal: publisher is UNVERIFIED — the single biggest exfiltration red flag is an impostor publishing a look-alike of a trusted extension. Verify the publisher before allowing.");
         exfil.Add(installs is long n && n > 1_000_000
-            ? $"High install base ({n:N0}) — widely used, so malicious behaviour would likely have been reported."
-            : "Lower install base — less community scrutiny; weigh this for a sensitive environment.");
+            ? $"Trust signal: high install base ({n:N0}) — widely used, so malicious behaviour would likely have been reported."
+            : "Trust signal: lower install base — less community scrutiny; weigh this for a sensitive environment.");
 
         // 5) DEEP CODE SCAN — the real exfiltration check. vsix-audit downloads the .vsix and inspects
         //    the actual code: Discord/Telegram-webhook exfiltration, SSH-key/cookie/credential theft,

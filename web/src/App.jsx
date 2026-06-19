@@ -3158,6 +3158,12 @@ function PackageOverview({ pkg, onVersion }) {
                 {er.verdict === "High-Risk" ? "⛔" : er.verdict === "Caution" ? "⚠" : "🛡"} {er.verdict}
                 {(er.confirmedThreats || 0) > 0 && <span style={{ fontSize: 10, color: C.block }}>· {er.confirmedThreats} confirmed</span>}
               </button>} />}
+            {pkg.operationalRisk && <KV k="Operational Risk" v={
+              <button onClick={() => setTab("oprisk")} style={{ background: "none", border: "none", cursor: "pointer", padding: 0, display: "inline-flex", alignItems: "center", gap: 5,
+                fontWeight: 700, color: (OPR_TONE[pkg.operationalRisk.severity] || C.dim) }}>
+                {pkg.operationalRisk.severity === "None" ? "No risk" : pkg.operationalRisk.severity}
+                {pkg.operationalRisk.riskReason && <span style={{ fontSize: 10, color: C.sub, fontWeight: 400 }}>· {pkg.operationalRisk.riskReason}</span>}
+              </button>} />}
             <KV k="OpenSSF Score" v={sc?.overall != null
               ? <span style={{ fontWeight: 700, color: sc.overall >= 7 ? C.allow : sc.overall >= 4 ? C.warn : C.block }}>{sc.overall.toFixed(1)}/10</span>
               : <Tag tone={C.dim}>N/A</Tag>} last />
@@ -3324,26 +3330,29 @@ function PackageOverview({ pkg, onVersion }) {
 // Extension Risk tab — capability + publisher + exfiltration assessment for AI-editor extensions.
 // This is the real "is it safe" answer for a VSIX, where CVE scanning alone says nothing.
 function ExtensionRiskTab({ er }) {
+  const [criteriaOpen, setCriteriaOpen] = useState(false);
+  const [heurOpen, setHeurOpen] = useState(false);
   if (!er) return <EmptyState title="No Extension Risk Data" sub="Capability analysis is available for AI Editor Extensions only." />;
-  const lvlColor = { High: C.block, Medium: C.warn, Low: C.sub, Info: C.allow }[""] || C.sub;
   const tone = (lvl) => ({ High: C.block, Medium: C.warn, Low: C.sub, Info: C.allow })[lvl] || C.sub;
   const vColor = er.verdict === "High-Risk" ? C.block : er.verdict === "Caution" ? C.warn : C.allow;
+  const gc = er.gateAction === "Block" ? C.block : er.gateAction === "Notify" ? C.warn : C.allow;
   return (
     <div style={{ display: "grid", gridTemplateColumns: "300px 1fr", gap: 20, alignItems: "start" }}>
       <div style={{ ...s.card, padding: "18px 18px" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+        {/* Header — verdict on its own line, policy badge below (no longer squashed). */}
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
           <span style={{ fontSize: 22 }}>{er.verdict === "High-Risk" ? "⛔" : er.verdict === "Caution" ? "⚠" : "🛡"}</span>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontSize: 18, fontWeight: 700, color: vColor }}>{er.verdict}</div>
-            <div style={{ fontSize: 11, color: C.sub }}>Capability & reputation assessment</div>
-          </div>
-          {er.gateAction && (() => {
-            const gc = er.gateAction === "Block" ? C.block : er.gateAction === "Notify" ? C.warn : C.allow;
-            return <span title={er.gateActionReason} style={{ fontSize: 10, fontWeight: 700, padding: "4px 9px", borderRadius: 6, color: gc, border: `1px solid ${gc}`, whiteSpace: "nowrap" }}>
-              Policy: {er.gateAction === "Block" ? "BLOCK" : er.gateAction === "Notify" ? "ALLOW + FLAG" : "ALLOW"}
-            </span>;
-          })()}
+          <div style={{ fontSize: 20, fontWeight: 700, color: vColor }}>{er.verdict}</div>
         </div>
+        <div style={{ fontSize: 11, color: C.sub, marginBottom: 10 }}>Capability &amp; reputation assessment</div>
+        {er.gateAction && (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+            <span style={{ fontSize: 10, fontWeight: 700, padding: "4px 9px", borderRadius: 6, color: gc, border: `1px solid ${gc}` }}>
+              Policy: {er.gateAction === "Block" ? "BLOCK" : er.gateAction === "Notify" ? "ALLOW + FLAG" : "ALLOW"}
+            </span>
+            <button onClick={() => setCriteriaOpen(true)} style={{ background: "none", border: "none", color: C.accent, fontSize: 11, cursor: "pointer", padding: 0 }}>How is this decided? ⓘ</button>
+          </div>
+        )}
         {er.gateActionReason && <div style={{ fontSize: 10.5, color: C.sub, marginBottom: 10 }}>{er.gateActionReason}</div>}
         {/* Why this verdict — stated as a deterministic rule, not an opaque AI call. */}
         {er.verdictBasis && <div style={{ fontSize: 11.5, color: C.sub, lineHeight: 1.5, padding: "8px 10px", borderRadius: 8,
@@ -3372,13 +3381,19 @@ function ExtensionRiskTab({ er }) {
         {er.dependencies?.length > 0 && <InfoRow k="Extension deps" v={er.dependencies.join(", ")} />}
       </div>
       <div>
-        {/* Decision criteria — the audit-defensible "when does this pass / when does it fail". */}
-        {er.verdictCriteria?.length > 0 && (
-          <div style={{ ...s.card, padding: "16px 20px", borderLeft: `3px solid ${C.accent}` }}>
-            <div style={{ fontWeight: 600, marginBottom: 10, display: "flex", alignItems: "center", gap: 8 }}>⚖️ How this verdict is decided <span style={{ fontSize: 10.5, color: C.sub, fontWeight: 400 }}>(deterministic rules — for security review)</span></div>
-            <ul style={{ margin: 0, paddingLeft: 18, display: "flex", flexDirection: "column", gap: 7 }}>
-              {er.verdictCriteria.map((c, i) => <li key={i} style={{ fontSize: 12, color: C.sub, lineHeight: 1.5 }}>{c}</li>)}
-            </ul>
+        {/* Decision criteria as a POPUP — reclaims the space it used to eat at the top. */}
+        {criteriaOpen && er.verdictCriteria?.length > 0 && (
+          <div onClick={() => setCriteriaOpen(false)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.45)", zIndex: 100, display: "grid", placeItems: "center" }}>
+            <div onClick={(e) => e.stopPropagation()} style={{ ...s.card, maxWidth: 620, width: "90%", padding: "22px 24px", marginBottom: 0 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+                <div style={{ fontWeight: 700, fontSize: 15, display: "flex", alignItems: "center", gap: 8 }}>⚖️ How this verdict is decided</div>
+                <button onClick={() => setCriteriaOpen(false)} style={{ background: "none", border: "none", fontSize: 20, color: C.sub, cursor: "pointer" }}>×</button>
+              </div>
+              <div style={{ fontSize: 11, color: C.sub, marginBottom: 12 }}>Deterministic rules — for security review. The verdict is a rule, not an opaque AI call.</div>
+              <ul style={{ margin: 0, paddingLeft: 18, display: "flex", flexDirection: "column", gap: 9 }}>
+                {er.verdictCriteria.map((c, i) => <li key={i} style={{ fontSize: 12.5, color: C.ink, lineHeight: 1.55 }}>{c}</li>)}
+              </ul>
+            </div>
           </div>
         )}
         <div style={{ ...s.card, padding: 0 }}>
@@ -3401,7 +3416,18 @@ function ExtensionRiskTab({ er }) {
           // observations (ast/manifest) and YARA heuristics are not threats and are not listed.
           const isThreat = (c) => c.category === "ioc" && /C2|DOMAIN|IP_|KNOWN_BAD|HASH|GITHUB_C2|MALICIOUS/i.test(c.id || "");
           const confirmed = all.filter(isThreat);
-          const heuristicN = all.filter((c) => c.category === "yara").length;
+          const heuristics = all.filter((c) => c.category === "yara");
+          // Collapse repeated rule ids (e.g. process.binding x7) to one row + a count.
+          const heurGrouped = Object.values(heuristics.reduce((m, c) => {
+            const key = c.id || c.title;
+            if (!m[key]) m[key] = { ...c, count: 0 };
+            m[key].count++; return m;
+          }, {}));
+          const heuristicN = heuristics.length;
+          // A clean, friendly title from the YARA rule id (YARA_SUSP_JS_Process_Binding_Jan25 -> "Process Binding").
+          const ruleLabel = (c) => (c.title && c.title.length < 60 ? c.title : (c.id || "")
+            .replace(/^YARA_/, "").replace(/_(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\d+$/i, "")
+            .replace(/^(SUSP|MAL|RAT|STEALER|LOADER|C2)_JS_/i, "").replace(/_/g, " ").trim()) || "signature match";
           return (
         <div style={{ ...s.card, padding: 0 }}>
           <div style={{ padding: "14px 20px", borderBottom: `1px solid ${C.lineSoft}`, fontWeight: 600, display: "flex", alignItems: "center", gap: 8 }}>
@@ -3414,26 +3440,47 @@ function ExtensionRiskTab({ er }) {
           </div>
           {!er.codeScanned
             ? <div style={{ padding: "16px 20px", fontSize: 12.5, color: C.sub }}>Deep .vsix code scan not available (scanner sidecar unreachable). The assessment above is static + reputational only.</div>
-            : confirmed.length === 0
-              ? <div style={{ padding: "16px 20px", fontSize: 12.5, color: C.sub }}>
-                  vsix-audit downloaded and inspected the published .vsix — <b style={{ color: C.allow }}>no confirmed exfiltration / RAT / IOC indicators</b> in the code.
-                  {heuristicN > 0 && <span style={{ color: C.dim }}> ({heuristicN} low-confidence heuristic signature{heuristicN === 1 ? "" : "s"} matched and were suppressed as routine false-positives on minified JS.)</span>}
-                </div>
-              : <>
-                <table style={s.table}><thead><tr>{["Severity", "Finding", "Category", "Detail"].map((c) => <th key={c} style={s.th}>{c}</th>)}</tr></thead>
-                  <tbody>{confirmed.map((cf, i) => {
-                    const sc = cf.severity === "critical" ? C.block : C.block;
-                    return (
-                      <tr key={i} style={s.tr}>
-                        <td style={s.td}><span style={{ fontFamily: C.mono, fontSize: 10, padding: "3px 9px", borderRadius: 20, color: sc, background: `${sc}1f`, fontWeight: 600 }}>{(cf.severity || "").toUpperCase()}</span></td>
-                        <td style={{ ...s.td, fontWeight: 600, fontSize: 12.5 }}>{cf.title}</td>
-                        <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11, color: C.sub }}>{cf.category}</td>
-                        <td style={{ ...s.td, color: C.sub, fontSize: 11.5, maxWidth: 460 }}>{cf.detail}{cf.file ? ` · ${cf.file}` : ""}</td>
-                      </tr>
-                    );
-                  })}</tbody>
-                </table>
-                {heuristicN > 0 && <div style={{ padding: "8px 20px", fontSize: 11, color: C.dim, borderTop: `1px solid ${C.lineSoft}` }}>{heuristicN} additional low-confidence heuristic signature(s) suppressed (routine false-positives on minified JS).</div>}
+            : <>
+                {confirmed.length === 0
+                  ? <div style={{ padding: "16px 20px", fontSize: 12.5, color: C.sub }}>
+                      vsix-audit downloaded and inspected the published .vsix — <b style={{ color: C.allow }}>no confirmed exfiltration / RAT / IOC indicators</b> in the code.
+                    </div>
+                  : <table style={s.table}><thead><tr>{["Severity", "Finding", "Category", "Detail"].map((c) => <th key={c} style={s.th}>{c}</th>)}</tr></thead>
+                      <tbody>{confirmed.map((cf, i) => (
+                        <tr key={i} style={s.tr}>
+                          <td style={s.td}><span style={{ fontFamily: C.mono, fontSize: 10, padding: "3px 9px", borderRadius: 20, color: C.block, background: `${C.block}1f`, fontWeight: 600 }}>{(cf.severity || "").toUpperCase()}</span></td>
+                          <td style={{ ...s.td, fontWeight: 600, fontSize: 12.5 }}>{cf.title}</td>
+                          <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11, color: C.sub }}>{cf.category}</td>
+                          <td style={{ ...s.td, color: C.sub, fontSize: 11.5, maxWidth: 460 }}>{cf.detail}{cf.file ? ` · ${cf.file}` : ""}</td>
+                        </tr>
+                      ))}</tbody>
+                    </table>}
+                {/* Heuristic leads — collapsed by default. Visible proof the scan ran, clearly labeled
+                    low-confidence, never affects the verdict. */}
+                {heuristicN > 0 && (
+                  <div style={{ borderTop: `1px solid ${C.lineSoft}` }}>
+                    <button onClick={() => setHeurOpen(!heurOpen)} style={{ width: "100%", textAlign: "left", background: "none", border: "none", cursor: "pointer",
+                      padding: "11px 20px", fontSize: 12, color: C.sub, display: "flex", alignItems: "center", gap: 8 }}>
+                      <span style={{ color: C.warn }}>{heurOpen ? "▾" : "▸"}</span>
+                      <b style={{ color: C.ink }}>Heuristic leads ({heuristicN})</b>
+                      <span style={{ color: C.dim }}>— low-confidence YARA signatures, for review · do NOT affect the verdict (they false-positive on minified JS)</span>
+                    </button>
+                    {heurOpen && (
+                      <table style={s.table}><thead><tr>{["Severity", "Signature", "Detail"].map((c) => <th key={c} style={s.th}>{c}</th>)}</tr></thead>
+                        <tbody>{heurGrouped.map((cf, i) => {
+                          const sc = cf.severity === "critical" || cf.severity === "high" ? C.warn : C.sub;
+                          return (
+                            <tr key={i} style={s.tr}>
+                              <td style={s.td}><span style={{ fontFamily: C.mono, fontSize: 10, padding: "3px 9px", borderRadius: 20, color: sc, background: `${sc}1f`, fontWeight: 600 }}>{(cf.severity || "").toUpperCase()}</span></td>
+                              <td style={{ ...s.td, fontWeight: 600, fontSize: 12.5 }}>{ruleLabel(cf)}{cf.count > 1 ? <span style={{ color: C.dim, fontWeight: 400 }}> ×{cf.count}</span> : ""}</td>
+                              <td style={{ ...s.td, color: C.sub, fontSize: 11.5, maxWidth: 480 }}>{(cf.detail || "").replace(/^HEURISTIC signature match \(not a confirmed threat\)\.\s*/, "")}</td>
+                            </tr>
+                          );
+                        })}</tbody>
+                      </table>
+                    )}
+                  </div>
+                )}
               </>}
         </div>
           );
