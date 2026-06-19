@@ -3209,7 +3209,9 @@ function PackageOverview({ pkg, onVersion }) {
           <div style={s.card}>
             <div style={{ padding: "14px 20px", borderBottom: `1px solid ${C.lineSoft}`, fontWeight: 600 }}>Dependencies ({pkg.dependencies?.length ?? 0})</div>
             {(pkg.dependencies?.length ?? 0) === 0
-              ? <div style={{ padding: 24, textAlign: "center", color: C.sub, fontSize: 13 }}>No declared dependencies for this version.</div>
+              ? <div style={{ padding: 24, textAlign: "center", color: C.sub, fontSize: 13 }}>
+                  {er ? "VS Code extensions bundle their dependencies into a single file (extension.js), so they declare none separately. The bundled code IS inspected by the deep code scan — see the Extension Risk tab." : "No declared dependencies for this version."}
+                </div>
               : <div style={{ padding: 18, display: "flex", flexWrap: "wrap", gap: 7 }}>
                   {pkg.dependencies.slice(0, 80).map((d, i) => (
                     <span key={i} style={{ fontFamily: C.mono, fontSize: 11, padding: "4px 10px", background: C.surface2, border: `1px solid ${C.line}`, borderRadius: 6, color: C.ink }}>{d}</span>
@@ -3241,7 +3243,7 @@ function PackageOverview({ pkg, onVersion }) {
                     );
                   })}
                 </Table>
-              : <EmptyState title="No Scorecard Published" sub={sc?.stars != null ? `Repository resolved (★ ${sc.stars.toLocaleString()}) but OpenSSF hasn't scored it yet.` : "No source repository resolved for this package."} />}
+              : <EmptyState title="No Scorecard Published" sub={er ? "OpenSSF Scorecard scores public source repositories. This extension doesn't publish a linked repo, so there's no scorecard — its security is assessed by the Extension Risk deep scan instead." : sc?.stars != null ? `Repository resolved (★ ${sc.stars.toLocaleString()}) but OpenSSF hasn't scored it yet.` : "No source repository resolved for this package."} />}
           </div>
         )}
 
@@ -3284,7 +3286,7 @@ function PackageOverview({ pkg, onVersion }) {
           </div>
         )}
 
-        {tab === "oprisk" && <OpRiskTab risk={pkg.operationalRisk} />}
+        {tab === "oprisk" && <OpRiskTab risk={pkg.operationalRisk} isExtension={!!er} />}
         {tab === "extrisk" && <ExtensionRiskTab er={er} />}
       </div>
     </div>
@@ -3427,9 +3429,9 @@ function OprBadge({ sev }) {
   return <span style={{ display: "inline-block", fontSize: 11, fontWeight: 700, color: c,
     border: `1px solid ${c}`, borderRadius: 4, padding: "2px 8px" }}>{sev === "None" ? "No risk" : sev}</span>;
 }
-function OpRiskTab({ risk }) {
+function OpRiskTab({ risk, isExtension }) {
   if (!risk) return <EmptyState title="No Operational Risk Data"
-    sub="Operational-risk analysis is computed from registry release history (npm + PyPI)." />;
+    sub={isExtension ? "Operational-risk (EOL / version-age / release-cadence) is computed from package-registry history. VS Code extensions use the Extension Risk assessment instead — see that tab." : "Operational-risk analysis is computed from registry release history (npm, PyPI, NuGet, Cargo, RubyGems, Composer)."} />;
   const factors = [
     ["End-of-Life / Deprecated", risk.eol ? "High" : "None",
       risk.eol ? (risk.eolReason || "Version deprecated by maintainer") : "Not deprecated or yanked"],

@@ -118,6 +118,8 @@ public class CatalogService
     private readonly OpRiskService _opRisk;
     private readonly VulnCheckSource _vc;
     private readonly string? _vsixScannerUrl;
+    // Deep-scan result cache (a cold .vsix scan takes ~90s for a large extension). Keyed by id; 12h TTL.
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, (string Status, IReadOnlyList<CodeScanFinding> Findings, bool Ran, DateTimeOffset At)> _scanCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly Advisory.Api.Policy.IPolicyStore _policy;
 
     public CatalogService(IHttpClientFactory f, OsvSource osv, KevSource kev, EpssSource epss, OpRiskService opRisk,
@@ -937,11 +939,31 @@ public class CatalogService
             }
         homepage ??= $"https://marketplace.visualstudio.com/items?itemName={name}";
 
-        // The Code.Manifest asset is the published package.json — read its real capabilities.
+        // The Code.Manifest asset is the published package.json — read its real capabilities + metadata.
         string? manifestUrl = null;
         if (e.TryGetProperty("versions", out var vs3) && vs3.GetArrayLength() > 0 && vs3[0].TryGetProperty("files", out var files) && files.ValueKind == JsonValueKind.Array)
             foreach (var f in files.EnumerateArray())
                 if ((S(f, "assetType") ?? "").EndsWith("Code.Manifest", StringComparison.OrdinalIgnoreCase)) { manifestUrl = S(f, "source"); break; }
+
+        // Pull license + repository from the manifest (the Marketplace summary omits them). VS Code
+        // extensions bundle their deps into extension.js, so a declared-dependency list is normally
+        // empty — that's correct, not missing data.
+        string? license = null;
+        if (manifestUrl is not null)
+            try
+            {
+                using var mdoc = JsonDocument.Parse(await _http.GetStringAsync(manifestUrl, ct));
+                var mm = mdoc.RootElement;
+                license = mm.TryGetProperty("license", out var lic) && lic.ValueKind == JsonValueKind.String ? lic.GetString() : null;
+                if (mm.TryGetProperty("repository", out var rp2))
+                    repo ??= rp2.ValueKind == JsonValueKind.String ? rp2.GetString()
+                           : rp2.ValueKind == JsonValueKind.Object && rp2.TryGetProperty("url", out var ru2) ? ru2.GetString() : null;
+                if (mm.TryGetProperty("homepage", out var hp2) && hp2.ValueKind == JsonValueKind.String && !string.IsNullOrEmpty(hp2.GetString()))
+                    homepage = hp2.GetString();
+            }
+            catch { /* manifest fetch is best-effort */ }
+        // License text can be a long legal blob — trim to a readable label.
+        if (license is { Length: > 60 }) license = license.Length > 120 ? license[..120].Trim() + "…" : license;
 
         var maintainers = string.IsNullOrEmpty(publisher) ? new List<CatalogMaintainer>() : new() { new CatalogMaintainer(publisher!, null) };
         var vulns = await Vulns(Ecosystem.AIEditorExtensions, name, resolved ?? "", ct);
@@ -962,7 +984,7 @@ public class CatalogService
         // Marketplace returns versions newest-first; Finalize reverses its allVersions input to build
         // the dropdown — so pass an oldest-first copy to get a newest-first dropdown.
         var oldestFirst = Enumerable.Reverse(allVersions).ToList();
-        var ov = Finalize("AIEditorExtensions", name, resolved, shortDesc, null,
+        var ov = Finalize("AIEditorExtensions", name, resolved, shortDesc, license,
             homepage, repo, allVersions.FirstOrDefault(), allVersions.Count,
             recent, maintainers, installs, false, null, new(), vulns, null, notes, oldestFirst);
         return ov with { ExtensionRisk = extRisk };
@@ -1181,6 +1203,9 @@ public class CatalogService
         // off in the policy, the deep scan does not run (and the UI reports it as disabled, not clean).
         if (!_policy.Current.EnabledSources.Contains("vsix-scanner", StringComparer.OrdinalIgnoreCase))
             return ("Disabled", Array.Empty<CodeScanFinding>(), false);
+        // Serve a cached scan (12h) — a large extension takes ~90s cold; re-opening it should be instant.
+        if (_scanCache.TryGetValue(id, out var c) && DateTimeOffset.UtcNow - c.At < TimeSpan.FromHours(12))
+            return (c.Status, c.Findings, c.Ran);
         try
         {
             var client = _factory.CreateClient("catalog-index");
@@ -1204,7 +1229,9 @@ public class CatalogService
                         detail = $"HEURISTIC signature match (not a confirmed threat). A YARA rule pattern matched this file — these commonly fire on legitimate bundled/minified JS. Treat as a lead for review, not proof. {detail}";
                     list.Add(new CodeScanFinding(S("id") ?? "", S("title") ?? "", S("severity") ?? "low", cat, detail, file));
                 }
-            return (list.Count == 0 ? "Clean" : "Findings", list, true);
+            var result = (list.Count == 0 ? "Clean" : "Findings", (IReadOnlyList<CodeScanFinding>)list, true);
+            _scanCache[id] = (result.Item1, result.Item2, result.Item3, DateTimeOffset.UtcNow);
+            return result;
         }
         catch { return ("Unavailable", Array.Empty<CodeScanFinding>(), false); }
     }
