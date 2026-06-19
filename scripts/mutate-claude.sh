@@ -119,19 +119,43 @@ trap 'stop_heartbeat' EXIT
 # PROJECT CONTEXT (Cursor-style full-project awareness for whichever agent runs).
 # Format: .said brain (preferred — semantic + symbol search via tools/said) or a plain .md map.
 # Built ONCE if absent; pass FORCE_CONTEXT=true (or the Admin "Rebuild context" hits this) to redo.
-SAID_BIN="./tools/said/said.exe"
+# said 0.11.1 binaries — dual-path by platform: Windows .exe on the host (outside Docker, Git Bash),
+# Linux build in WSL / the container. said-orchestrate is the closed-loop driver
+# (plan→code→test→repair→learn). Pick by OS so a native-Windows shell never tries to exec the ELF binary.
+case "$(uname -s 2>/dev/null)" in
+  *NT*|*MINGW*|*MSYS*|*CYGWIN*) _said_ext=".exe"; _said_suf="" ;;   # Windows host
+  *)                            _said_ext="";     _said_suf="-linux" ;; # Linux (WSL / container)
+esac
+SAID_BIN="./tools/said/said${_said_suf}${_said_ext}"
+ORCH_BIN="./tools/said/said-orchestrate${_said_suf}${_said_ext}"
+# Safety net: if the chosen one isn't there, try the other platform's binary.
+[ -x "$SAID_BIN" ] || SAID_BIN="./tools/said/said-linux"; [ -x "$SAID_BIN" ] || SAID_BIN="./tools/said/said.exe"
+[ -x "$ORCH_BIN" ] || ORCH_BIN="./tools/said/said-orchestrate-linux"; [ -x "$ORCH_BIN" ] || ORCH_BIN="./tools/said/said-orchestrate.exe"
 CONTEXT_FORMAT="${CONTEXT_FORMAT:-said}"
 build_context() {
   if [ "$CONTEXT_FORMAT" = "said" ] && [ -x "$SAID_BIN" ]; then
     if [ ! -f Advisory.said ] || [ "${FORCE_CONTEXT:-}" = "true" ]; then
       echo "[$(date '+%F %T')] building project context (.said brain)…"
       [ "${FORCE_CONTEXT:-}" = "true" ] && rm -f Advisory.said 2>/dev/null
-      # `init` already recurses the whole repo (AST-aware via the 'code' feature) and builds the full
-      # semantic + symbol + trigram index. Do NOT also `add --dir` — that double-adds and corrupts the
-      # SCA index so `ask` returns 'no match'. A single init = 671 frames, 506 symbols, ask works.
-      "$SAID_BIN" init >/dev/null 2>&1 || true
+      # Scope the index to SOURCE only — the said-build recipe. Indexing the WHOLE repo (web bundles,
+      # lock files, docs) blew said 0.11.1's embedding pass up to ~10GB RAM and OOM-killed init; src+tests
+      # is ~750 frames and peaks ~100MB. `init` takes a SINGLE dir, so copy src+tests into a scratch dir
+      # and init THAT, then move the brain into place atomically. Single init only (no `add --dir`, which
+      # double-adds and corrupts the SCA index).
+      local said_abs; said_abs="$(cd "$(dirname "$SAID_BIN")" && pwd)/$(basename "$SAID_BIN")"
+      local sdir; sdir="${TMPDIR:-/tmp}/saidbuild.$$"
+      rm -rf "$sdir" 2>/dev/null; mkdir -p "$sdir"
+      cp -r src tests .gitignore "$sdir"/ 2>/dev/null
+      local tmpb="$sdir/Advisory.said"
+      if ( cd "$sdir" && "$said_abs" init . --path "$tmpb" ) >/dev/null 2>&1 && [ -s "$tmpb" ]; then
+        mv -f "$tmpb" Advisory.said
+      else
+        # Fallback to a bare whole-dir init if the scoped form isn't available.
+        "$SAID_BIN" init >/dev/null 2>&1 || true
+      fi
+      rm -rf "$sdir" 2>/dev/null
     fi
-    # Push live brain stats to the dashboard (the worker can run said.exe; the container can't).
+    # Push live brain stats to the dashboard (the worker can run said; the container can't).
     local st; st="$("$SAID_BIN" stats --json 2>/dev/null || echo '')"
     [ -n "$st" ] && api_post "admin/context/stats" "$st"
   else
@@ -353,10 +377,133 @@ claude_ready() {
   return 0       # some other output — not an auth problem; let the real cycle run and report
 }
 
+# Export the LLM provider env said-orchestrate reads. Provider = the operator's MAF selection.
+# We FIRST read the live MAF routing (/admin/routing/mutation — the dashboard's model dropdown, which
+# returns endpoint+model+provider for the execution phase) so "whatever is defined in MAF" drives the
+# orchestrator. Env MUTATE_LLM=groq|openrouter is the fallback when the API/routing isn't reachable.
+# Keys come from .env (already sourced); said-orchestrate picks the provider from which env is set.
+set_orchestrate_llm() {
+  # 1) Try MAF routing — use the EXECUTION agent's endpoint/model if present.
+  local r ep model
+  r="$(curl -s -m 5 "$API/admin/routing/mutation" 2>/dev/null || echo '')"
+  if printf '%s' "$r" | grep -q '"endpoint"'; then
+    # Prefer the 'execution' phase; fall back to 'planning'/'research' (the JSON has per-phase agents).
+    ep="$(printf '%s' "$r" | python3 -c 'import sys,json
+try:
+ d=json.load(sys.stdin)
+ a=d.get("execution") or d.get("planning") or d.get("research") or {}
+ print((a.get("endpoint") or "")+"|"+(a.get("model") or ""))
+except: print("|")' 2>/dev/null)"
+    model="${ep#*|}"; ep="${ep%%|*}"
+  fi
+  if [ -n "$ep" ]; then
+    if printf '%s' "$ep" | grep -qi "groq"; then
+      export GROQ_API_KEY="${GROQ_API_KEY:-${PKGFW_GROQ_API_KEY:-}}"
+      export GROQ_MODEL="${model:-openai/gpt-oss-120b}"
+      unset OPENAI_API_KEY SAID_LLM_BASE_URL SAID_LLM_MODEL 2>/dev/null
+      echo "[$(date '+%F %T')]   ↳ LLM (MAF): Groq ($GROQ_MODEL)"
+      [ -n "$GROQ_API_KEY" ] || { echo "[$(date '+%F %T')] MAF says Groq but no GROQ_API_KEY in .env"; return 1; }
+      return 0
+    else
+      # Any other OpenAI-compatible endpoint (OpenRouter, on-prem, etc.) from MAF.
+      export OPENAI_API_KEY="${OPENROUTER_API_KEY:-${OPENAI_API_KEY:-}}"
+      export SAID_LLM_BASE_URL="$ep"; export SAID_LLM_MODEL="${model:-moonshotai/kimi-k2}"
+      unset GROQ_API_KEY GROQ_MODEL 2>/dev/null
+      echo "[$(date '+%F %T')]   ↳ LLM (MAF): $SAID_LLM_BASE_URL ($SAID_LLM_MODEL)"
+      [ -n "$OPENAI_API_KEY" ] || { echo "[$(date '+%F %T')] MAF endpoint set but no API key in .env"; return 1; }
+      return 0
+    fi
+  fi
+
+  # 2) Fallback: explicit env switch when routing isn't reachable.
+  case "${MUTATE_LLM:-groq}" in
+    openrouter)
+      export OPENAI_API_KEY="${OPENROUTER_API_KEY:-}"
+      export SAID_LLM_BASE_URL="https://openrouter.ai/api/v1"
+      export SAID_LLM_MODEL="${MUTATE_MODEL:-${SAID_LLM_MODEL:-moonshotai/kimi-k2}}"
+      unset GROQ_API_KEY GROQ_MODEL 2>/dev/null
+      echo "[$(date '+%F %T')]   ↳ LLM: OpenRouter ($SAID_LLM_MODEL)"
+      [ -n "$OPENAI_API_KEY" ] || { echo "[$(date '+%F %T')] no OPENROUTER_API_KEY in .env"; return 1; } ;;
+    *)
+      export GROQ_API_KEY="${GROQ_API_KEY:-${PKGFW_GROQ_API_KEY:-}}"
+      export GROQ_MODEL="${MUTATE_MODEL:-${GROQ_MODEL:-${PKGFW_GROQ_MODEL:-openai/gpt-oss-120b}}}"
+      unset OPENAI_API_KEY SAID_LLM_BASE_URL SAID_LLM_MODEL 2>/dev/null
+      echo "[$(date '+%F %T')]   ↳ LLM: Groq ($GROQ_MODEL)"
+      [ -n "$GROQ_API_KEY" ] || { echo "[$(date '+%F %T')] no GROQ_API_KEY in .env"; return 1; } ;;
+  esac
+}
+
+# Closed-loop ticket cycle via said-orchestrate. Reuses mutate-ide.sh setup (branch + ticket) and
+# finish (PR) — keeping the queue/dashboard/PR-only model — but the LLM is driven by the orchestrator
+# (plan→design→code→test→repair→learn), gate-verified, instead of `claude -p /mutate`.
+run_cycle_orchestrate() {
+  if [ ! -x "$ORCH_BIN" ]; then
+    progress "fix" "failed" "" "said-orchestrate binary missing ($ORCH_BIN) — drop v0.11.1 binaries into tools/said"
+    echo "[$(date '+%F %T')] orchestrate cycle FAILED — $ORCH_BIN not found"; CUR_RUN=""; return 0
+  fi
+  if ! set_orchestrate_llm; then
+    progress "fix" "failed" "" "no LLM key for MUTATE_LLM=${MUTATE_LLM:-groq} — set the key in .env, then click Mutate again"
+    CUR_RUN=""; return 0
+  fi
+
+  build_context   # rebuild/refresh the .said brain (scoped to src+tests; the orchestrator reads it)
+
+  # Branch + ticket via the existing setup (hour gate bypassed for an operator-queued ticket).
+  export FORCE_RUN=true MUTATE_HOURS="*"
+  [ -n "$CUR_TICKET" ] && export MUTATE_TICKET="$CUR_TICKET"
+  progress "plan" "running" "" "orchestrate: setting up branch + ticket"
+  if ! REPO="$REPO" bash scripts/mutate-ide.sh setup 2>&1 | tee -a /tmp/orch.$$ | tail -3; then
+    progress "fix" "failed" "" "setup failed — see worker log"; CUR_RUN=""; return 0
+  fi
+  # The task is the ticket body (setup wrote it to .evolve/ISSUES_TODAY.md).
+  local task; task="$(cat .evolve/ISSUES_TODAY.md 2>/dev/null)"
+  [ -n "$task" ] || task="Address the queued mutation ticket #${CUR_TICKET:-}."
+
+  # The GATE — the sole ground truth. The orchestrator loops until this is green or attempts run out.
+  local build_cmd="${MUTATE_BUILD_CMD:-dotnet build src/Advisory.Api/Advisory.Api.csproj -clp:ErrorsOnly}"
+  local test_cmd="${MUTATE_TEST_CMD:-dotnet test tests/Advisory.Tests/Advisory.Tests.csproj --nologo}"
+
+  progress "fix" "running" "" "orchestrate: plan→design→code→test→repair (gate-verified)"
+  echo "[$(date '+%F %T')]   ↳ said-orchestrate --task <ticket> --build '$build_cmd' --test '$test_cmd'"
+  local rc=0
+  "$ORCH_BIN" --brain Advisory.said --repo "$PWD" \
+    --task "$task" \
+    --build "$build_cmd" --test "$test_cmd" \
+    --max-attempts "${MUTATE_MAX_ATTEMPTS:-3}" 2>&1 | tee -a /tmp/orch.$$ ; rc=${PIPESTATUS[0]}
+
+  if [ "$rc" -ne 0 ]; then
+    # The orchestrator stops (never merges red) when the gate can't be made green within max-attempts.
+    progress "fix" "failed" "" "orchestrate stopped — gate not green within ${MUTATE_MAX_ATTEMPTS:-3} attempts (no PR; tree left clean)"
+    echo "[$(date '+%F %T')] orchestrate cycle STOPPED (rc=$rc) — not merging red, no PR opened."
+    CUR_RUN=""; rm -f /tmp/orch.$$ 2>/dev/null; return 0
+  fi
+
+  # Gate green → open a PR via the existing finish (PR-only; operator releases). Nothing auto-merges.
+  progress "pr" "running" "" "orchestrate: gate green — opening PR"
+  local pr_out; pr_out="$(REPO="$REPO" bash scripts/mutate-ide.sh finish 2>&1 | tee -a /tmp/orch.$$)"
+  local newpr; newpr="$(printf '%s' "$pr_out" | grep -oE 'https://[^ ]+/pull/[0-9]+' | tail -1)"
+  if [ -n "$newpr" ]; then
+    progress "pr" "pr-open" "$newpr" "orchestrate complete — PR opened (gate green). Operator releases."
+    echo "[$(date '+%F %T')] orchestrate cycle DONE — PR: $newpr"
+  else
+    progress "pr" "pr-open" "" "orchestrate finished — see worker log for PR status"
+    echo "[$(date '+%F %T')] orchestrate finish ran; PR url not detected (see /tmp/orch.$$)"
+  fi
+  rm -f /tmp/orch.$$ 2>/dev/null
+  CUR_RUN=""; return 0
+}
+
 run_cycle() {
   start_heartbeat   # keep pinging in the background so the dashboard stays "online" through the long run
   progress "setup" "running" "" "worker picked up the ticket"
-  echo "[$(date '+%F %T')] /mutate cycle start (run=${CUR_RUN:-?})"
+  echo "[$(date '+%F %T')] /mutate cycle start (run=${CUR_RUN:-?}, engine=${MUTATE_ENGINE:-orchestrate})"
+
+  # ENGINE: said-orchestrate (default) drives ANY external LLM (Groq/OpenRouter) through the full
+  # closed loop (plan→design→code→test→repair→learn), gate-verified — no Claude login needed. Set
+  # MUTATE_ENGINE=claude to use the legacy `claude -p /mutate` path below.
+  if [ "${MUTATE_ENGINE:-orchestrate}" = "orchestrate" ]; then
+    run_cycle_orchestrate; return $?
+  fi
 
   # Preflight: confirm the worker has a working headless credential before the heavy cycle.
   if ! claude_ready; then

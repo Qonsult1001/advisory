@@ -1,38 +1,42 @@
-# `said` — project-context brain for agents
+# `said` 0.11.1 — project brain + closed-loop orchestrator for the mutation cycle
 
-`said.exe` is the **.said brain engine** (copied from the SAID-ECHO project). It gives mutation/
-evolution agents Cursor-style full-codebase context: it indexes the whole repo (AST-aware, via
-tree-sitter) into `Advisory.said`, and agents query it with `ask` / `sym` / `grep` / `query`.
+Three self-contained binaries (encoder model baked in via `include_bytes!` — no DLLs, no side files),
+shipped per-platform: **`.exe` for the Windows host/IDE (outside Docker)** and **`-linux` for WSL /
+the container**.
 
-## Why it isn't committed
-`said.exe` is a ~44 MB compiled binary, so it's **gitignored**, not stored in the repo. Each machine
-builds it once. The generated `Advisory.said` brain is also gitignored (the worker rebuilds it).
+| Binary | Role |
+|--------|------|
+| `said` / `said-linux` | The `.said` CLI — builds + queries the project brain (`sym`/`grep`/`ask`/`get`). |
+| `said-mcp` / `said-mcp-linux` | The stdio MCP server, so IDEs/agents query the brain over MCP. |
+| `said-orchestrate` / `said-orchestrate-linux` | **The closed-loop driver.** Runs plan → design → code → test → repair → learn against ANY external LLM, gate-verified. Replaced the hand-driven `claude -p /mutate` cycle. |
 
-Two self-contained exes (encoder model baked in via `include_bytes!` — no DLLs, no side files):
-- `said.exe` — the CLI used by the worker to build/query the project brain.
-- `said-mcp.exe` — the stdio MCP server, so agents/IDEs can query the brain over MCP.
+## Why the binaries aren't committed
+They're large compiled binaries (~60 MB each), so they're **gitignored** (only this README is tracked).
+The generated `Advisory.said` brain is also gitignored — the worker rebuilds it. Drop the v0.11.1
+binaries from `said-build/dist-binaries/v0.11.1/said-full-linux-x64/` (Linux) and
+`said-build/target/release/*.exe` (Windows) into this folder.
 
-## Build them (one-time, needs Rust + the SAID-ECHO checkout)
-
-```cmd
-cargo build --release -p said-cli --features "code embed-model" --manifest-path G:\development\SAID-ECHO\Cargo.toml
-cargo build --release -p said-mcp --features "code embed-model" --manifest-path G:\development\SAID-ECHO\Cargo.toml
-copy /Y G:\development\SAID-ECHO\target\release\said.exe     tools\said\said.exe
-copy /Y G:\development\SAID-ECHO\target\release\said-mcp.exe tools\said\said-mcp.exe
-```
-
-The **`code`** feature is essential — it bakes in the tree-sitter grammars (C#, TS/JS, Python, Go,
-Java, Rust). Without it, `said init` won't chunk the source and the symbol table stays empty.
-
-## How the worker uses it
-`scripts/mutate-claude.sh` calls `build_context` at the start of a cycle: if `Advisory.said` is
-missing it runs `said init` + `said add --dir src|web/src|tests` once. The `/mutate` skill then
-queries the brain for context. Set `CONTEXT_FORMAT=md` to use a plain `PROJECT_CONTEXT.md` map
-instead, or `FORCE_CONTEXT=true` to rebuild.
+## How the worker uses them (`scripts/mutate-claude.sh`)
+- **`build_context`** rebuilds the `.said` brain when missing/forced. It indexes **`src` + `tests` only**
+  (the said-build recipe): indexing the whole repo blew said 0.11.1's embedding pass to ~10 GB RAM and
+  OOM-killed `init`; `src`+`tests` is ~750 frames and peaks ~100 MB. `init` takes a single dir, so the
+  worker copies `src`+`tests` into a scratch dir, inits that, and moves the brain into place.
+- **`run_cycle_orchestrate`** (engine = `orchestrate`, the default) drives each ticket:
+  `setup` (branch) → `said-orchestrate --brain Advisory.said --repo . --task <ticket> --build <gate>
+  --test <gate> --max-attempts 3` → on green, `finish` (open PR). PR-only; the operator `release`s.
+- **Provider = the MAF selection.** The worker reads `/admin/routing/mutation` (the dashboard model
+  dropdown) and exports the matching env: Groq → `GROQ_API_KEY`+`GROQ_MODEL`; any OpenAI-compatible
+  endpoint (OpenRouter, on-prem) → `OPENAI_API_KEY`+`SAID_LLM_BASE_URL`+`SAID_LLM_MODEL`. Falls back to
+  `MUTATE_LLM=groq|openrouter` if the API isn't reachable. **The gate is the sole ground truth** — the
+  orchestrator never merges red; on exhausted attempts it stops with the tree clean.
+- Set `MUTATE_ENGINE=claude` to fall back to the legacy `claude -p /mutate` path.
 
 ## Quick check it's the right build
-```cmd
-tools\said\said.exe init
-tools\said\said.exe sym GateEngine   REM should return a class hit with a file:line
+```bash
+tools/said/said-linux --version                              # must print: said 0.11.1
+tools/said/said-linux sym GateEngine --path Advisory.said    # → src/Advisory.Api/Gate/GateEngine.cs:24
 ```
-If `sym` returns 0 symbols, the binary was built without `code` — rebuild as above.
+If `sym` returns 0 symbols, the brain was built wrong (or with an old binary) — rebuild via
+`FORCE_CONTEXT=true` (which rebuilds scoped to `src`+`tests`).
+
+See `docs/said-orchestrator-design.md` for the closed-loop design.
