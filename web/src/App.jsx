@@ -3043,6 +3043,16 @@ function licenseInfo(name) {
 const RISK_TONE = { H: C.block, M: C.warn, L: C.allow };
 
 // Package detail — JFrog two-column layout: left info card + right tabbed content.
+// Condense a license into a short chip label. Known SPDX ids pass through; a long legal blob
+// (e.g. a proprietary "© … All rights reserved") collapses to "Proprietary" so it doesn't overflow
+// the small left-card row. Returns the original if it's already short.
+function shortLicense(lic) {
+  if (!lic) return "—";
+  const t = lic.trim();
+  if (t.length <= 18) return t;                                  // MIT, Apache-2.0, BSD-3-Clause…
+  if (/all rights reserved|proprietary|©|copyright/i.test(t)) return "Proprietary";
+  return t.slice(0, 16).trim() + "…";
+}
 // Per-ecosystem install command — matches each ecosystem's real package manager.
 function installCommand(eco, name, version) {
   const v = version || "latest";
@@ -3141,7 +3151,7 @@ function PackageOverview({ pkg, onVersion }) {
                 <Cnt n={crit} c={C.block} /><Cnt n={high} c="#ef6a3d" /><Cnt n={med} c={C.warn} />
               </span>} />
             <KV k="Dependencies" v={`${pkg.dependencies?.length ?? 0}`} />
-            <KV k="Licenses" v={pkg.license ? <Tag tone={C.sub}>{pkg.license}</Tag> : "—"} />
+            <KV k="Licenses" v={pkg.license ? <Tag tone={C.sub}>{shortLicense(pkg.license)}</Tag> : "—"} />
             {er && <KV k="Extension Risk" v={
               <button onClick={() => setTab("extrisk")} style={{ background: "none", border: "none", cursor: "pointer", padding: 0, display: "inline-flex", alignItems: "center", gap: 5,
                 fontWeight: 700, color: er.verdict === "High-Risk" ? C.block : er.verdict === "Caution" ? C.warn : C.allow }}>

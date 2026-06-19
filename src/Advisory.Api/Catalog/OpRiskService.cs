@@ -36,7 +36,20 @@ public class OpRiskService
     public OpRiskService(IHttpClientFactory f) => _http = f.CreateClient("oprisk");
 
     public bool Supports(Ecosystem e) => e is Ecosystem.npm or Ecosystem.PyPI
-        or Ecosystem.NuGet or Ecosystem.Cargo or Ecosystem.RubyGems or Ecosystem.Composer;
+        or Ecosystem.NuGet or Ecosystem.Cargo or Ecosystem.RubyGems or Ecosystem.Composer
+        or Ecosystem.AIEditorExtensions;
+
+    /// <summary>
+    /// Operational-risk for an AI-editor extension from version history we already have (the Marketplace
+    /// gives every version + publish date). Same JFrog model as packages: version age, # newer versions,
+    /// and release cadence — so an abandoned/stale extension is flagged, not left blank.
+    /// </summary>
+    public OperationalRisk? AnalyzeExtension(string? resolved, string? latest,
+        List<(string Ver, DateTimeOffset At)> releases, string? license, string? repoUrl)
+    {
+        if (releases.Count == 0 || resolved is null) return null;
+        return Compute(resolved, latest, releases, false, null, license, repoUrl);
+    }
 
     public async Task<OperationalRisk?> AnalyzeAsync(Ecosystem eco, string name, string? version, CancellationToken ct)
     {

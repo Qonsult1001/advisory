@@ -649,7 +649,9 @@ public class CatalogService
                 _ => await VulnsOnlyOverview(eco, name, version, ct),
             };
             // JFrog-style operational risk (EOL, version age, # new versions, cadence health).
-            if (_opRisk.Supports(eco))
+            // AIEditorExtensions computes its own opRisk inside the overview (from Marketplace version
+            // history) — don't overwrite it here (AnalyzeAsync has no per-package fetch for extensions).
+            if (_opRisk.Supports(eco) && eco != Ecosystem.AIEditorExtensions)
             {
                 try { ov = ov with { OperationalRisk = await _opRisk.AnalyzeAsync(eco, name, ov.Version, ct) }; }
                 catch { /* advisory dimension — never kill the overview */ }
@@ -934,13 +936,16 @@ public class CatalogService
         // Distinct versions newest-first, with publish timestamps.
         var recent = new List<CatalogVersion>();
         var allVersions = new List<string>();
+        var releases = new List<(string Ver, DateTimeOffset At)>();   // for operational-risk (cadence/age)
         if (e.TryGetProperty("versions", out var vs) && vs.ValueKind == JsonValueKind.Array)
             foreach (var v in vs.EnumerateArray())
             {
                 var ver = S(v, "version");
                 if (ver is null || allVersions.Contains(ver)) continue;   // collapse per-platform dupes
                 allVersions.Add(ver);
-                if (recent.Count < 12) recent.Add(new CatalogVersion(ver, S(v, "lastUpdated"), false));
+                var published = S(v, "lastUpdated");
+                if (recent.Count < 12) recent.Add(new CatalogVersion(ver, published, false));
+                if (DateTimeOffset.TryParse(published, out var at)) releases.Add((ver, at));
             }
         var resolved = version ?? allVersions.FirstOrDefault();
 
@@ -1005,13 +1010,16 @@ public class CatalogService
             ? "Extension-risk analysis: Trusted — verified publisher, capabilities reviewed, no malicious advisory."
             : $"Extension-risk analysis: {extRisk.Verdict} — review the capability & exfiltration assessment below before allowing.");
 
+        // Operational risk from the real version history (cadence/age) — so the tab isn't blank.
+        var opRisk = _opRisk.AnalyzeExtension(resolved, allVersions.FirstOrDefault(), releases, license, repo);
+
         // Marketplace returns versions newest-first; Finalize reverses its allVersions input to build
         // the dropdown — so pass an oldest-first copy to get a newest-first dropdown.
         var oldestFirst = Enumerable.Reverse(allVersions).ToList();
         var ov = Finalize("AIEditorExtensions", name, resolved, shortDesc, license,
             homepage, repo, allVersions.FirstOrDefault(), allVersions.Count,
             recent, maintainers, installs, false, null, new(), vulns, null, notes, oldestFirst);
-        return ov with { ExtensionRisk = extRisk };
+        return ov with { ExtensionRisk = extRisk, OperationalRisk = opRisk };
     }
 
     /// <summary>
