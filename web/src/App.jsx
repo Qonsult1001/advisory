@@ -17,7 +17,7 @@ const api = {
   testCustomSource: (url, credential) => fetch(`${API}/sources/test-custom`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url, credential }) }).then((r) => r.json()),
   getEcosystems: () => fetch(`${API}/catalog/ecosystems`).then((r) => r.json()),
   getPackage: (eco, name, version) => fetch(`${API}/catalog/package?ecosystem=${eco}&name=${encodeURIComponent(name)}${version ? `&version=${encodeURIComponent(version)}` : ""}`).then((r) => r.json()),
-  searchPackages: (eco, q, limit) => fetch(`${API}/catalog/search?ecosystem=${eco}&q=${encodeURIComponent(q)}${limit ? `&limit=${limit}` : ""}`).then((r) => r.json()),
+  searchPackages: (eco, q, limit, registry) => fetch(`${API}/catalog/search?ecosystem=${eco}&q=${encodeURIComponent(q)}${limit ? `&limit=${limit}` : ""}${registry ? `&registry=${registry}` : ""}`).then((r) => r.json()),
   getCve: (id) => fetch(`${API}/catalog/cve?id=${encodeURIComponent(id)}`).then((r) => r.json()),
   myPackages: () => fetch(`${API}/scans/packages`).then((r) => r.json()),
   enqueue: (pkg) => fetch(`${API}/queue/enqueue`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(pkg) }).then((r) => r.json()),
@@ -2478,21 +2478,27 @@ function Catalog() {
   const [loading, setLoading] = useState(false);
   const [ac, setAc] = useState([]);               // autocomplete hits
   const [acOpen, setAcOpen] = useState(false);
+  // For AI Editor Extensions: which registry to search (VS Code Marketplace vs Open VSX).
+  const [registry, setRegistry] = useState("marketplace");
+  const isExtEco = eco === "AIEditorExtensions";
+  const CVE_RE = /^(CVE|GHSA|PYSEC|GO|RUSTSEC)-/i;   // typing one of these searches the CVE/advisory directly
 
   // live autocomplete (debounced)
   useEffect(() => {
-    if (!q.trim() || q.trim().length < 2) { setAc([]); return; }
+    if (!q.trim() || q.trim().length < 2 || CVE_RE.test(q.trim())) { setAc([]); return; }
     let active = true;
     const t = setTimeout(() => {
-      api.searchPackages(eco, q.trim(), 8).then((d) => { if (active) { setAc(d.results || []); setAcOpen(true); } }).catch(() => {});
+      api.searchPackages(eco, q.trim(), 8, isExtEco ? registry : undefined).then((d) => { if (active) { setAc(d.results || []); setAcOpen(true); } }).catch(() => {});
     }, 250);
     return () => { active = false; clearTimeout(t); };
-  }, [q, eco]);
+  }, [q, eco, registry]);
 
   const runSearch = (term) => {
     const t = (term ?? q).trim(); if (!t) return;
+    // Search-by-CVE: a CVE/advisory id opens its detail directly (the search box covers "packages AND CVEs").
+    if (CVE_RE.test(t)) { openCve(t.toUpperCase()); return; }
     setQ(t); setAcOpen(false); setLoading(true); setView("results"); setResults(null);
-    api.searchPackages(eco, t, 30).then((d) => setResults(d)).catch(() => setResults({ results: [], query: t })).finally(() => setLoading(false));
+    api.searchPackages(eco, t, 30, isExtEco ? registry : undefined).then((d) => setResults(d)).catch(() => setResults({ results: [], query: t })).finally(() => setLoading(false));
   };
   const openPkg = (name, version) => {
     setAcOpen(false); setLoading(true); setView("package"); setPkg(null);
@@ -2550,9 +2556,21 @@ function Catalog() {
             ))}
           </div>
         )}
+        {/* AI Editor Extensions: choose which registry to search — Marketplace vs Open VSX (different results). */}
+        {isExtEco && (
+          <div style={{ display: "flex", borderTop: `1px solid ${C.line}`, borderBottom: `1px solid ${C.line}`, background: C.surface }}>
+            {[["marketplace", "Marketplace"], ["openvsx", "Open VSX"]].map(([k, l]) => (
+              <button key={k} onClick={() => { setRegistry(k); if (q.trim()) runSearch(); }}
+                title={k === "marketplace" ? "VS Code Marketplace" : "Open VSX (open registry)"}
+                style={{ border: "none", padding: "0 12px", fontSize: 11.5, fontWeight: 600, cursor: "pointer",
+                  background: registry === k ? `${C.accent}14` : "transparent",
+                  color: registry === k ? C.accentDim : C.sub }}>{l}</button>
+            ))}
+          </div>
+        )}
         <input value={q} onChange={(e) => setQ(e.target.value)} onFocus={() => ac.length && setAcOpen(true)}
           onKeyDown={(e) => e.key === "Enter" && runSearch()}
-          placeholder="Search by package name…" style={s.catInput} />
+          placeholder={isExtEco ? `Search ${registry === "openvsx" ? "Open VSX" : "the Marketplace"}, or paste a CVE id…` : "Search by package name, or paste a CVE id (CVE-…)…"} style={s.catInput} />
         <button onClick={() => runSearch()} style={s.catSearchBtn}>⌕ Search</button>
         {acOpen && ac.length > 0 && (
           <div style={s.acMenu} onMouseLeave={() => setAcOpen(false)}>

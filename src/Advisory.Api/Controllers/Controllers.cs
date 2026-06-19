@@ -84,11 +84,11 @@ public class CatalogController : ControllerBase
     /// <summary>Search packages by name. ?ecosystem=npm&amp;q=express[&amp;limit=30]</summary>
     [HttpGet("search")]
     public async Task<ActionResult> Search([FromQuery] string ecosystem, [FromQuery] string q,
-        [FromQuery] int limit = 30, CancellationToken ct = default)
+        [FromQuery] int limit = 30, [FromQuery] string? registry = null, CancellationToken ct = default)
     {
         if (!Enum.TryParse<Ecosystem>(ecosystem, true, out var eco)) eco = Ecosystem.npm;
-        var hits = await _catalog.SearchAsync(eco, q?.Trim() ?? "", Math.Clamp(limit, 1, 50), ct);
-        return Ok(new { query = q, ecosystem = eco.ToString(), count = hits.Count, results = hits });
+        var hits = await _catalog.SearchAsync(eco, q?.Trim() ?? "", Math.Clamp(limit, 1, 50), ct, registry);
+        return Ok(new { query = q, ecosystem = eco.ToString(), registry, count = hits.Count, results = hits });
     }
 
     /// <summary>Full package overview. ?ecosystem=npm&amp;name=express[&amp;version=4.18.2]</summary>

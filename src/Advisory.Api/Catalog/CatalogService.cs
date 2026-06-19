@@ -146,7 +146,7 @@ public class CatalogService
 
     public record SearchHit(string Name, string Ecosystem, string? Description, int? VersionCount, string? LatestVersion);
 
-    public async Task<IReadOnlyList<SearchHit>> SearchAsync(Ecosystem eco, string query, int limit, CancellationToken ct)
+    public async Task<IReadOnlyList<SearchHit>> SearchAsync(Ecosystem eco, string query, int limit, CancellationToken ct, string? registry = null)
     {
         if (string.IsNullOrWhiteSpace(query)) return Array.Empty<SearchHit>();
         return eco switch
@@ -167,9 +167,33 @@ public class CatalogService
             Ecosystem.Alpine => await SearchOsDistro(eco, query, limit, ct),
             Ecosystem.Debian => await SearchOsDistro(eco, query, limit, ct),
             Ecosystem.Ubuntu => await SearchOsDistro(eco, query, limit, ct),
-            Ecosystem.AIEditorExtensions => await SearchAiEditorExtensions(query, limit, ct),
+            Ecosystem.AIEditorExtensions => registry?.Equals("openvsx", StringComparison.OrdinalIgnoreCase) == true
+                ? await SearchOpenVsx(query, limit, ct)
+                : await SearchAiEditorExtensions(query, limit, ct),
             _ => Array.Empty<SearchHit>(),
         };
+    }
+
+    // Open VSX — the open, vendor-neutral extension registry (alternative to the VS Code Marketplace).
+    private async Task<IReadOnlyList<SearchHit>> SearchOpenVsx(string q, int limit, CancellationToken ct)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(await _http.GetStringAsync(
+                $"https://open-vsx.org/api/-/search?query={Uri.EscapeDataString(q)}&size={Math.Min(limit, 50)}", ct));
+            var hits = new List<SearchHit>();
+            if (doc.RootElement.TryGetProperty("extensions", out var exts))
+                foreach (var e in exts.EnumerateArray())
+                {
+                    string? S(string k) => e.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+                    var ns = S("namespace"); var nm = S("name");
+                    if (string.IsNullOrEmpty(ns) || string.IsNullOrEmpty(nm)) continue;
+                    hits.Add(new SearchHit($"{ns}.{nm}", "AIEditorExtensions", S("description") ?? S("displayName"), null, S("version")));
+                    if (hits.Count >= limit) break;
+                }
+            return hits;
+        }
+        catch { return Array.Empty<SearchHit>(); }
     }
 
     // Maven — search.maven.org Solr API (the same one the Central UI uses).
