@@ -58,9 +58,9 @@ web/C:*
 Advisory.said
 PROJECT_CONTEXT.md
 
-# said.exe is a 44MB compiled binary — build it locally, do not commit (see tools/said/README.md)
-tools/said/said.exe
-tools/said/said-mcp.exe
+# said binaries are large compiled artifacts — build/copy locally, do not commit (see tools/said/README.md).
+# Ignore every binary under tools/said (both .exe and -linux) but KEEP the tracked README.
+tools/said/*
+!tools/said/README.md
 .claude-worker/
-tools/said/said-linux
 vulncheck_known_exploited_vulnerabilities.json
