@@ -2877,20 +2877,37 @@ const SAMPLE_CVES = [
 ];
 
 // Live sample repositories — pulls the real Nexus repos from the running stack (no seed data).
-function SampleRepoChips({ onPick }) {
-  const [repos, setRepos] = useState(null);
-  useEffect(() => { api.getScans().then((d) => setRepos(d.repositories || [])).catch(() => setRepos([])); }, []);
-  if (repos === null) return <span style={{ fontSize: 11, color: C.dim }}>loading live repos…</span>;
-  if (repos.length === 0) return <span style={{ fontSize: 11, color: C.dim }}>no repositories indexed yet</span>;
-  return <>{repos.slice(0, 6).map((r) => {
-    const name = r.name || r.Name; const fmt = r.format || r.Format || "";
-    return (
-      <button key={name} onClick={() => fmt && onPick && onPick(fmt)} title={`${fmt} · ${r.type || r.Type || "repo"}`}
-        style={{ ...s.sampleChip, display: "inline-flex", alignItems: "center", gap: 6 }}>
-        <BrandIcon format={fmt} />{name}
-      </button>
-    );
-  })}</>;
+// The real public upstream registries each ecosystem's packages come from. This is what the
+// "Repositories" sample tab shows (matching JFrog's public catalog) — the source repos for the
+// SELECTED ecosystem, not your internal Nexus repos. Clicking opens the registry.
+const ECO_REGISTRIES = {
+  npm: [["registry.npmjs.org", "https://www.npmjs.com"]],
+  PyPI: [["pypi.org", "https://pypi.org"]],
+  Maven: [["Maven Central", "https://central.sonatype.com"], ["repo1.maven.org", "https://repo1.maven.org/maven2/"]],
+  NuGet: [["nuget.org", "https://www.nuget.org"]],
+  Go: [["pkg.go.dev", "https://pkg.go.dev"], ["proxy.golang.org", "https://proxy.golang.org"]],
+  Cargo: [["crates.io", "https://crates.io"]],
+  Conan: [["ConanCenter", "https://conan.io/center"]],
+  RubyGems: [["rubygems.org", "https://rubygems.org"]],
+  Composer: [["Packagist", "https://packagist.org"]],
+  CRAN: [["CRAN", "https://cran.r-project.org"]],
+  DartPub: [["pub.dev", "https://pub.dev"]],
+  Conda: [["anaconda.org", "https://anaconda.org"]],
+  HuggingFace: [["huggingface.co", "https://huggingface.co"]],
+  Alpine: [["Alpine packages", "https://pkgs.alpinelinux.org"], ["secdb.alpinelinux.org", "https://secdb.alpinelinux.org"]],
+  Debian: [["Debian packages", "https://packages.debian.org"], ["security-tracker.debian.org", "https://security-tracker.debian.org"]],
+  Ubuntu: [["Ubuntu Archive", "https://packages.ubuntu.com"], ["Launchpad", "https://launchpad.net/ubuntu"], ["ubuntu.com/security", "https://ubuntu.com/security/cves"]],
+  AIEditorExtensions: [["VS Code Marketplace", "https://marketplace.visualstudio.com"], ["Open VSX", "https://open-vsx.org"]],
+};
+function SampleRepoChips({ eco }) {
+  const regs = ECO_REGISTRIES[eco] || [];
+  if (regs.length === 0) return <span style={{ fontSize: 11, color: C.dim }}>no public registry mapped for this ecosystem</span>;
+  return <>{regs.map(([label, url]) => (
+    <a key={url} href={url} target="_blank" rel="noreferrer" title={`Public source registry for ${eco}`}
+      style={{ ...s.sampleChip, display: "inline-flex", alignItems: "center", gap: 6, textDecoration: "none", color: C.ink }}>
+      <BrandIcon format={eco} />{label}
+    </a>
+  ))}</>;
 }
 
 function CatalogLanding({ eco, setQ, search, onSample, onInsights, onCve, onPick }) {
@@ -2940,7 +2957,7 @@ function CatalogLanding({ eco, setQ, search, onSample, onInsights, onCve, onPick
             <button key={term} onClick={() => run(term)} style={{ ...s.sampleChip,
               borderColor: kind === "vuln" ? C.block : C.line, color: kind === "vuln" ? C.block : C.ink }}>{term}</button>
           ))}
-          {sampleTab === "repositories" && <SampleRepoChips onPick={onPick} />}
+          {sampleTab === "repositories" && <SampleRepoChips eco={eco} />}
           {sampleTab === "cves" && SAMPLE_CVES.map(([id, label]) => (
             <button key={id} onClick={() => onCve && onCve(id)} title={label}
               style={{ ...s.sampleChip, borderColor: C.block, color: C.block }}>{id}</button>
