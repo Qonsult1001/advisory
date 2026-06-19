@@ -1434,6 +1434,12 @@ public class EvolutionController : ControllerBase
         var t = tickets.FirstOrDefault(x => x.Number == req.Ticket);
         if (t is null) return NotFound(new { error = $"ticket #{req.Ticket} not found or not labelled '{_svc.Label}'" });
 
+        // ENGINE ROUTING: when the execution agent is an API agent (Groq/OpenAI/OpenRouter), run the
+        // closed loop IN THE CONTAINER via said-orchestrate — no host worker, no WSL. Only a CLI agent
+        // (claude-cli/cursor-cli) needs the local worker, so fall through to the queue for those.
+        if (_groq.ExecutionAgent() is not null)
+            return await GroqCycleRun(req, ct);
+
         // Create the run first so its id can travel in the queue request (the worker reports progress against it).
         var run = _svc.NewRun(t);
         run.Status = "queued"; run.Stage = "waiting for worker"; run.Pct = 0; run.EtaSeconds = Advisory.Api.Evolution.MutateStages.TotalSecs;
