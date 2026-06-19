@@ -409,21 +409,28 @@ public class CatalogService
                 }
                 return hits;
             }
-            // Ubuntu — Launchpad source-package name search.
+            // Ubuntu — Launchpad source-package name search. Launchpad returns substring matches in its
+            // own (roughly alphabetical) order, so a search for "tree" surfaces "abego-treelayout" before
+            // the real "tree" package. Pull a wider candidate set, dedupe (Launchpad repeats a package
+            // per release/version), then RANK exact -> prefix -> substring so the real package wins.
+            var ql = q.ToLowerInvariant();
             using var udoc = JsonDocument.Parse(await _http.GetStringAsync(
-                $"https://api.launchpad.net/1.0/ubuntu/+archive/primary?ws.op=getPublishedSources&source_name={Uri.EscapeDataString(q)}&exact_match=false&status=Published&ws.size={limit}", ct));
-            var uhits = new List<SearchHit>();
-            var useen = new HashSet<string>();
+                $"https://api.launchpad.net/1.0/ubuntu/+archive/primary?ws.op=getPublishedSources&source_name={Uri.EscapeDataString(q)}&exact_match=false&status=Published&ws.size=200", ct));
+            var byName = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);  // name -> latest version seen
             if (udoc.RootElement.TryGetProperty("entries", out var entries))
                 foreach (var p in entries.EnumerateArray())
                 {
                     string? S(string k) => p.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
                     var name = S("source_package_name") ?? "";
-                    if (name.Length > 0 && useen.Add(name))
-                        uhits.Add(new SearchHit(name, "Ubuntu", null, null, S("source_package_version")));
-                    if (uhits.Count >= limit) break;
+                    if (name.Length == 0) continue;
+                    if (!byName.ContainsKey(name)) byName[name] = S("source_package_version");
                 }
-            return uhits;
+            return byName
+                .OrderBy(kv => kv.Key.ToLowerInvariant() == ql ? 0 : kv.Key.ToLowerInvariant().StartsWith(ql) ? 1 : 2)
+                .ThenBy(kv => kv.Key.Length)
+                .Take(limit)
+                .Select(kv => new SearchHit(kv.Key, "Ubuntu", null, null, kv.Value))
+                .ToList();
         }
         catch { return Array.Empty<SearchHit>(); }
     }
@@ -1210,19 +1217,28 @@ public class CatalogService
     {
         await _kev.EnsureLoaded(ct);
         var res = await _osv.QueryAsync(new PackageRef(eco, name, version), ct);
-        var list = new List<CatalogVuln>();
-        foreach (var f in res.Findings)
-        {
-            // EPSS keyed by CVE id (prefer a CVE alias over the GHSA id).
-            var cve = f.Aliases?.FirstOrDefault(a => a.StartsWith("CVE", StringComparison.OrdinalIgnoreCase)) ?? f.Id;
-            double? epss = null;
-            try { var (sc, st, _) = await _epss.ScoreAsync(cve, ct); if (st == SourceStatus.Ok) epss = sc; } catch { }
-            list.Add(new CatalogVuln(
-                f.Id, f.Severity.ToString(), f.CvssScore, f.Summary, f.FixedVersion,
-                _kev.IsKnownExploited(f.Id) || (f.Aliases?.Any(_kev.IsKnownExploited) ?? false),
-                f.References, epss, f.Aliases, f.Cwes));
-        }
-        return list;
+        var findings = res.Findings.ToList();
+
+        // EPSS keyed by CVE id, fetched CONCURRENTLY (capped) — was sequential, which made an OS-distro
+        // package with hundreds of CVEs (e.g. Ubuntu openssl → 244) take ~50s. Cap how many we enrich so
+        // the page is responsive; the rest still show, just without an EPSS score.
+        const int EpssCap = 60;
+        string CveOf(Finding f) => f.Aliases?.FirstOrDefault(a => a.StartsWith("CVE", StringComparison.OrdinalIgnoreCase)) ?? f.Id;
+        var epssMap = new System.Collections.Concurrent.ConcurrentDictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+        var toScore = findings.Take(EpssCap).Select(CveOf).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        using (var gate = new SemaphoreSlim(8))
+            await Task.WhenAll(toScore.Select(async cve =>
+            {
+                await gate.WaitAsync(ct);
+                try { var (sc, st, _) = await _epss.ScoreAsync(cve, ct); if (st == SourceStatus.Ok && sc is double d) epssMap[cve] = d; }
+                catch { }
+                finally { gate.Release(); }
+            }));
+
+        return findings.Select(f => new CatalogVuln(
+            f.Id, f.Severity.ToString(), f.CvssScore, f.Summary, f.FixedVersion,
+            _kev.IsKnownExploited(f.Id) || (f.Aliases?.Any(_kev.IsKnownExploited) ?? false),
+            f.References, epssMap.TryGetValue(CveOf(f), out var e) ? e : (double?)null, f.Aliases, f.Cwes)).ToList();
     }
 
     /// <summary>

@@ -27,8 +27,14 @@ public static class OsvEcosystems
         Ecosystem.Conan => "ConanCenter",
         Ecosystem.CRAN => "CRAN",
         Ecosystem.DartPub => "Pub",
-        // Alpine/Debian/Ubuntu/AIEditorExtensions/HuggingFace/Docker: no bare OSV ecosystem.
-        // OS distro packages carry their release-qualified ecosystem in PackageRef.OsvEcosystem.
+        // OS distros: OSV accepts the BARE distro name (Ubuntu/Debian/Alpine) and returns the union of
+        // CVEs across releases — so a Catalog lookup with no specific release still resolves real CVEs.
+        // A Docker-image scan supplies a release-qualified ecosystem ("Debian:12", "Alpine:v3.19") via
+        // PackageRef.OsvEcosystem for precise version matching; that overrides this in For().
+        Ecosystem.Ubuntu => "Ubuntu",
+        Ecosystem.Debian => "Debian",
+        Ecosystem.Alpine => "Alpine",
+        // AIEditorExtensions/HuggingFace/Docker: not OSV package ecosystems (assessed by other scanners).
         _ => null,
     };
 
