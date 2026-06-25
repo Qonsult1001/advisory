@@ -398,7 +398,10 @@ public class PolicyException
     public bool Matches(PackageRef pkg)
     {
         if (Ecosystem is not null && Ecosystem != pkg.Ecosystem) return false;
-        if (Expires < DateTimeOffset.UtcNow) return false;
+        // A set expiry in the past disqualifies the exception. A default/unset expiry (year <= 1)
+        // means "no expiry" — treat as valid rather than silently-expired, so a date-less exception
+        // actually takes effect instead of being a no-op.
+        if (Expires.Year > 1 && Expires < DateTimeOffset.UtcNow) return false;
         if (Package == "*") return true;
         var spec = Package.Split("==", 2);
         if (!spec[0].Equals(pkg.Name, StringComparison.OrdinalIgnoreCase)) return false;

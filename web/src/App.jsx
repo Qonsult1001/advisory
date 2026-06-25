@@ -1051,13 +1051,30 @@ function Callout({ children }) {
 }
 function Exceptions({ policy, setPolicy }) {
   const [d, setD] = useState({ package: "", reason: "", approvedBy: "", ticket: "", expires: "" });
+  // Live held/blocked packages from the firewall — so you can PICK one to except instead of typing it.
+  const [held, setHeld] = useState([]);
+  useEffect(() => {
+    api.getQuarantine().then((q) => setHeld((q.held || [])
+      .filter((h) => h.status === "blocked" || h.status === "held" || h.status === "revoked")))
+      .catch(() => setHeld([]));
+  }, []);
+  // Don't offer ones that already have an exception.
+  const excepted = new Set(policy.exceptions.map((e) => (e.package || "").toLowerCase()));
+  const options = held
+    .map((h) => ({ key: `${h.name}==${h.version}`, label: `${h.name}==${h.version}`, eco: h.ecosystem, status: h.status }))
+    .filter((o) => !excepted.has(o.key.toLowerCase()));
   const add = () => {
     if (!d.package || !d.ticket) return;
-    setPolicy((p) => ({ ...p, exceptions: [...p.exceptions, { ...d, ecosystem: null }] }));
+    // An exception with no expiry is treated as EXPIRED by the gate (defaults to year 0001), so it
+    // would silently do nothing. Default to 90 days out when the operator leaves it blank.
+    const expires = d.expires && d.expires.trim()
+      ? d.expires.trim()
+      : new Date(Date.now() + 90 * 864e5).toISOString().slice(0, 10);
+    setPolicy((p) => ({ ...p, exceptions: [...p.exceptions, { ...d, expires, ecosystem: null }] }));
     setD({ package: "", reason: "", approvedBy: "", ticket: "", expires: "" });
   };
   return (
-    <Card title="Approved exceptions" desc="Time-boxed, attributed overrides. This register replaces the per-package approval ticket.">
+    <Card title="Approved exceptions" desc="Time-boxed, attributed overrides. This register replaces the per-package approval ticket. Pick a held/blocked package below, or type one manually.">
       <Table cols={["Component", "Ticket", "Approver", "Expires", ""]}>
         {policy.exceptions.length === 0 && <tr><td style={s.td} colSpan={5}>No active exceptions.</td></tr>}
         {policy.exceptions.map((e, i) => (
@@ -1072,6 +1089,20 @@ function Exceptions({ policy, setPolicy }) {
           </tr>
         ))}
       </Table>
+
+      {/* Quick-pick: the packages the firewall is currently holding/blocking. */}
+      <div style={{ padding: "12px 16px 0", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 12, color: C.sub, fontWeight: 600 }}>Quarantined / blocked:</span>
+        {options.length === 0
+          ? <span style={{ fontSize: 12, color: C.dim }}>none held — nothing to except (or all already excepted)</span>
+          : <select value="" onChange={(e) => { if (e.target.value) setD({ ...d, package: e.target.value }); }}
+              style={{ ...s.formInput, width: 280, cursor: "pointer" }}>
+              <option value="">Pick a held package to except…</option>
+              {options.map((o) => <option key={o.key} value={o.key}>{o.label}  ·  {o.eco} · {o.status}</option>)}
+            </select>}
+        {options.length > 0 && <span style={{ fontSize: 11, color: C.dim }}>selecting one fills the package field below ↓</span>}
+      </div>
+
       <div style={s.form}>
         {[["package", "package==version"], ["ticket", "Ref e.g. SEC-1234"], ["approvedBy", "Approver"],
           ["expires", "YYYY-MM-DD"]].map(([k, ph]) => (
