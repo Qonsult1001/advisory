@@ -41,6 +41,10 @@ public interface INexusClient
     /// <summary>The repos that currently exist, as a set of names, for live-state reporting.</summary>
     Task<IReadOnlySet<string>> ExistingRepoNamesAsync(CancellationToken ct);
 
+    /// <summary>Revoke an already-approved package: delete it from its approved repo so developers can
+    /// no longer pull it. The operator's manual override on a previously-allowed package.</summary>
+    Task<bool> RevokeApprovedAsync(Ecosystem eco, string name, string version, CancellationToken ct);
+
     /// <summary>True only when Nexus's REST API actually answers (status 200). Unlike the list calls,
     /// this does NOT swallow connection failures — the seed uses it to wait for Nexus to finish booting.</summary>
     Task<bool> IsReachableAsync(CancellationToken ct);
@@ -195,6 +199,21 @@ public class NexusClient : INexusClient
     {
         var repos = await ListRepositoriesAsync(ct);
         return repos.Select(r => r.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+    }
+
+    public async Task<bool> RevokeApprovedAsync(Ecosystem eco, string name, string version, CancellationToken ct)
+    {
+        if (!IsConfigured || !NexusEcosystems.TryGet(eco, out var def)) return false;
+        var repo = $"{def.Prefix}-{_approvedSuffix}";
+        // Find the component in the approved repo by name (+ version when given), then delete it by id.
+        var items = await ListComponentsAsync(repo, ct);
+        var match = items.FirstOrDefault(c => string.Equals(c.Name, name, StringComparison.OrdinalIgnoreCase)
+            && (string.IsNullOrEmpty(version) || string.Equals(c.Version, version, StringComparison.OrdinalIgnoreCase)));
+        if (match is null) return false;
+        using var resp = await _http.DeleteAsync(
+            $"{_baseUrl}/service/rest/v1/components/{Uri.EscapeDataString(match.ComponentId)}", ct);
+        _log.LogWarning("REVOKED {Pkg}@{Ver} from {Repo}: {Status}", name, version, repo, (int)resp.StatusCode);
+        return resp.IsSuccessStatusCode;
     }
 
     public async Task<bool> IsReachableAsync(CancellationToken ct)

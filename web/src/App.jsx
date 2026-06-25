@@ -24,6 +24,8 @@ const api = {
   getQueueDepth: () => fetch(`${API}/queue/depth`).then((r) => r.json()),
   getScans: () => fetch(`${API}/scans/repositories`).then((r) => r.json()),
   getNexusEcosystems: () => fetch(`${API}/nexus/ecosystems`).then((r) => r.json()),
+  getApproved: () => fetch(`${API}/quarantine/approved`).then((r) => r.json()),
+  revokeApproved: (ecosystem, name, version) => fetch(`${API}/quarantine/revoke`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ecosystem, name, version }) }).then((r) => r.json().then((j) => ({ ok: r.ok, ...j }))),
   provisionEcosystem: (ecosystem) => fetch(`${API}/nexus/provision`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ecosystem }) }).then((r) => r.json().then((j) => ({ ok: r.ok, ...j }))),
   deprovisionEcosystem: (ecosystem) => fetch(`${API}/nexus/ecosystem/${encodeURIComponent(ecosystem)}`, { method: "DELETE" }).then((r) => r.json().then((j) => ({ ok: r.ok, ...j }))),
   getGitRepos: () => fetch(`${API}/scans/git-repositories`).then((r) => r.json()),
@@ -390,6 +392,7 @@ export default function App() {
           {tab === "xrayoverview" && <XrayOverview setTab={setTab} />}
 
           {tab === "quarantine" && <Quarantine />}
+          {tab === "approved" && <ApprovedPackages />}
 
           {tab === "violations" && <WatchViolations policy={policy} setPolicy={setPolicy} rows={violations} />}
 
@@ -713,7 +716,7 @@ const NAV = [
     ["aidetection", "Shadow AI"], ["llmgateway", "LLM Gateway"],
   ]},
   { type: "group", key: "pipeline", label: "Pipeline", icon: "⇄", children: [
-    ["queue", "Intake queue"], ["quarantine", "Quarantine"], ["reports", "Reports"],
+    ["queue", "Intake queue"], ["quarantine", "Quarantine"], ["approved", "Approved packages"], ["reports", "Reports"],
     ["exceptions", "Approved exceptions"], ["audit", "Decision ledger"],
   ]},
   { type: "item", key: "evolution", label: "Mutation", icon: "brain" },
@@ -1608,14 +1611,17 @@ function ScansRepos({ onOpen }) {
   const [ecoBusy, setEcoBusy] = useState({}); // ecosystem → bool (provision/remove in flight)
   const [ecoMsg, setEcoMsg] = useState(null); // {tone, text} transient feedback
   const [removeEco, setRemoveEco] = useState(null); // ecosystem pending guarded-remove confirm
+  const refreshScans = () => api.getScans().then(setData).catch(() => setData({ configured: false, repositories: [] }));
   const refreshEcos = () => api.getNexusEcosystems().then(setEcos).catch(() => setEcos({ configured: false, ecosystems: [] }));
-  useEffect(() => { api.getScans().then(setData).catch(() => setData({ configured: false, repositories: [] })).finally(() => setLoading(false)); refreshEcos(); }, []);
+  // After an add/remove, refresh BOTH the firewall panel AND the Repositories table so they stay aligned.
+  const refreshAll = () => Promise.all([refreshEcos(), refreshScans()]);
+  useEffect(() => { refreshScans().finally(() => setLoading(false)); refreshEcos(); }, []);
   const provision = (eco) => {
     setEcoBusy((b) => ({ ...b, [eco]: true })); setEcoMsg(null);
     api.provisionEcosystem(eco).then((r) => {
       setEcoMsg(r.ok ? { tone: "ok", text: r.already ? `${eco} already linked.` : `${eco} provisioned — quarantine→approved wired.` }
                      : { tone: "err", text: r.error || `Could not provision ${eco}.` });
-      return refreshEcos();
+      return refreshAll();
     }).catch(() => setEcoMsg({ tone: "err", text: `Could not provision ${eco}.` }))
       .finally(() => setEcoBusy((b) => ({ ...b, [eco]: false })));
   };
@@ -1624,7 +1630,7 @@ function ScansRepos({ onOpen }) {
     api.deprovisionEcosystem(eco).then((r) => {
       setEcoMsg(r.ok ? { tone: "ok", text: `${eco} removed (${r.removed} repo${r.removed === 1 ? "" : "s"} deleted).` }
                      : { tone: "err", text: r.error || `Could not remove ${eco}.` });
-      return refreshEcos();
+      return refreshAll();
     }).catch(() => setEcoMsg({ tone: "err", text: `Could not remove ${eco}.` }))
       .finally(() => setEcoBusy((b) => ({ ...b, [eco]: false })));
   };
@@ -2435,6 +2441,90 @@ function Quarantine() {
                 );
               })}
             </Table>}
+      </Card>
+    </div>
+  );
+}
+
+// Approved packages — the vetted packages developers can pull, with an operator REVOKE override
+// (Admin) that deletes a previously-approved package from the approved repo via a confirm modal.
+function ApprovedPackages() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [q, setQ] = useState("");
+  const [busy, setBusy] = useState({});
+  const [msg, setMsg] = useState(null);
+  const [confirm, setConfirm] = useState(null); // {ecosystem,name,version} pending revoke
+  const refresh = () => api.getApproved().then(setData).catch(() => setData({ configured: false, approved: [] })).finally(() => setLoading(false));
+  useEffect(() => { refresh(); }, []);
+  const revoke = (p) => {
+    const key = `${p.ecosystem}:${p.name}@${p.version}`;
+    setConfirm(null); setBusy((b) => ({ ...b, [key]: true })); setMsg(null);
+    api.revokeApproved(p.ecosystem, p.name, p.version).then((r) => {
+      setMsg(r.ok ? { tone: "ok", text: `Revoked ${p.name}@${p.version} — removed from approved.` }
+                  : { tone: "err", text: r.error || `Could not revoke ${p.name}.` });
+      return refresh();
+    }).catch(() => setMsg({ tone: "err", text: `Could not revoke ${p.name}.` }))
+      .finally(() => setBusy((b) => ({ ...b, [key]: false })));
+  };
+  let approved = data?.approved || [];
+  if (q) approved = approved.filter((p) => p.name.toLowerCase().includes(q.toLowerCase()) || (p.ecosystem || "").toLowerCase().includes(q.toLowerCase()));
+  return (
+    <div style={{ animation: "fwfade .2s ease" }}>
+      <div style={s.crumb}><span style={{ color: C.accent }}>Pipeline</span><span style={{ color: C.dim }}>›</span><span>Approved packages</span></div>
+      <div style={{ fontSize: 22, fontWeight: 700, letterSpacing: -0.4, margin: "4px 0 14px" }}>Approved packages</div>
+      {confirm && (
+        <div onClick={() => setConfirm(null)}
+          style={{ position: "fixed", inset: 0, background: "rgba(20,22,25,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50 }}>
+          <div onClick={(e) => e.stopPropagation()}
+            style={{ background: C.surface, border: `1px solid ${C.line}`, borderRadius: 12, padding: 22, width: "min(460px,94vw)", boxShadow: "0 12px 40px rgba(0,0,0,0.18)" }}>
+            <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 8, color: C.ink }}>Revoke {confirm.name}@{confirm.version}?</div>
+            <div style={{ fontSize: 13, color: C.sub, lineHeight: 1.6, marginBottom: 18 }}>
+              This removes <code style={s.code}>{confirm.name}@{confirm.version}</code> from the
+              <code style={s.code}>{confirm.ecosystem.toLowerCase()}-approved</code> repo. Developers will no
+              longer be able to pull it. It can be re-approved later by requesting it again through quarantine.
+            </div>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+              <button onClick={() => setConfirm(null)}
+                style={{ ...s.btn, background: "transparent", color: C.sub, border: `1px solid ${C.line}`, padding: "8px 14px", fontSize: 12.5, borderRadius: 6, cursor: "pointer" }}>Cancel</button>
+              <button onClick={() => revoke(confirm)}
+                style={{ ...s.btn, background: "#c0392b", color: "#fff", border: "none", padding: "8px 14px", fontSize: 12.5, borderRadius: 6, cursor: "pointer" }}>Revoke approval</button>
+            </div>
+          </div>
+        </div>
+      )}
+      <Card title="Vetted packages developers can pull"
+        desc="Packages the gate allowed and promoted to the approved repos. Revoke removes one — an operator override that pulls an already-approved package back out.">
+        {msg && <div style={{ padding: "8px 0 12px", fontSize: 12.5, color: msg.tone === "ok" ? C.accentDim : "#c0392b" }}>{msg.text}</div>}
+        {!loading && data && !data.configured
+          ? <div style={{ padding: 22, color: C.sub, fontSize: 12.5, lineHeight: 1.6 }}>Nexus not connected (<code style={s.code}>NEXUS_URL</code> unset).</div>
+          : <>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, border: `1px solid ${C.line}`, borderRadius: 6, padding: "6px 10px", width: 220, marginBottom: 12 }}>
+              <span style={{ color: C.dim, fontSize: 12 }}>⌕</span>
+              <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search"
+                style={{ border: "none", outline: "none", fontSize: 12.5, fontFamily: C.sans, background: "transparent", color: C.ink, width: "100%" }} />
+            </div>
+            <Table cols={["Component", "Ecosystem", "Version", "File", ""]}>
+              {approved.length === 0 && <tr><td style={s.td} colSpan={5}>{loading ? "Loading…" : "No approved packages yet."}</td></tr>}
+              {approved.map((p, i) => {
+                const key = `${p.ecosystem}:${p.name}@${p.version}`;
+                return (
+                  <tr key={i} style={s.tr}>
+                    <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11.5 }}>{p.name}</td>
+                    <td style={s.td}><Tag tone={C.accent}>{p.ecosystem}</Tag></td>
+                    <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11.5 }}>{p.version}</td>
+                    <td style={{ ...s.td, color: C.sub, fontSize: 11 }}>{p.fileName || "—"}</td>
+                    <td style={{ ...s.td, textAlign: "right" }}>
+                      <button disabled={!!busy[key]} onClick={() => setConfirm(p)}
+                        style={{ ...s.btn, background: "transparent", color: "#c0392b", border: `1px solid ${C.line}`, padding: "4px 12px", fontSize: 11, borderRadius: 6, cursor: busy[key] ? "default" : "pointer", opacity: busy[key] ? 0.5 : 1 }}>
+                        {busy[key] ? "…" : "Revoke"}
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </Table>
+          </>}
       </Card>
     </div>
   );

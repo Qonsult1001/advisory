@@ -42,6 +42,7 @@ public class NexusProvisionTests
         public Task<IReadOnlySet<string>> ExistingRepoNamesAsync(CancellationToken ct)
             => Task.FromResult<IReadOnlySet<string>>(Existing);
         public Task<bool> IsReachableAsync(CancellationToken ct) => Task.FromResult(true);
+        public Task<bool> RevokeApprovedAsync(Ecosystem eco, string name, string version, CancellationToken ct) => Task.FromResult(true);
 
         public Task<IReadOnlyList<NexusRepo>> ListRepositoriesAsync(CancellationToken ct)
             => Task.FromResult<IReadOnlyList<NexusRepo>>(Array.Empty<NexusRepo>());

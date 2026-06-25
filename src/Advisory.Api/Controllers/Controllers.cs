@@ -818,6 +818,39 @@ public class QuarantineController : ControllerBase
 
         return Ok(new { configured = true, count = rows.Count, held = rows });
     }
+
+    /// <summary>Everything currently in the approved repos — the vetted packages developers can pull.</summary>
+    [HttpGet("approved")]
+    public async Task<ActionResult> Approved(CancellationToken ct)
+    {
+        if (!_nexus.IsConfigured) return Ok(new { configured = false, approved = Array.Empty<object>() });
+        var rows = new List<object>();
+        foreach (var eco in NexusEcosystems.Gateable)
+        {
+            if (!NexusEcosystems.TryGet(eco, out var def)) continue;
+            var items = await _nexus.ListComponentsAsync($"{def.Prefix}-approved", ct);
+            foreach (var a in items)
+                rows.Add(new { a.Name, ecosystem = eco.ToString(), a.Version, a.FileName });
+        }
+        return Ok(new { configured = true, count = rows.Count, approved = rows });
+    }
+
+    public record RevokeRequest(string Ecosystem, string Name, string? Version);
+
+    /// <summary>Revoke an already-approved package (Admin): delete it from the approved repo so
+    /// developers can no longer pull it. The operator override on a previously-allowed package.</summary>
+    [HttpPost("revoke")]
+    [Authorize(Policy = Policies.CanAdmin)]
+    public async Task<ActionResult> Revoke([FromBody] RevokeRequest req, CancellationToken ct)
+    {
+        if (req is null || string.IsNullOrWhiteSpace(req.Ecosystem) || string.IsNullOrWhiteSpace(req.Name))
+            return BadRequest(new { error = "ecosystem and name are required" });
+        if (!Enum.TryParse<Ecosystem>(req.Ecosystem, ignoreCase: true, out var eco))
+            return BadRequest(new { error = $"Unknown ecosystem '{req.Ecosystem}'." });
+        var ok = await _nexus.RevokeApprovedAsync(eco, req.Name, req.Version ?? "", ct);
+        return ok ? Ok(new { revoked = true, name = req.Name, version = req.Version })
+                  : NotFound(new { error = $"'{req.Name}' not found in {eco} approved repo." });
+    }
 }
 
 

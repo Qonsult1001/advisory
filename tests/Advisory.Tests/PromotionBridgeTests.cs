@@ -41,6 +41,7 @@ public class PromotionBridgeTests
         public Task<int> DeprovisionAsync(Ecosystem eco, CancellationToken ct) => Task.FromResult(0);
         public Task<IReadOnlySet<string>> ExistingRepoNamesAsync(CancellationToken ct) => Task.FromResult<IReadOnlySet<string>>(new HashSet<string>());
         public Task<bool> IsReachableAsync(CancellationToken ct) => Task.FromResult(true);
+        public Task<bool> RevokeApprovedAsync(Ecosystem eco, string name, string version, CancellationToken ct) => Task.FromResult(true);
     }
 
     public static ServiceProvider BuildGate()
