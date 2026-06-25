@@ -580,11 +580,13 @@ public class ScansController : ControllerBase
     private readonly INexusClient _nexus;
     private readonly Advisory.Api.Scan.ScanStore _scans;
     private readonly Advisory.Api.Scan.GitRepoScanService _gitScans;
+    private readonly Advisory.Api.Scan.OnDemandScanService _ondemand;
     private readonly IPolicyStore _policy;
     private readonly ICurrentUser _user;
     public ScansController(INexusClient nexus, Advisory.Api.Scan.ScanStore scans,
-        Advisory.Api.Scan.GitRepoScanService gitScans, IPolicyStore policy, ICurrentUser user)
-    { _nexus = nexus; _scans = scans; _gitScans = gitScans; _policy = policy; _user = user; }
+        Advisory.Api.Scan.GitRepoScanService gitScans, Advisory.Api.Scan.OnDemandScanService ondemand,
+        IPolicyStore policy, ICurrentUser user)
+    { _nexus = nexus; _scans = scans; _gitScans = gitScans; _ondemand = ondemand; _policy = policy; _user = user; }
 
     [HttpGet("repositories")]
     public async Task<ActionResult> Repositories(CancellationToken ct)
@@ -622,17 +624,22 @@ public class ScansController : ControllerBase
         return Ok(new { configured = true, count = repos.Count, repositories = repos });
     }
 
-    /// <summary>Packages tab — every real scanned package across all repos (live from the scan store).</summary>
+    /// <summary>"My repositories" — packages that flowed through YOUR Nexus firewall repos
+    /// (*-quarantine / *-approved) and were scanned. Catalog-search scans (repo "search") and
+    /// ad-hoc on-demand scans are NOT included — they have their own tabs.</summary>
     [HttpGet("packages")]
     public ActionResult Packages()
     {
-        var pkgs = _scans.All().Select(s => new
-        {
-            s.Name, s.Version, Ecosystem = s.Ecosystem.ToString(), s.Repository,
-            RepositoryPath = $"{s.Repository}/{s.Name}",
-            Vulnerabilities = s.Vulnerabilities.Count, s.Critical, s.High, s.Verdict,
-            LastScan = s.ScannedAt,
-        }).ToList();
+        var pkgs = _scans.All()
+            .Where(s => s.Repository.EndsWith("-quarantine", StringComparison.OrdinalIgnoreCase)
+                     || s.Repository.EndsWith("-approved", StringComparison.OrdinalIgnoreCase))
+            .Select(s => new
+            {
+                s.Name, s.Version, Ecosystem = s.Ecosystem.ToString(), s.Repository,
+                RepositoryPath = $"{s.Repository}/{s.Name}",
+                Vulnerabilities = s.Vulnerabilities.Count, s.Critical, s.High, s.Verdict,
+                LastScan = s.ScannedAt,
+            }).ToList();
         return Ok(new { configured = true, count = pkgs.Count, packages = pkgs });
     }
 
@@ -762,6 +769,11 @@ public class ScansController : ControllerBase
         var scan = rescan
             ? await _scans.ScanArtifactAsync(repo, pkg, ct)
             : await _scans.GetOrScanAsync(repo, pkg, ct);
+        // A scan triggered from Catalog search/CVEs (repo "on-demand") is recorded in the On-Demand
+        // history (deduped), so it lands in the "On Demand Packages" tab — not "My repositories",
+        // which is reserved for packages that actually flowed through the Nexus firewall.
+        if (string.Equals(repo, "on-demand", StringComparison.OrdinalIgnoreCase))
+            _ondemand.StartIfAbsent(pkg);
         return Ok(scan);
     }
 }

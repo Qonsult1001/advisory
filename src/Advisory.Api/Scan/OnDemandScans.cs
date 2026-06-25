@@ -48,6 +48,16 @@ public class OnDemandScanService
         return scan;
     }
 
+    /// <summary>Record an on-demand scan only if this name@version isn't already in the history —
+    /// avoids duplicate rows when Catalog search/CVEs re-scans the same package.</summary>
+    public OnDemandScan? StartIfAbsent(PackageRef pkg)
+    {
+        if (_scans.Values.Any(s => string.Equals(s.Name, pkg.Name, StringComparison.OrdinalIgnoreCase)
+                                && string.Equals(s.Version, pkg.Version, StringComparison.OrdinalIgnoreCase)))
+            return null;
+        return Start(pkg);
+    }
+
     private async Task RunAsync(OnDemandScan scan, PackageRef pkg)
     {
         try

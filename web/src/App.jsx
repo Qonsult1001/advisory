@@ -2994,7 +2994,7 @@ function SearchCves({ rows, onCve }) {
   useEffect(() => {
     let alive = true;
     Promise.all((rows || []).slice(0, 12).map((r) =>
-      api.getArtifactScan("search", r.ecosystem, r.name, r.latestVersion || "latest", false).catch(() => null)
+      api.getArtifactScan("on-demand", r.ecosystem, r.name, r.latestVersion || "latest", false).catch(() => null)
     )).then((scans) => {
       if (!alive) return;
       const all = [];
