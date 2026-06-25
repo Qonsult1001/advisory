@@ -25,6 +25,7 @@ const api = {
   getScans: () => fetch(`${API}/scans/repositories`).then((r) => r.json()),
   getNexusEcosystems: () => fetch(`${API}/nexus/ecosystems`).then((r) => r.json()),
   getApproved: () => fetch(`${API}/quarantine/approved`).then((r) => r.json()),
+  resetDemoData: () => fetch(`${API}/maintenance/reset`, { method: "POST" }).then((r) => r.json().then((j) => ({ ok: r.ok, ...j }))),
   revokeApproved: (ecosystem, name, version) => fetch(`${API}/quarantine/revoke`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ecosystem, name, version }) }).then((r) => r.json().then((j) => ({ ok: r.ok, ...j }))),
   provisionEcosystem: (ecosystem) => fetch(`${API}/nexus/provision`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ecosystem }) }).then((r) => r.json().then((j) => ({ ok: r.ok, ...j }))),
   deprovisionEcosystem: (ecosystem) => fetch(`${API}/nexus/ecosystem/${encodeURIComponent(ecosystem)}`, { method: "DELETE" }).then((r) => r.json().then((j) => ({ ok: r.ok, ...j }))),
@@ -5030,6 +5031,17 @@ function AdminCenter({ setTab }) {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState(null);
   const [editIdx, setEditIdx] = useState(null);   // which agent's edit drawer is open
+  const [resetConfirm, setResetConfirm] = useState(false);
+  const [resetting, setResetting] = useState(false);
+  const [resetMsg, setResetMsg] = useState(null);
+  const doReset = () => {
+    setResetConfirm(false); setResetting(true); setResetMsg(null);
+    api.resetDemoData().then((r) => {
+      setResetMsg(r.ok ? { tone: "ok", text: `Reset complete — ${r.packagesPurged} packages purged; ledger + scans cleared.` }
+                       : { tone: "err", text: r.error || "Reset failed." });
+    }).catch(() => setResetMsg({ tone: "err", text: "Reset failed." }))
+      .finally(() => setResetting(false));
+  };
   useEffect(() => { api.adminSettings().then(setD).catch(() => setD({ agents: [], standards: [], runtimes: [], databases: [], taskKinds: [], mutationRouting: {}, evolutionRouting: {} })); }, []);
   if (!d) return <div style={{ padding: 30, color: C.sub }}>Loading Administration…</div>;
 
@@ -5191,6 +5203,44 @@ function AdminCenter({ setTab }) {
         <button style={{ ...s.add, opacity: busy ? 0.6 : 1 }} disabled={busy} onClick={save}>{busy ? "Saving…" : "Save Administration settings"}</button>
         <span style={{ fontSize: 11.5, color: C.dim }}>Saved to the signed policy. Keys are stored server-side and never shown again.</span>
       </div>
+
+      {/* Danger zone — factory-fresh reset of accumulated demo/test data. */}
+      <div style={{ marginTop: 28, border: "1px solid #f0c9c4", borderRadius: 12, padding: 18, background: "#fdf5f4" }}>
+        <div style={{ fontSize: 14, fontWeight: 700, color: "#c0392b", marginBottom: 4 }}>Danger zone — reset demo data</div>
+        <div style={{ fontSize: 12.5, color: C.sub, lineHeight: 1.6, marginBottom: 12, maxWidth: 720 }}>
+          Wipes all accumulated test data to a clean slate: the <b>Decision ledger</b>, <b>Dashboard</b> stats,
+          <b> Xray Overview</b>, the <b>Scans List</b> + scanned artifacts, all <b>Pipeline</b> packages
+          (Quarantine / Approved), and any revocations. Your <b>policy</b>, <b>AI keys</b>, and the
+          <b> provisioned ecosystems</b> stay intact (the firewall repos remain wired, just emptied).
+          The immutable WORM audit copy is retained. This cannot be undone.
+        </div>
+        {resetMsg && <div style={{ fontSize: 12.5, marginBottom: 10, color: resetMsg.tone === "ok" ? C.accentDim : "#c0392b" }}>{resetMsg.text}</div>}
+        <button onClick={() => setResetConfirm(true)} disabled={resetting}
+          style={{ background: "#c0392b", color: "#fff", border: "none", borderRadius: 8, padding: "9px 16px", fontSize: 12.5, fontWeight: 600, cursor: resetting ? "default" : "pointer", opacity: resetting ? 0.6 : 1 }}>
+          {resetting ? "Resetting…" : "Reset all demo data"}
+        </button>
+      </div>
+
+      {resetConfirm && (
+        <div onClick={() => setResetConfirm(false)}
+          style={{ position: "fixed", inset: 0, background: "rgba(20,22,25,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50 }}>
+          <div onClick={(e) => e.stopPropagation()}
+            style={{ background: C.surface, border: `1px solid ${C.line}`, borderRadius: 12, padding: 22, width: "min(480px,94vw)", boxShadow: "0 12px 40px rgba(0,0,0,0.18)" }}>
+            <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 8, color: C.ink }}>Reset all demo data?</div>
+            <div style={{ fontSize: 13, color: C.sub, lineHeight: 1.6, marginBottom: 18 }}>
+              This permanently clears the decision ledger, dashboard stats, scan history, every package in the
+              firewall pipeline, and all revocations. Policy, AI keys, and provisioned ecosystems are kept.
+              This <b>cannot be undone</b>.
+            </div>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+              <button onClick={() => setResetConfirm(false)}
+                style={{ ...s.btn, background: "transparent", color: C.sub, border: `1px solid ${C.line}`, padding: "8px 14px", fontSize: 12.5, borderRadius: 6, cursor: "pointer" }}>Cancel</button>
+              <button onClick={doReset}
+                style={{ ...s.btn, background: "#c0392b", color: "#fff", border: "none", padding: "8px 14px", fontSize: 12.5, borderRadius: 6, cursor: "pointer" }}>Yes, reset everything</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

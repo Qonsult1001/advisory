@@ -45,6 +45,10 @@ public interface INexusClient
     /// no longer pull it. The operator's manual override on a previously-allowed package.</summary>
     Task<bool> RevokeApprovedAsync(Ecosystem eco, string name, string version, CancellationToken ct);
 
+    /// <summary>Delete every component from all firewall (*-quarantine / *-approved) repos. The repos
+    /// themselves stay; only their contents are emptied (the "reset demo data" action).</summary>
+    Task<int> EmptyFirewallReposAsync(CancellationToken ct);
+
     /// <summary>True only when Nexus's REST API actually answers (status 200). Unlike the list calls,
     /// this does NOT swallow connection failures — the seed uses it to wait for Nexus to finish booting.</summary>
     Task<bool> IsReachableAsync(CancellationToken ct);
@@ -214,6 +218,26 @@ public class NexusClient : INexusClient
             $"{_baseUrl}/service/rest/v1/components/{Uri.EscapeDataString(match.ComponentId)}", ct);
         _log.LogWarning("REVOKED {Pkg}@{Ver} from {Repo}: {Status}", name, version, repo, (int)resp.StatusCode);
         return resp.IsSuccessStatusCode;
+    }
+
+    public async Task<int> EmptyFirewallReposAsync(CancellationToken ct)
+    {
+        if (!IsConfigured) return 0;
+        var repos = await ListRepositoriesAsync(ct);
+        var deleted = 0;
+        foreach (var r in repos)
+        {
+            if (!r.Name.EndsWith("-quarantine", StringComparison.OrdinalIgnoreCase)
+                && !r.Name.EndsWith("-approved", StringComparison.OrdinalIgnoreCase)) continue;
+            foreach (var c in await ListComponentsAsync(r.Name, ct))
+            {
+                using var resp = await _http.DeleteAsync(
+                    $"{_baseUrl}/service/rest/v1/components/{Uri.EscapeDataString(c.ComponentId)}", ct);
+                if (resp.IsSuccessStatusCode) deleted++;
+            }
+        }
+        _log.LogWarning("Reset: emptied firewall repos — {Count} components deleted.", deleted);
+        return deleted;
     }
 
     public async Task<bool> IsReachableAsync(CancellationToken ct)

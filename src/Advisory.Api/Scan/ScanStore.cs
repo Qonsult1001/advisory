@@ -73,6 +73,14 @@ public class ScanStore
     public bool IsRevoked(Ecosystem eco, string name, string version)
         => _revoked.ContainsKey(RevKey(eco, name, version));
 
+    /// <summary>Wipe all scan history AND revocations (the operator "reset demo data" action).</summary>
+    public void ClearAll()
+    {
+        _scans.Clear();
+        _revoked.Clear();
+        Persist();
+    }
+
     public IReadOnlyList<StoredScan> ForRepository(string repo)
         => _scans.Values.Where(s => string.Equals(s.Repository, repo, StringComparison.OrdinalIgnoreCase))
                         .OrderByDescending(s => s.ScannedAt).ToList();

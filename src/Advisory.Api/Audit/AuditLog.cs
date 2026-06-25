@@ -60,6 +60,10 @@ public interface IAuditLog
 
     /// <summary>Most-recent-first view of the ledger, optionally filtered by decision.</summary>
     IReadOnlyList<AuditEntry> Query(GateDecision? decision, int limit);
+
+    /// <summary>Wipe the ledger back to genesis (the operator "reset demo data" action). Truncates the
+    /// local chain file; the WORM mirror is retained as the immutable record of what happened.</summary>
+    void ClearAll();
 }
 
 /// <summary>
@@ -113,6 +117,16 @@ public sealed class AuditLog : IAuditLog
             IEnumerable<AuditEntry> q = ((IEnumerable<AuditEntry>)_entries).Reverse();
             if (decision is { } d) q = q.Where(e => e.Decision == d);
             return q.Take(limit).ToList();
+        }
+    }
+
+    public void ClearAll()
+    {
+        lock (_lock)
+        {
+            _entries.Clear();
+            _prevHash = Genesis;
+            try { if (File.Exists(_path)) File.WriteAllText(_path, ""); } catch { /* best-effort */ }
         }
     }
 

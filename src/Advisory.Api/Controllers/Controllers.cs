@@ -2235,3 +2235,33 @@ public class NexusController : ControllerBase
         return Ok(new { removed, ecosystem = eco.ToString() });
     }
 }
+
+/// <summary>Maintenance actions for resetting accumulated demo/test data to a clean slate.</summary>
+[ApiController]
+[Route("api/maintenance")]
+[Authorize(Policy = Policies.CanViewer)]
+public class MaintenanceController : ControllerBase
+{
+    private readonly IAuditLog _audit;
+    private readonly Advisory.Api.Scan.ScanStore _scans;
+    private readonly INexusClient _nexus;
+    private readonly ICurrentUser _user;
+    private readonly ILogger<MaintenanceController> _log;
+    public MaintenanceController(IAuditLog audit, Advisory.Api.Scan.ScanStore scans, INexusClient nexus,
+                                 ICurrentUser user, ILogger<MaintenanceController> log)
+    { _audit = audit; _scans = scans; _nexus = nexus; _user = user; _log = log; }
+
+    /// <summary>Factory-fresh reset (Admin): wipe the decision ledger + scan index + revocations, and
+    /// empty all firewall repos. Policy, AI keys, and provisioned ecosystems are untouched (repos stay
+    /// wired, just emptied). The WORM audit mirror is retained as the immutable record.</summary>
+    [HttpPost("reset")]
+    [Authorize(Policy = Policies.CanAdmin)]
+    public async Task<ActionResult> Reset(CancellationToken ct)
+    {
+        var packages = await _nexus.EmptyFirewallReposAsync(ct);   // Pipeline Quarantine/Approved
+        _scans.ClearAll();                                          // Scans List + artifacts + revocations
+        _audit.ClearAll();                                          // Dashboard + Xray Overview + Decision ledger
+        _log.LogWarning("RESET demo data by {User}: {Packages} packages purged; audit + scan index cleared.", _user.Name, packages);
+        return Ok(new { reset = true, packagesPurged = packages });
+    }
+}
