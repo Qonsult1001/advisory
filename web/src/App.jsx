@@ -144,7 +144,7 @@ export default function App() {
   const [sources, setSources] = useState([]);
   const [audit, setAudit] = useState([]);
   const [violations, setViolations] = useState([]);
-  const [tab, setTabState] = useState(() => (window.location.hash || "").replace("#", "") || "dashboard");
+  const [tab, setTabState] = useState(() => (window.location.hash || "").replace("#", "") || "catalog");
   const setTab = (t) => { try { window.location.hash = t; } catch {} setTabState(t); };
   const [offline, setOffline] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -216,9 +216,8 @@ export default function App() {
             <span style={{ fontWeight: 700, fontSize: 15 }}><span style={{ color: "#fff" }}>Advi</span><span style={{ color: "#5fd968" }}>sory</span></span>
           </div>
           <div style={{ display: "flex", gap: 4 }}>
-            <span style={tab === "admin" || tab === "memory" ? s.appTab : s.appTabOn} onClick={() => setTab("dashboard")}>Platform</span>
-            <span style={tab === "admin" ? s.appTabOn : s.appTab} onClick={() => setTab("admin")}>Administration</span>
-            <span style={tab === "memory" ? s.appTabOn : s.appTab} onClick={() => setTab("memory")}>Memories</span>
+            {/* Administration + Memories tabs hidden for now. */}
+            <span style={s.appTabOn} onClick={() => setTab("catalog")}>Platform</span>
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
@@ -703,10 +702,9 @@ function Status({ ok }) {
 // Grouped left nav modeled on JFrog's platform sidebar: top-level product groups, each expanding
 // to its sub-items. Xray mirrors the demo exactly (4 items); everything else lives in its own group.
 const NAV = [
-  { type: "item", key: "dashboard", label: "Dashboard", icon: "▤" },
-  { type: "group", key: "apptrust", label: "AppTrust", icon: "◈", children: [
-    ["applications", "Applications"], ["unifiedpolicies", "Unified Policies"], ["waivers", "Waivers"],
-  ]},
+  // Trimmed nav: Catalog first, then Xray / Curation / Pipeline. Dashboard, AppTrust, AI/ML,
+  // Mutation and Evolution are hidden for now (kept in code so they can be re-enabled later).
+  { type: "item", key: "catalog", label: "Catalog", icon: "▦" },
   { type: "group", key: "xray", label: "Xray", icon: "◉", children: [
     ["scans", "Scans List"], ["xrayoverview", "Overview"], ["violations", "Watch Violations"],
     ["ondemand", "On-Demand Scanning"], ["watches", "Watches & Policies"],
@@ -714,17 +712,10 @@ const NAV = [
   { type: "group", key: "curation", label: "Curation", icon: "⊜", children: [
     ["controls", "Policy controls"], ["sources", "Intelligence sources"], ["kev", "Known-exploited (KEV)"],
   ]},
-  { type: "item", key: "catalog", label: "Catalog", icon: "▦" },
-  { type: "group", key: "aiml", label: "AI/ML", icon: "✦", children: [
-    ["aiml", "Overview"], ["airegistry", "Model Registry"], ["aidiscovery", "Discover Models"],
-    ["aidetection", "Shadow AI"], ["llmgateway", "LLM Gateway"],
-  ]},
   { type: "group", key: "pipeline", label: "Pipeline", icon: "⇄", children: [
     ["queue", "Intake queue"], ["quarantine", "Quarantine"], ["approved", "Approved packages"], ["reports", "Reports"],
     ["exceptions", "Approved exceptions"], ["audit", "Decision ledger"],
   ]},
-  { type: "item", key: "evolution", label: "Mutation", icon: "brain" },
-  { type: "item", key: "research", label: "Evolution", icon: "✦" },
 ];
 const NAV_PARENT = (() => { const m = {}; NAV.forEach(g => g.children?.forEach(([k]) => m[k] = g.key)); return m; })();
 
