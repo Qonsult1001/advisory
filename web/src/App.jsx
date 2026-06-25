@@ -165,9 +165,11 @@ export default function App() {
       const [p, s, a, v] = await Promise.all([api.getPolicy(), api.getSources(), api.getAudit(), api.getViolations()]);
       setPolicy(p.policy); setSig(p.signature); setSources(s); setAudit(a); setViolations(v); setOffline(false);
     } catch {
+      // API unreachable. Show an HONEST empty state — never fabricated sample packages/decisions
+      // (live data only). The self-heal retry below reconnects when the API is back.
       setOffline(true); setPolicy(DEMO.policy); setSig("OFFLINE");
       setSources(ALL_SOURCES.map((s) => ({ key: s.key, isAvailable: s.tier === "Included" })));
-      setAudit(DEMO.audit); setViolations([]);
+      setAudit([]); setViolations([]);
     }
   }, []);
   useEffect(() => { load(); }, [load]);
@@ -7041,53 +7043,5 @@ const DEMO = {
     ],
     exceptions: [{ package: "torch==2.4.0", reason: "Approved GPU stack", approvedBy: "J. Mokoena",
       ticket: "SEC-1042", expires: "2026-09-01" }] },
-  audit: [
-    { id: "1", package: { ecosystem: "PyPI", name: "transformers", version: "4.44.0" },
-      decision: "Allow", triggeredRules: [], componentsEvaluated: 41, timestamp: new Date().toISOString(),
-      coverage: { allRequiredConclusive: true, gaps: [], sources: [
-        { source: "osv", status: "Empty", findingCount: 0, detail: "no vulnerabilities recorded", required: true },
-        { source: "kev", status: "Ok", findingCount: 0, detail: null, required: false },
-        { source: "epss", status: "Ok", findingCount: 0, detail: null, required: false },
-        { source: "vulncheck", status: "NotConfigured", findingCount: 0, detail: "no API key \u2014 licensed feed inactive", required: false } ] },
-      researchRationale: "Decision ALLOW for transformers@4.44.0 across 41 components. OSV (required) returned conclusively with no recorded vulnerabilities across the resolved tree; KEV and EPSS confirmed no known-exploited or high-probability entries. Coverage gap: VulnCheck is not licensed, so pre-NVD / zero-day intelligence was NOT consulted \u2014 absence of zero-day findings is therefore unverified, not confirmed. Residual risk: low for known vulnerabilities, indeterminate for pre-disclosure threats. A reviewer relying on this for production (vs production) should confirm against a licensed early-warning feed." },
-    { id: "2", package: { ecosystem: "npm", name: "example-pkg", version: "1.2.0" },
-      decision: "Block", triggeredRules: ["SEC-VULN-02:KEV:CVE-2024-1111[transitive d2:minimist]"],
-      componentsEvaluated: 18, timestamp: new Date().toISOString(),
-      coverage: { allRequiredConclusive: true, gaps: [], sources: [
-        { source: "osv", status: "Ok", findingCount: 1, detail: null, required: true },
-        { source: "kev", status: "Ok", findingCount: 0, detail: null, required: false },
-        { source: "epss", status: "Ok", findingCount: 1, detail: null, required: false } ] },
-      researchRationale: "Decision BLOCK. A known-exploited vulnerability (CVE-2024-1111) was found at depth 2 in transitive dependency 'minimist', not in the requested package itself \u2014 this is exactly the supply-chain surface a root-only scan would miss. KEV listing makes this a hard block under SEC-VULN-02. Coverage was complete across required sources. No override recommended." },
-    { id: "5", package: { ecosystem: "PyPI", name: "obscure-lib", version: "0.0.3" },
-      decision: "Quarantine", triggeredRules: ["SEC-COV-02:REQUIRED_SOURCE_INCONCLUSIVE"],
-      componentsEvaluated: 4, timestamp: new Date().toISOString(),
-      coverage: { allRequiredConclusive: false,
-        gaps: ["osv timed out \u2014 its coverage dimension was not verified (REQUIRED for clean allow)"],
-        sources: [
-        { source: "osv", status: "Timeout", findingCount: 0, detail: "request cancelled/timed out", required: true },
-        { source: "kev", status: "Ok", findingCount: 0, detail: null, required: false },
-        { source: "epss", status: "Skipped", findingCount: 0, detail: "no CVEs to score", required: false } ] },
-      researchRationale: "Decision QUARANTINE \u2014 NOT a clean pass. The required source OSV timed out, so the primary CVE dimension was never verified for this package or its 3 dependencies. Per SEC-COV-02 the package is held rather than allowed, because absence of findings from a failed source is not evidence of safety. Action: re-run once OSV is reachable; do not promote on the strength of the secondary feeds alone." },
-    { id: "6", package: { ecosystem: "PyPI", name: "reuests", version: "1.0.0" },
-      decision: "Block", triggeredRules: ["SEC-VULN-01:CVSS:MAL-2022-7441", "SEC-VULN-02:KEV:MAL-2022-7441"],
-      componentsEvaluated: 1, timestamp: new Date().toISOString(),
-      coverage: { allRequiredConclusive: true, gaps: [], sources: [
-        { source: "osv", status: "Empty", findingCount: 0, detail: "no CVE \u2014 malware carries none", required: true },
-        { source: "malware", status: "Ok", findingCount: 1, detail: "free OpenSSF feed", required: true },
-        { source: "socket", status: "NotConfigured", findingCount: 0, detail: "behavioural tier inactive", required: false } ] },
-      researchRationale: "Decision BLOCK. 'reuests' is a typosquat of 'requests' flagged by the OpenSSF Malicious Packages feed (MAL-2022-7441). Note the CVE source (OSV) returned EMPTY \u2014 malicious packages carry no CVE, so a CVE-only scanner would have passed this as clean. The malware feed is what caught it, which is why it is set as a required source. Behavioural tier (Socket) not licensed, so install-script analysis was not performed; not needed here given the confirmed-bad listing." },
-    { id: "3", package: { ecosystem: "HuggingFace", name: "vendor/model", version: "main" },
-      decision: "Block", triggeredRules: ["SEC-AIML-01:PICKLE_DANGEROUS_IMPORT:references os.system"],
-      componentsEvaluated: 1, timestamp: new Date().toISOString(),
-      coverage: { allRequiredConclusive: true, gaps: [], sources: [
-        { source: "weights-scan", status: "Ok", findingCount: 1, detail: null, required: true } ] },
-      researchRationale: "Decision BLOCK. Pickle opcode scan found a GLOBAL reference to os.system inside the weight file \u2014 a code-execution vector triggered on model load. Format is not safetensors. Hard block under SEC-AIML-01. No override without converting to safetensors and re-scanning." },
-    { id: "4", package: { ecosystem: "NuGet", name: "Serilog", version: "3.1.1" },
-      decision: "Allow", triggeredRules: [], componentsEvaluated: 7, timestamp: new Date().toISOString(),
-      coverage: { allRequiredConclusive: true, gaps: [], sources: [
-        { source: "osv", status: "Empty", findingCount: 0, detail: "no vulnerabilities recorded", required: true },
-        { source: "kev", status: "Ok", findingCount: 0, detail: null, required: false },
-        { source: "epss", status: "Ok", findingCount: 0, detail: null, required: false } ] },
-      researchRationale: "Decision ALLOW for Serilog@3.1.1 across 7 components. Required source conclusive, no findings. Standard low-risk logging dependency." },
-  ],
+  audit: [],  // no fabricated decisions — live data only; offline shows empty
 };

@@ -232,17 +232,45 @@ public class NexusClient : INexusClient
         var deleted = 0;
         foreach (var r in repos)
         {
-            if (!r.Name.EndsWith("-quarantine", StringComparison.OrdinalIgnoreCase)
-                && !r.Name.EndsWith("-approved", StringComparison.OrdinalIgnoreCase)) continue;
+            var isQuarantine = r.Name.EndsWith("-quarantine", StringComparison.OrdinalIgnoreCase);
+            if (!isQuarantine && !r.Name.EndsWith("-approved", StringComparison.OrdinalIgnoreCase)) continue;
+
+            // 1) Delete components (the packages).
             foreach (var c in await ListComponentsAsync(r.Name, ct))
             {
                 using var resp = await _http.DeleteAsync(
                     $"{_baseUrl}/service/rest/v1/components/{Uri.EscapeDataString(c.ComponentId)}", ct);
                 if (resp.IsSuccessStatusCode) deleted++;
             }
+            // 2) Delete any remaining assets (proxies cache index/metadata blobs as standalone assets
+            //    that the component delete leaves behind — these are what keep showing in Nexus).
+            await DeleteAllAssetsAsync(r.Name, ct);
+            // 3) Invalidate the proxy cache so nothing stale is served or counted.
+            if (isQuarantine)
+                try { using var inv = await _http.PostAsync($"{_baseUrl}/service/rest/v1/repositories/{r.Name}/invalidate-cache", null, ct); }
+                catch { /* best-effort */ }
         }
-        _log.LogWarning("Reset: emptied firewall repos — {Count} components deleted.", deleted);
+        _log.LogWarning("Reset: emptied firewall repos — {Count} components deleted, assets purged, proxy caches invalidated.", deleted);
         return deleted;
+    }
+
+    private async Task DeleteAllAssetsAsync(string repo, CancellationToken ct)
+    {
+        string? token = null;
+        do
+        {
+            var url = $"{_baseUrl}/service/rest/v1/assets?repository={repo}" + (token is null ? "" : $"&continuationToken={token}");
+            using var resp = await _http.GetAsync(url, ct);
+            if (!resp.IsSuccessStatusCode) break;
+            using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
+            foreach (var a in doc.RootElement.GetProperty("items").EnumerateArray())
+            {
+                var id = a.GetProperty("id").GetString();
+                if (id is null) continue;
+                using var del = await _http.DeleteAsync($"{_baseUrl}/service/rest/v1/assets/{Uri.EscapeDataString(id)}", ct);
+            }
+            token = doc.RootElement.TryGetProperty("continuationToken", out var t) && t.ValueKind == JsonValueKind.String ? t.GetString() : null;
+        } while (token is not null && !ct.IsCancellationRequested);
     }
 
     public async Task<bool> FetchIntoQuarantineAsync(Ecosystem eco, string name, string version, CancellationToken ct)

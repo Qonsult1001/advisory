@@ -20,9 +20,11 @@ public class NexusAutoProvisioner : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
-        if (!_cfg.GetValue("NEXUS_AUTOPROVISION", true))
+        // Default OFF: a fresh install starts with NO ecosystems gated — the operator switches on the
+        // ones they need from the Ecosystem firewall UI. Set NEXUS_AUTOPROVISION=true to auto-seed all.
+        if (!_cfg.GetValue("NEXUS_AUTOPROVISION", false))
         {
-            _log.LogInformation("Nexus auto-provision disabled (NEXUS_AUTOPROVISION=false) — ecosystems added via the UI.");
+            _log.LogInformation("Nexus auto-provision disabled (default) — operator enables ecosystems via the UI.");
             return;
         }
         if (!_nexus.IsConfigured)

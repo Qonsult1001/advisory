@@ -37,7 +37,7 @@ services:
       - NEXUS_URL=http://nexus:8081
       - NEXUS_QUARANTINE_SUFFIX=quarantine   # repos are <eco>-quarantine (discovered dynamically; ADR 0001)
       - NEXUS_APPROVED_SUFFIX=approved       # repos are <eco>-approved
-      - NEXUS_AUTOPROVISION=true             # seed the default ecosystems on first boot; false => add via UI
+      - NEXUS_AUTOPROVISION=false            # default off: operator enables ecosystems from the UI; true => auto-seed all
       - NEXUS_USER=admin
       - NEXUS_PASS=admin123          # change after first Nexus login
       - NEXUS_POLL_SECONDS=30
