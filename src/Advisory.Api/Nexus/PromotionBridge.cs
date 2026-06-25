@@ -40,18 +40,14 @@ public class PromotionBridge : BackgroundService
             try
             {
                 var components = await _nexus.ListQuarantineAsync(ct);
-                // Pull the revocation denylist once per cycle so we can re-evaluate revoked packages
-                // even if we already processed them (revoke must take effect without a restart).
-                using (var revScope = _scopes.CreateScope())
-                {
-                    var revStore = revScope.ServiceProvider.GetRequiredService<Advisory.Api.Scan.ScanStore>();
-                    foreach (var c in components)
-                        if (revStore.IsRevoked(c.Ecosystem, c.Name, c.Version)) _processed.Remove(c.ComponentId);
-                }
 
                 foreach (var c in components)
                 {
-                    if (!_processed.Add(c.ComponentId)) continue; // already handled
+                    // A package still SITTING in quarantine has not been promoted yet, so we re-evaluate
+                    // it every cycle. This makes exceptions, policy changes, and revocations take effect
+                    // automatically — the moment the gate verdict flips to Allow, it promotes. We only
+                    // skip a component once it has been PROMOTED (recorded in _processed after promote).
+                    if (_processed.Contains(c.ComponentId)) continue;
 
                     byte[] bytes = Array.Empty<byte>();
                     if (c.Ecosystem == Ecosystem.HuggingFace || (c.FileName?.EndsWith(".bin") ?? false))
@@ -78,10 +74,13 @@ public class PromotionBridge : BackgroundService
                     {
                         if (bytes.Length == 0) bytes = await _nexus.DownloadAsync(c.DownloadUrl, ct);
                         await _nexus.PromoteAsync(c, bytes, ct);
+                        _processed.Add(c.ComponentId);   // promoted — don't re-promote next cycle
                         _log.LogInformation("PROMOTED {Pkg}@{Ver}", c.Name, c.Version);
                     }
                     else
                     {
+                        // Held/blocked — NOT added to _processed, so it's re-checked next cycle and
+                        // promotes automatically once an exception/policy change flips it to Allow.
                         await _nexus.HoldAsync(c, string.Join("; ", result.TriggeredRules), ct);
                         _log.LogWarning("HELD {Pkg}@{Ver}: {Decision}", c.Name, c.Version, result.Decision);
                     }

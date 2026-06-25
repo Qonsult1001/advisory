@@ -25,6 +25,7 @@ const api = {
   getScans: () => fetch(`${API}/scans/repositories`).then((r) => r.json()),
   getNexusEcosystems: () => fetch(`${API}/nexus/ecosystems`).then((r) => r.json()),
   getApproved: () => fetch(`${API}/quarantine/approved`).then((r) => r.json()),
+  promoteHeld: (ecosystem, name, version) => fetch(`${API}/quarantine/promote`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ecosystem, name, version }) }).then((r) => r.json().then((j) => ({ ok: r.ok, ...j }))),
   resetDemoData: () => fetch(`${API}/maintenance/reset`, { method: "POST" }).then((r) => r.json().then((j) => ({ ok: r.ok, ...j }))),
   revokeApproved: (ecosystem, name, version) => fetch(`${API}/quarantine/revoke`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ecosystem, name, version }) }).then((r) => r.json().then((j) => ({ ok: r.ok, ...j }))),
   provisionEcosystem: (ecosystem) => fetch(`${API}/nexus/provision`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ecosystem }) }).then((r) => r.json().then((j) => ({ ok: r.ok, ...j }))),
@@ -2466,24 +2467,40 @@ function CvePanel({ cve, onClose, pkgName }) {
 function Quarantine() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
-  useEffect(() => { api.getQuarantine().then(setData).catch(() => setData({ configured: false, held: [] })).finally(() => setLoading(false)); }, []);
+  const [busy, setBusy] = useState({});
+  const [msg, setMsg] = useState(null);
+  const refresh = () => api.getQuarantine().then(setData).catch(() => setData({ configured: false, held: [] }));
+  useEffect(() => { refresh().finally(() => setLoading(false)); }, []);
+  const promote = (h) => {
+    const key = `${h.ecosystem}:${h.name}@${h.version}`;
+    setBusy((b) => ({ ...b, [key]: true })); setMsg(null);
+    api.promoteHeld(h.ecosystem, h.name, h.version).then((r) => {
+      setMsg(r.ok ? { tone: "ok", text: `${h.name}@${h.version} promoted to approved.` }
+                  : { tone: "err", text: r.error || `Could not promote ${h.name}.` });
+      return refresh();
+    }).catch(() => setMsg({ tone: "err", text: `Could not promote ${h.name}.` }))
+      .finally(() => setBusy((b) => ({ ...b, [key]: false })));
+  };
   const held = data?.held || [];
   return (
     <div style={{ animation: "fwfade .2s ease" }}>
       <div style={s.crumb}><span style={{ color: C.accent }}>Pipeline</span><span style={{ color: C.dim }}>›</span><span>Quarantine</span></div>
       <div style={{ fontSize: 22, fontWeight: 700, letterSpacing: -0.4, margin: "4px 0 14px" }}>Quarantine</div>
       <Card title="Pipeline — packages in the proxy"
-        desc="Every package the firewall is currently handling: what's in the quarantine proxy and what the gate decided. Promoted = cleared to approved; Blocked/Held = stopped; Pending = awaiting the next gate cycle.">
+        desc="Every package the firewall is currently handling. Promoted = cleared to approved; Blocked/Held = stopped (Promote to override and push it through); Pending = awaiting the next gate cycle.">
+        {msg && <div style={{ padding: "8px 0 4px", fontSize: 12.5, color: msg.tone === "ok" ? C.accentDim : "#c0392b" }}>{msg.text}</div>}
         {!loading && data && !data.configured
           ? <div style={{ padding: 22, color: C.sub, fontSize: 12.5, lineHeight: 1.6 }}>Nexus not connected (<code style={s.code}>NEXUS_URL</code> unset). When connected, packages awaiting promotion appear here.</div>
-          : <Table cols={["Component", "Ecosystem", "Version", "Status", "Reason"]}>
-              {held.length === 0 && <tr><td style={s.td} colSpan={5}>{loading ? "Loading…" : "Pipeline empty — no packages in quarantine."}</td></tr>}
+          : <Table cols={["Component", "Ecosystem", "Version", "Status", "Reason", ""]}>
+              {held.length === 0 && <tr><td style={s.td} colSpan={6}>{loading ? "Loading…" : "Pipeline empty — no packages in quarantine."}</td></tr>}
               {held.map((h, i) => {
                 const tone = h.status === "promoted" ? C.accent
                   : h.status === "blocked" || h.status === "revoked" ? "#c0392b"
                   : h.status === "held" ? "#d98a00"
                   : h.status === "promoting" ? C.accent : C.dim;
                 const label = h.status === "promoting" ? "promoting…" : h.status;
+                const canPromote = h.status === "blocked" || h.status === "held";
+                const key = `${h.ecosystem}:${h.name}@${h.version}`;
                 return (
                   <tr key={i} style={s.tr}>
                     <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11.5 }}>{h.name}</td>
@@ -2494,7 +2511,16 @@ function Quarantine() {
                         color: tone, background: `${tone}1a`, textTransform: "capitalize" }}>{label}</span>
                       {(h.critical > 0 || h.high > 0) && <span style={{ marginLeft: 6, fontSize: 10, color: "#c0392b" }}>{h.critical}C/{h.high}H</span>}
                     </td>
-                    <td style={{ ...s.td, color: C.sub, fontSize: 11, maxWidth: 420 }}>{h.reason || "—"}</td>
+                    <td style={{ ...s.td, color: C.sub, fontSize: 11, maxWidth: 380 }}>{h.reason || "—"}</td>
+                    <td style={{ ...s.td, textAlign: "right" }}>
+                      {canPromote && (
+                        <button disabled={!!busy[key]} onClick={() => promote(h)}
+                          title="Override the gate and push this package to approved"
+                          style={{ ...s.btn, background: C.accent, color: "#fff", border: "none", padding: "4px 12px", fontSize: 11, borderRadius: 6, cursor: busy[key] ? "default" : "pointer", opacity: busy[key] ? 0.5 : 1 }}>
+                          {busy[key] ? "…" : "Promote"}
+                        </button>
+                      )}
+                    </td>
                   </tr>
                 );
               })}

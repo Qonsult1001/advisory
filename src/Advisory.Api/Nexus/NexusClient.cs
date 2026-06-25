@@ -54,6 +54,11 @@ public interface INexusClient
     /// gates it. Returns true if the fetch reached the upstream.</summary>
     Task<bool> FetchIntoQuarantineAsync(Ecosystem eco, string name, string version, CancellationToken ct);
 
+    /// <summary>Manually promote a held package from quarantine to approved by name+version (the
+    /// operator "approve this" override). Finds it in the quarantine repo, downloads + uploads to
+    /// approved. Returns true on success.</summary>
+    Task<bool> PromoteByNameAsync(Ecosystem eco, string name, string version, CancellationToken ct);
+
     /// <summary>True only when Nexus's REST API actually answers (status 200). Unlike the list calls,
     /// this does NOT swallow connection failures — the seed uses it to wait for Nexus to finish booting.</summary>
     Task<bool> IsReachableAsync(CancellationToken ct);
@@ -312,6 +317,20 @@ public class NexusClient : INexusClient
             return resp.IsSuccessStatusCode;
         }
         catch (Exception ex) { _log.LogWarning(ex, "Fetch {Pkg} into quarantine failed.", name); return false; }
+    }
+
+    public async Task<bool> PromoteByNameAsync(Ecosystem eco, string name, string version, CancellationToken ct)
+    {
+        if (!IsConfigured || !NexusEcosystems.TryGet(eco, out var def)) return false;
+        var quarantine = $"{def.Prefix}-{_quarantineSuffix}";
+        var match = (await ListComponentsAsync(quarantine, ct)).FirstOrDefault(c =>
+            string.Equals(c.Name, name, StringComparison.OrdinalIgnoreCase)
+            && (string.IsNullOrEmpty(version) || string.Equals(c.Version, version, StringComparison.OrdinalIgnoreCase)));
+        if (match is null) return false;
+        var bytes = await DownloadAsync(match.DownloadUrl, ct);
+        await PromoteAsync(match, bytes, ct);
+        _log.LogWarning("MANUALLY PROMOTED {Pkg}@{Ver} to approved (operator override).", name, version);
+        return true;
     }
 
     public async Task<bool> IsReachableAsync(CancellationToken ct)

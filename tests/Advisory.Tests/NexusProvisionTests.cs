@@ -45,6 +45,7 @@ public class NexusProvisionTests
         public Task<bool> RevokeApprovedAsync(Ecosystem eco, string name, string version, CancellationToken ct) => Task.FromResult(true);
         public Task<int> EmptyFirewallReposAsync(CancellationToken ct) => Task.FromResult(0);
         public Task<bool> FetchIntoQuarantineAsync(Ecosystem eco, string name, string version, CancellationToken ct) => Task.FromResult(true);
+        public Task<bool> PromoteByNameAsync(Ecosystem eco, string name, string version, CancellationToken ct) => Task.FromResult(true);
 
         public Task<IReadOnlyList<NexusRepo>> ListRepositoriesAsync(CancellationToken ct)
             => Task.FromResult<IReadOnlyList<NexusRepo>>(Array.Empty<NexusRepo>());

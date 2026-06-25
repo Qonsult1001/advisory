@@ -850,6 +850,22 @@ public class QuarantineController : ControllerBase
     }
 
     public record RevokeRequest(string Ecosystem, string Name, string? Version);
+    public record PromoteRequest(string Ecosystem, string Name, string? Version);
+
+    /// <summary>Manually promote a held package to approved (Admin override) — e.g. after granting an
+    /// exception, push it through immediately instead of waiting for the next gate cycle.</summary>
+    [HttpPost("promote")]
+    [Authorize(Policy = Policies.CanAdmin)]
+    public async Task<ActionResult> Promote([FromBody] PromoteRequest req, CancellationToken ct)
+    {
+        if (req is null || string.IsNullOrWhiteSpace(req.Ecosystem) || string.IsNullOrWhiteSpace(req.Name))
+            return BadRequest(new { error = "ecosystem and name are required" });
+        if (!Enum.TryParse<Ecosystem>(req.Ecosystem, ignoreCase: true, out var eco))
+            return BadRequest(new { error = $"Unknown ecosystem '{req.Ecosystem}'." });
+        var ok = await _nexus.PromoteByNameAsync(eco, req.Name, req.Version ?? "", ct);
+        return ok ? Ok(new { promoted = true, name = req.Name, version = req.Version })
+                  : NotFound(new { error = $"'{req.Name}' not found in {eco} quarantine repo." });
+    }
 
     /// <summary>Revoke an already-approved package (Admin): delete it from the approved repo so
     /// developers can no longer pull it. The operator override on a previously-allowed package.</summary>
