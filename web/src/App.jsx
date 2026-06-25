@@ -2799,6 +2799,16 @@ function Catalog() {
     if (st?.mechanism === "research-only") return { text: "research", color: C.dim };
     return { text: "not gated", color: C.dim };   // mapped but no proxy provisioned yet
   };
+  // Dropdown order: the operator's ACTIVE (gated) ecosystems first, then scanner-gated, then the rest
+  // alphabetically — so a user finds what they actually use without scrolling.
+  const ecoRank = (key) => {
+    const st = ecoState[key];
+    if (st?.gated) return 0;
+    if (st?.mechanism === "scanner") return 1;
+    return 2;
+  };
+  const sortedEcos = [...CATALOG_ECOS].sort((a, b) =>
+    ecoRank(a.key) - ecoRank(b.key) || a.label.localeCompare(b.label));
 
   // live autocomplete (debounced)
   useEffect(() => {
@@ -2861,7 +2871,7 @@ function Catalog() {
           <span style={{ fontSize: 9, marginLeft: 6 }}>▾</span></button>
         {ecoOpen && (
           <div style={s.ecoMenu}>
-            {CATALOG_ECOS.map((e) => {
+            {sortedEcos.map((e) => {
               const b = ecoBadge(e.key);
               return (
                 <button key={e.key} disabled={!e.live}
@@ -3282,27 +3292,46 @@ function CatalogLanding({ eco, setQ, search, onSample, onCve }) {
   ];
   return (
     <>
-      {/* Quick-start: a clean entry point. Pick an example to instantly see a real gate verdict. */}
-      <div style={{ maxWidth: 760, margin: "0 auto 26px", textAlign: "center" }}>
-        <div style={{ fontSize: 13, color: C.sub, margin: "8px 0 14px" }}>
-          Search a package above, or try one of these to see a live verdict:
+      {/* Quick-start: three reference rows — Packages / Repositories / CVEs — so a user can instantly
+          try any of them. Packages run a live verdict; Repositories open the public registry; CVEs
+          open the advisory. Pure examples to get going. */}
+      <div style={{ maxWidth: 820, margin: "0 auto 26px" }}>
+        <div style={{ fontSize: 13, color: C.sub, margin: "8px 0 14px", textAlign: "center" }}>
+          Search above, or try one of these examples:
         </div>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "center", marginBottom: 14 }}>
-          {samples.map(([term, kind]) => (
-            <button key={term} onClick={() => run(term)} title={kind === "vuln" ? "Has known vulnerabilities" : "Clean"}
-              style={{ display: "inline-flex", alignItems: "center", gap: 7, padding: "7px 14px", borderRadius: 20, cursor: "pointer",
-                fontSize: 12.5, fontWeight: 500, fontFamily: C.mono,
-                border: `1px solid ${kind === "vuln" ? "#f0c9c4" : C.line}`,
-                background: kind === "vuln" ? "#fdf5f4" : C.surface, color: kind === "vuln" ? "#c0392b" : C.ink }}>
-              <span style={{ width: 7, height: 7, borderRadius: 7, background: kind === "vuln" ? "#c0392b" : C.accent }} />
-              {term}
-            </button>
-          ))}
-          {SAMPLE_CVES.slice(0, 3).map(([id, label]) => (
-            <button key={id} onClick={() => onCve && onCve(id)} title={label}
-              style={{ padding: "7px 13px", borderRadius: 20, cursor: "pointer", fontSize: 12, fontFamily: C.mono,
-                border: `1px solid ${C.line}`, background: C.surface, color: C.sub }}>{id}</button>
-          ))}
+        {/* Packages */}
+        <div style={{ display: "flex", alignItems: "baseline", gap: 12, marginBottom: 12, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 11, fontWeight: 700, color: C.dim, textTransform: "uppercase", letterSpacing: 0.5, width: 92, flexShrink: 0 }}>Packages</span>
+          <span style={{ display: "flex", gap: 8, flexWrap: "wrap", flex: 1 }}>
+            {samples.map(([term, kind]) => (
+              <button key={term} onClick={() => run(term)} title={kind === "vuln" ? "Has known vulnerabilities — see the verdict" : "Clean — see the verdict"}
+                style={{ display: "inline-flex", alignItems: "center", gap: 7, padding: "6px 13px", borderRadius: 20, cursor: "pointer",
+                  fontSize: 12.5, fontWeight: 500, fontFamily: C.mono,
+                  border: `1px solid ${kind === "vuln" ? "#f0c9c4" : C.line}`,
+                  background: kind === "vuln" ? "#fdf5f4" : C.surface, color: kind === "vuln" ? "#c0392b" : C.ink }}>
+                <span style={{ width: 7, height: 7, borderRadius: 7, background: kind === "vuln" ? "#c0392b" : C.accent }} />
+                {term}
+              </button>
+            ))}
+          </span>
+        </div>
+        {/* Repositories */}
+        <div style={{ display: "flex", alignItems: "baseline", gap: 12, marginBottom: 12, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 11, fontWeight: 700, color: C.dim, textTransform: "uppercase", letterSpacing: 0.5, width: 92, flexShrink: 0 }}>Repositories</span>
+          <span style={{ display: "flex", gap: 8, flexWrap: "wrap", flex: 1 }}>
+            <SampleRepoChips eco={eco} />
+          </span>
+        </div>
+        {/* CVEs */}
+        <div style={{ display: "flex", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 11, fontWeight: 700, color: C.dim, textTransform: "uppercase", letterSpacing: 0.5, width: 92, flexShrink: 0 }}>CVEs</span>
+          <span style={{ display: "flex", gap: 8, flexWrap: "wrap", flex: 1 }}>
+            {SAMPLE_CVES.map(([id, label]) => (
+              <button key={id} onClick={() => onCve && onCve(id)} title={label}
+                style={{ padding: "6px 12px", borderRadius: 20, cursor: "pointer", fontSize: 12, fontFamily: C.mono,
+                  border: `1px solid ${C.line}`, background: C.surface, color: C.sub }}>{id}</button>
+            ))}
+          </span>
         </div>
       </div>
 
