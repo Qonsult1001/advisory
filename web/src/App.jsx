@@ -17,10 +17,15 @@ const api = {
   testCustomSource: (url, credential) => fetch(`${API}/sources/test-custom`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url, credential }) }).then((r) => r.json()),
   getEcosystems: () => fetch(`${API}/catalog/ecosystems`).then((r) => r.json()),
   getPackage: (eco, name, version) => fetch(`${API}/catalog/package?ecosystem=${eco}&name=${encodeURIComponent(name)}${version ? `&version=${encodeURIComponent(version)}` : ""}`).then((r) => r.json()),
-  searchPackages: (eco, q, limit) => fetch(`${API}/catalog/search?ecosystem=${eco}&q=${encodeURIComponent(q)}${limit ? `&limit=${limit}` : ""}`).then((r) => r.json()),
+  searchPackages: (eco, q, limit, registry) => fetch(`${API}/catalog/search?ecosystem=${eco}&q=${encodeURIComponent(q)}${limit ? `&limit=${limit}` : ""}${registry ? `&registry=${registry}` : ""}`).then((r) => r.json()),
+  getCve: (id) => fetch(`${API}/catalog/cve?id=${encodeURIComponent(id)}`).then((r) => r.json()),
+  myPackages: () => fetch(`${API}/scans/packages`).then((r) => r.json()),
   enqueue: (pkg) => fetch(`${API}/queue/enqueue`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(pkg) }).then((r) => r.json()),
   getQueueDepth: () => fetch(`${API}/queue/depth`).then((r) => r.json()),
   getScans: () => fetch(`${API}/scans/repositories`).then((r) => r.json()),
+  getNexusEcosystems: () => fetch(`${API}/nexus/ecosystems`).then((r) => r.json()),
+  provisionEcosystem: (ecosystem) => fetch(`${API}/nexus/provision`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ecosystem }) }).then((r) => r.json().then((j) => ({ ok: r.ok, ...j }))),
+  deprovisionEcosystem: (ecosystem) => fetch(`${API}/nexus/ecosystem/${encodeURIComponent(ecosystem)}`, { method: "DELETE" }).then((r) => r.json().then((j) => ({ ok: r.ok, ...j }))),
   getGitRepos: () => fetch(`${API}/scans/git-repositories`).then((r) => r.json()),
   linkGitRepo: (body) => fetch(`${API}/scans/git-repositories`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).then((r) => r.json()),
   unlinkGitRepo: (fullName) => fetch(`${API}/scans/git-repositories/${encodeURIComponent(fullName)}`, { method: "DELETE" }).then((r) => r.json()),
@@ -117,14 +122,15 @@ const ALL_SOURCES = [
   { key: "artifactory", label: "JFrog Artifactory scan API", scope: "Cross-referenced CVE scan", tier: "Included" },
   { key: "kev", label: "CISA KEV", scope: "Known-exploited catalog", tier: "Included" },
   { key: "epss", label: "EPSS (FIRST.org)", scope: "Exploit probability", tier: "Included" },
-  { key: "vulncheck", label: "VulnCheck", scope: "Pre-NVD / zero-day intel", tier: "Licensed" },
+  { key: "vulncheck", label: "VulnCheck (exploited intel)", scope: "Exploited-in-the-wild enrichment (vulncheck-kev — superset of CISA KEV)", tier: "Included" },
   { key: "socket", label: "Socket (behavioural)", scope: "Install-script / runtime behaviour", tier: "Licensed" },
+  { key: "vsix-scanner", label: "Code Exfiltration Scanner (extensions)", scope: "Deep code scan: data-exfiltration, RAT, credential-theft, IOC", tier: "Included" },
 ];
 
 // Why a source is inactive — shown on hover so "Not configured" never reads as "broken".
 const SOURCE_HINT = {
   artifactory: "Inactive until ARTIFACTORY_URL + ARTIFACTORY_TOKEN are set (point at your JFrog instance). Not an error.",
-  vulncheck: "Licensed feed — activates when VULNCHECK_API_KEY is set. No code change.",
+  vulncheck: "Enriches CVEs with VulnCheck's exploited-in-the-wild intel (ransomware use, reported exploitations, exploit refs). Free vulncheck-kev index — activates when VULNCHECK_API_KEY is set.",
   socket: "Licensed behavioural feed — activates when SOCKET_API_KEY is set.",
 };
 
@@ -279,6 +285,29 @@ export default function App() {
                   <Stepper value={policy.minScorecardScore ?? 0} step={0.5} min={0} max={10}
                     onChange={(v) => set("minScorecardScore", v)} unit="/ 10" /></Ctl>
               </Table>
+              <SubHead>SEC-EXT-01 — AI-editor extension gate</SubHead>
+              <Table cols={["Control", "Rule", "Setting"]}>
+                <Ctl id="SEC-EXT-01" rule="On a High-Risk extension (confirmed code threat / on malicious feed)">
+                  <div style={{ display: "flex", gap: 6 }}>
+                    {["Disabled", "Notify", "Block"].map((o) => (
+                      <button key={o} onClick={() => set("extensionRiskAction", o)}
+                        style={{ fontSize: 11.5, fontWeight: 600, padding: "5px 12px", borderRadius: 6, cursor: "pointer",
+                          border: `1px solid ${(policy.extensionRiskAction || "Block") === o ? C.accent : C.line}`,
+                          background: (policy.extensionRiskAction || "Block") === o ? "rgba(64,190,70,.1)" : C.surface,
+                          color: (policy.extensionRiskAction || "Block") === o ? C.accentDim : C.sub }}>{o}</button>
+                    ))}
+                  </div></Ctl>
+                <Ctl id="SEC-EXT-02" rule="When the ONLY issue is an unverified publisher (no confirmed threat)">
+                  <div style={{ display: "flex", gap: 6 }}>
+                    {["Allow", "Notify", "Block"].map((o) => (
+                      <button key={o} onClick={() => set("extensionUnverifiedAction", o)}
+                        style={{ fontSize: 11.5, fontWeight: 600, padding: "5px 12px", borderRadius: 6, cursor: "pointer",
+                          border: `1px solid ${(policy.extensionUnverifiedAction || "Notify") === o ? C.accent : C.line}`,
+                          background: (policy.extensionUnverifiedAction || "Notify") === o ? "rgba(64,190,70,.1)" : C.surface,
+                          color: (policy.extensionUnverifiedAction || "Notify") === o ? C.accentDim : C.sub }}>{o}</button>
+                    ))}
+                  </div></Ctl>
+              </Table>
               <SubHead>SEC-AIML-01 — Model-weight controls</SubHead>
               <Table cols={["Control", "Rule", "Setting"]}>
                 <Ctl id="" rule="Permit safetensors format only">
@@ -298,7 +327,7 @@ export default function App() {
 
           {tab === "sources" && (
             <Card title="Intelligence sources" desc="Feeds operate behind a single resolver interface. Included feeds carry no licence cost; licensed feeds activate on credential without code change. Run a live health probe to see real reachability + latency.">
-              <Sources sources={sources} policy={policy} set={set} setPolicy={setPolicy} />
+              <Sources sources={sources} policy={policy} set={set} setPolicy={setPolicy} save={save} saving={saving} />
               <Callout>Included feeds lag proprietary research and will miss some zero-days — an accepted
                 residual risk for production risk-tiering. Closing the gap is a credential change
                 (set <code style={s.code}>VULNCHECK_API_KEY</code>), not a redevelopment.</Callout>
@@ -1051,10 +1080,11 @@ function Exceptions({ policy, setPolicy }) {
 
 const ECOS = ["PyPI", "npm", "NuGet", "Cargo", "Go", "HuggingFace"];
 // Intelligence sources with a live health probe (real reachability + latency per feed).
-function Sources({ sources, policy, set, setPolicy }) {
+function Sources({ sources, policy, set, setPolicy, save, saving }) {
   const [admin, setAdmin] = useState(null);      // { builtins, customs }
   const [tests, setTests] = useState({});        // key -> { ok, status, elapsedMs }
   const [testing, setTesting] = useState(null);  // key currently testing
+  const [flowOpen, setFlowOpen] = useState(null); // key whose data-flow detail is expanded
   const [editor, setEditor] = useState(null);    // { key, label, endpoint, credential } | null  (built-in cred edit)
   const [customEditor, setCustomEditor] = useState(null); // a policy.customSources entry being edited | null
   const [addOpen, setAddOpen] = useState(false);
@@ -1097,14 +1127,23 @@ function Sources({ sources, policy, set, setPolicy }) {
 
   const row = (src, custom) => {
     const t = tests[src.key];
-    const enabled = custom ? src.enabled : src.enabled;
+    // Built-in enabled/required state is owned by the POLICY (the toggle's write target), not the
+    // admin snapshot — otherwise the switch flips the policy but the row re-renders from the
+    // unchanged snapshot and appears stuck. Custom sources carry their own enabled flag.
+    const enabled = custom ? src.enabled : (policy.enabledSources || []).includes(src.key);
+    const required = custom ? false : (policy.requiredSources || []).includes(src.key);
+    const open = flowOpen === src.key;
     return (
-      <tr key={src.key} style={s.tr}>
+      <React.Fragment key={src.key}>
+      <tr style={s.tr}>
         <td style={s.td}><b>{src.label}</b>{custom && <Tag tone={C.info} >custom</Tag>}
           <div style={{ color: C.sub, fontSize: 11, marginTop: 2 }}>{src.scope}</div>
           {src.endpoint
             ? <div style={{ color: C.info, fontSize: 10.5, fontFamily: C.mono, marginTop: 2 }} title="Endpoint override (on-prem mirror)">↳ {src.endpoint} <span style={{ color: C.accentDim }}>· override</span></div>
-            : src.defaultEndpoint && <div style={{ color: C.dim, fontSize: 10.5, fontFamily: C.mono, marginTop: 2 }} title="Built-in default endpoint">↳ {src.defaultEndpoint}</div>}</td>
+            : src.defaultEndpoint && <div style={{ color: C.dim, fontSize: 10.5, fontFamily: C.mono, marginTop: 2 }} title="Built-in default endpoint">↳ {src.defaultEndpoint}</div>}
+          {(src.egress || src.dataSent) && <button onClick={() => setFlowOpen(open ? null : src.key)}
+            style={{ background: "none", border: "none", color: C.accent, fontSize: 10.5, cursor: "pointer", padding: "3px 0 0", display: "flex", alignItems: "center", gap: 4, textAlign: "left" }}>
+            {open ? "▾" : "▸"} <span>Egress: <span style={{ color: C.sub }}>{(src.egress || "").split("→")[0].split("(")[0].trim() || "—"}</span> — click for full data flow</span></button>}</td>
         <td style={s.td}><Tag tone={src.tier === "Licensed" ? C.warn : src.tier === "Custom" ? C.info : C.allow}>{src.tier}</Tag></td>
         <td style={s.td}>
           {t ? <span style={{ color: tone(t.ok, t.status), fontWeight: 600 }} title={t.detail || ""}>{t.status}{t.elapsedMs ? ` · ${t.elapsedMs}ms` : ""}</span>
@@ -1112,7 +1151,7 @@ function Sources({ sources, policy, set, setPolicy }) {
             : <span style={{ color: C.sub }} title={SOURCE_HINT[src.key] || ""}>{src.needsCredential ? "No credential" : "Idle"}</span>}
         </td>
         <td style={s.td}><Switch on={enabled} onChange={(v) => custom ? toggleCustom(src.key, v) : toggleEnabled(src.key, v)} /></td>
-        <td style={s.td}><Switch on={src.required} disabled={custom} onChange={(v) => toggleRequired(src.key, v)} /></td>
+        <td style={s.td}><Switch on={required} disabled={custom} onChange={(v) => toggleRequired(src.key, v)} /></td>
         <td style={{ ...s.td, whiteSpace: "nowrap" }}>
           <button style={s.miniBtn} onClick={() => test(src.key)} disabled={testing === src.key}>{testing === src.key ? "…" : "Test"}</button>
           {!custom && <button style={{ ...s.miniBtn, marginLeft: 6 }}
@@ -1121,14 +1160,32 @@ function Sources({ sources, policy, set, setPolicy }) {
           {custom && <button style={{ ...s.miniBtn, marginLeft: 6, color: C.block }} onClick={() => removeCustom(src.key)}>Remove</button>}
         </td>
       </tr>
+      {open && (
+        <tr>
+          <td colSpan={6} style={{ ...s.td, background: C.surface2, padding: "12px 20px" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "120px 1fr", gap: "6px 14px", fontSize: 12 }}>
+              <span style={{ color: C.sub, fontWeight: 600 }}>Egress to</span>
+              <span style={{ fontFamily: C.mono, fontSize: 11.5 }}>{src.egress || "—"}</span>
+              <span style={{ color: C.sub, fontWeight: 600 }}>Data sent</span>
+              <span>{src.dataSent || "—"}</span>
+              <span style={{ color: C.sub, fontWeight: 600 }}>Control</span>
+              <span style={{ color: C.sub }}>{enabled ? "Enabled" : "Disabled"} via the toggle above; commit to sign into policy. {src.required ? "Required for a clean Allow." : ""}</span>
+            </div>
+          </td>
+        </tr>
+      )}
+      </React.Fragment>
     );
   };
 
   return (
     <>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 0 14px" }}>
-        <div style={{ fontSize: 13, color: C.sub }}>Configure, test, enable and add intelligence sources. Changes are saved into the signed policy — commit to apply.</div>
-        <button style={s.add} onClick={() => setAddOpen(true)}>+ Add OSV source</button>
+        <div style={{ fontSize: 13, color: C.sub }}>Configure, test, enable and add intelligence sources. Toggle Enabled/Required, then commit to sign them into the policy.</div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button style={s.add} onClick={() => setAddOpen(true)}>+ Add OSV source</button>
+          {save && <button style={s.save} onClick={save} disabled={saving}>{saving ? "Signing…" : "Commit & sign policy"}</button>}
+        </div>
       </div>
       <div style={s.card}>
         <table style={s.table}><thead><tr>
@@ -1374,8 +1431,47 @@ function BrandIcon({ format }) {
   if (k === "pypi") return (
     <svg width={sz} height={sz} viewBox="0 0 24 24"><path fill="#3775a9" d="M11.9 2c-1.9 0-3.4.4-3.4 2.5v2h3.5v.5H5.6C3.4 7 2 8.4 2 11.6c0 3.1 1.2 4.6 3.4 4.6h1.1v-2.4c0-1.6 1.4-3 3-3h3.5c1.4 0 2.5-1.1 2.5-2.5V4.5C15.5 2.7 14 2 11.9 2M9.9 3.6c.4 0 .7.3.7.7s-.3.6-.7.6-.6-.3-.6-.6.3-.7.6-.7"/><path fill="#ffd43b" d="M12.1 22c1.9 0 3.4-.4 3.4-2.5v-2H12v-.5h6.4c2.2 0 3.6-1.4 3.6-4.6 0-3.1-1.2-4.6-3.4-4.6h-1.1v2.4c0 1.6-1.4 3-3 3H11c-1.4 0-2.5 1.1-2.5 2.5v4.3c0 1.8 1.5 2.5 3.6 2.5m2-1.6c-.4 0-.7-.3-.7-.7s.3-.6.7-.6.6.3.6.6-.3.7-.6.7"/></svg>
   );
-  // generic monogram tile for cargo/go/nuget/others
-  const mono = { nuget: "nu", cargo: "rs", go: "Go", r: "R", conda: "C" }[k] || (format || "?").slice(0, 2);
+  if (k === "go") return (
+    <svg width={sz} height={sz} viewBox="0 0 24 24"><rect width="24" height="24" rx="3" fill="#00add8"/><text x="12" y="16" fontSize="9" fontWeight="700" fill="#fff" textAnchor="middle" fontFamily="sans-serif">GO</text></svg>
+  );
+  if (k === "nuget") return (
+    <svg width={sz} height={sz} viewBox="0 0 24 24"><circle cx="12" cy="12" r="11" fill="#004880"/><text x="12" y="16" fontSize="9" fontWeight="700" fill="#fff" textAnchor="middle" fontFamily="sans-serif">N</text></svg>
+  );
+  if (k === "cargo") return (
+    <svg width={sz} height={sz} viewBox="0 0 24 24"><rect width="24" height="24" rx="3" fill="#000"/><text x="12" y="16" fontSize="8" fontWeight="700" fill="#fff" textAnchor="middle" fontFamily="sans-serif">▣</text></svg>
+  );
+  if (k === "rubygems") return (
+    <svg width={sz} height={sz} viewBox="0 0 24 24"><rect width="24" height="24" rx="3" fill="#e9573f"/><path fill="#fff" d="M12 4 4 9l8 11 8-11zm0 2.7L17 9l-5 7-5-7z"/></svg>
+  );
+  if (k === "composer") return (
+    <svg width={sz} height={sz} viewBox="0 0 24 24"><rect width="24" height="24" rx="3" fill="#885630"/><text x="12" y="16" fontSize="9" fontWeight="700" fill="#fff" textAnchor="middle" fontFamily="sans-serif">php</text></svg>
+  );
+  if (k === "conan") return (
+    <svg width={sz} height={sz} viewBox="0 0 24 24"><rect width="24" height="24" rx="3" fill="#6699cb"/><text x="12" y="16" fontSize="9" fontWeight="700" fill="#fff" textAnchor="middle" fontFamily="sans-serif">C</text></svg>
+  );
+  if (k === "conda") return (
+    <svg width={sz} height={sz} viewBox="0 0 24 24"><rect width="24" height="24" rx="3" fill="#43b02a"/><text x="12" y="16" fontSize="9" fontWeight="700" fill="#fff" textAnchor="middle" fontFamily="sans-serif">∿</text></svg>
+  );
+  if (k === "cran") return (
+    <svg width={sz} height={sz} viewBox="0 0 24 24"><rect width="24" height="24" rx="3" fill="#276dc3"/><text x="12" y="16" fontSize="10" fontWeight="700" fill="#fff" textAnchor="middle" fontFamily="sans-serif">R</text></svg>
+  );
+  if (k === "dartpub" || k === "pub" || k === "dart") return (
+    <svg width={sz} height={sz} viewBox="0 0 24 24"><rect width="24" height="24" rx="3" fill="#0175c2"/><text x="12" y="16" fontSize="8" fontWeight="700" fill="#fff" textAnchor="middle" fontFamily="sans-serif">{`{}`}</text></svg>
+  );
+  if (k === "alpine") return (
+    <svg width={sz} height={sz} viewBox="0 0 24 24"><rect width="24" height="24" rx="3" fill="#0d597f"/><path fill="#fff" d="m8 16 2.4-4 1.6 2.6L14 11l3 5zm-2 0 3-5 1 1.6L8.5 16z"/></svg>
+  );
+  if (k === "debian") return (
+    <svg width={sz} height={sz} viewBox="0 0 24 24"><rect width="24" height="24" rx="3" fill="#a80030"/><circle cx="12" cy="12" r="6" fill="none" stroke="#fff" strokeWidth="1.6" strokeDasharray="26 6"/></svg>
+  );
+  if (k === "ubuntu") return (
+    <svg width={sz} height={sz} viewBox="0 0 24 24"><circle cx="12" cy="12" r="11" fill="#e95420"/><circle cx="12" cy="12" r="3.4" fill="none" stroke="#fff" strokeWidth="1.6"/><circle cx="18.5" cy="12" r="1.7" fill="#fff"/><circle cx="8.7" cy="6.5" r="1.7" fill="#fff"/><circle cx="8.7" cy="17.5" r="1.7" fill="#fff"/></svg>
+  );
+  if (k === "aieditorextensions") return (
+    <svg width={sz} height={sz} viewBox="0 0 24 24"><rect width="24" height="24" rx="3" fill="#6c3fc6"/><path fill="#fff" d="m12 5 1.4 3.1L16.5 9.5 13.4 11 12 14l-1.4-3L7.5 9.5 10.6 8.1zM16 14l.7 1.6 1.6.7-1.6.7-.7 1.6-.7-1.6-1.6-.7 1.6-.7z"/></svg>
+  );
+  // generic monogram tile
+  const mono = (format || "?").slice(0, 2);
   return <span style={{ width: 20, height: 20, borderRadius: 4, background: C.surface2, border: `1px solid ${C.line}`,
     display: "inline-grid", placeItems: "center", fontSize: 9, fontWeight: 700, color: C.sub }}>{mono}</span>;
 }
@@ -1423,6 +1519,78 @@ function ConfigIcons() {
   );
 }
 
+// The firewall's ecosystem control plane — renders Nexus's LIVE state (/api/nexus/ecosystems).
+// Add provisions an ecosystem's quarantine→approved pair (idempotent); remove is guarded by a
+// confirm modal in the parent. Each row is labeled by its honest gate mechanism.
+function EcosystemFirewall({ ecos, busy, msg, onAdd, onRemoveRequest }) {
+  const mech = {
+    "nexus-osv": { label: "Nexus-gated (OSV)", color: C.accent },
+    "scanner": { label: "Specialised scanner", color: "#5a7fb0" },
+    "research-only": { label: "Research-only", color: C.dim },
+  };
+  const list = ecos?.ecosystems || [];
+  const provisioned = list.filter((e) => e.provisioned).length;
+  const addable = list.filter((e) => e.provisionable && !e.provisioned);
+  return (
+    <div style={{ ...s.card, marginBottom: 18 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "16px 20px", borderBottom: `1px solid ${C.lineSoft}` }}>
+        <div>
+          <div style={{ fontSize: 16, fontWeight: 600 }}>Ecosystem firewall</div>
+          <div style={{ fontSize: 12, color: C.sub, marginTop: 2 }}>
+            {ecos?.configured ? `${provisioned} of ${list.length} ecosystems gated through Nexus` : "Nexus not connected"}
+          </div>
+        </div>
+        {addable.length > 0 && (
+          <select value="" disabled={!ecos?.configured}
+            onChange={(e) => { if (e.target.value) onAdd(e.target.value); }}
+            style={{ ...s.input, width: 200, cursor: "pointer", padding: "8px 10px" }}>
+            <option value="">+ Add ecosystem…</option>
+            {addable.map((e) => <option key={e.ecosystem} value={e.ecosystem}>{e.ecosystem}</option>)}
+          </select>
+        )}
+      </div>
+      {msg && (
+        <div style={{ padding: "8px 20px", fontSize: 12.5, color: msg.tone === "ok" ? C.accentDim : "#c0392b",
+          background: msg.tone === "ok" ? "#f2faf3" : "#fdf2f1", borderBottom: `1px solid ${C.lineSoft}` }}>{msg.text}</div>
+      )}
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 10, padding: 16 }}>
+        {list.map((e) => {
+          const m = mech[e.gateMechanism] || mech["research-only"];
+          const isBusy = !!busy[e.ecosystem];
+          return (
+            <div key={e.ecosystem} style={{ border: `1px solid ${C.line}`, borderRadius: 10, padding: "10px 12px", width: 220, background: C.surface }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span style={{ fontWeight: 600, fontSize: 13 }}>{e.ecosystem}</span>
+                <span style={{ width: 8, height: 8, borderRadius: 8, background: e.provisioned ? C.accent : C.line }}
+                  title={e.provisioned ? "Provisioned" : "Not provisioned"} />
+              </div>
+              <div style={{ fontSize: 10.5, color: m.color, marginTop: 4, fontWeight: 500 }}>{m.label}</div>
+              <div style={{ fontSize: 10, color: C.dim, marginTop: 2, fontFamily: C.mono }}>{e.format}</div>
+              <div style={{ marginTop: 8 }}>
+                {!e.provisionable ? (
+                  <span style={{ fontSize: 10.5, color: C.dim }}>
+                    {e.gateMechanism === "scanner" ? "Gated by its own scanner" : "Provisioning deferred"}
+                  </span>
+                ) : e.provisioned ? (
+                  <button disabled={isBusy} onClick={() => onRemoveRequest(e.ecosystem)}
+                    style={{ ...s.btn, background: "transparent", color: "#c0392b", border: `1px solid ${C.line}`, padding: "4px 10px", fontSize: 11, borderRadius: 6, cursor: isBusy ? "default" : "pointer", opacity: isBusy ? 0.5 : 1 }}>
+                    {isBusy ? "…" : "Remove"}
+                  </button>
+                ) : (
+                  <button disabled={isBusy} onClick={() => onAdd(e.ecosystem)}
+                    style={{ ...s.btn, background: C.accent, color: "#fff", border: "none", padding: "4px 10px", fontSize: 11, borderRadius: 6, cursor: isBusy ? "default" : "pointer", opacity: isBusy ? 0.5 : 1 }}>
+                    {isBusy ? "Adding…" : "Add"}
+                  </button>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function ScansRepos({ onOpen }) {
   const [data, setData] = useState(null);
   const [gitData, setGitData] = useState(null);
@@ -1436,7 +1604,30 @@ function ScansRepos({ onOpen }) {
   const [scanResults, setScanResults] = useState({}); // fullName → scan result
   const [scanning, setScanning] = useState({}); // fullName → bool
   const [scanErrors, setScanErrors] = useState({}); // fullName → error string
-  useEffect(() => { api.getScans().then(setData).catch(() => setData({ configured: false, repositories: [] })).finally(() => setLoading(false)); }, []);
+  const [ecos, setEcos] = useState(null); // /nexus/ecosystems live state
+  const [ecoBusy, setEcoBusy] = useState({}); // ecosystem → bool (provision/remove in flight)
+  const [ecoMsg, setEcoMsg] = useState(null); // {tone, text} transient feedback
+  const [removeEco, setRemoveEco] = useState(null); // ecosystem pending guarded-remove confirm
+  const refreshEcos = () => api.getNexusEcosystems().then(setEcos).catch(() => setEcos({ configured: false, ecosystems: [] }));
+  useEffect(() => { api.getScans().then(setData).catch(() => setData({ configured: false, repositories: [] })).finally(() => setLoading(false)); refreshEcos(); }, []);
+  const provision = (eco) => {
+    setEcoBusy((b) => ({ ...b, [eco]: true })); setEcoMsg(null);
+    api.provisionEcosystem(eco).then((r) => {
+      setEcoMsg(r.ok ? { tone: "ok", text: r.already ? `${eco} already linked.` : `${eco} provisioned — quarantine→approved wired.` }
+                     : { tone: "err", text: r.error || `Could not provision ${eco}.` });
+      return refreshEcos();
+    }).catch(() => setEcoMsg({ tone: "err", text: `Could not provision ${eco}.` }))
+      .finally(() => setEcoBusy((b) => ({ ...b, [eco]: false })));
+  };
+  const deprovision = (eco) => {
+    setRemoveEco(null); setEcoBusy((b) => ({ ...b, [eco]: true })); setEcoMsg(null);
+    api.deprovisionEcosystem(eco).then((r) => {
+      setEcoMsg(r.ok ? { tone: "ok", text: `${eco} removed (${r.removed} repo${r.removed === 1 ? "" : "s"} deleted).` }
+                     : { tone: "err", text: r.error || `Could not remove ${eco}.` });
+      return refreshEcos();
+    }).catch(() => setEcoMsg({ tone: "err", text: `Could not remove ${eco}.` }))
+      .finally(() => setEcoBusy((b) => ({ ...b, [eco]: false })));
+  };
   useEffect(() => {
     if (sub !== "git" || gitData !== null) return;
     setGitLoading(true);
@@ -1499,6 +1690,30 @@ function ScansRepos({ onOpen }) {
         <Card title="Repositories" desc=""><div style={{ padding: 22, color: C.sub, fontSize: 12.5, lineHeight: 1.6 }}>
           Nexus not connected (<code style={s.code}>NEXUS_URL</code> unset). Connect Nexus and run <code style={s.code}>scripts/nexus-setup.sh</code> to index repositories here.
         </div></Card>
+      )}
+      {sub === "repositories" && ecos && (
+        <EcosystemFirewall ecos={ecos} busy={ecoBusy} msg={ecoMsg} onAdd={provision}
+          onRemoveRequest={setRemoveEco} />
+      )}
+      {removeEco && (
+        <div onClick={() => setRemoveEco(null)}
+          style={{ position: "fixed", inset: 0, background: "rgba(20,22,25,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50 }}>
+          <div onClick={(e) => e.stopPropagation()}
+            style={{ background: C.surface, border: `1px solid ${C.line}`, borderRadius: 12, padding: 22, width: "min(460px,94vw)", boxShadow: "0 12px 40px rgba(0,0,0,0.18)" }}>
+            <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 8, color: C.ink }}>Remove {removeEco} from the firewall?</div>
+            <div style={{ fontSize: 13, color: C.sub, lineHeight: 1.6, marginBottom: 18 }}>
+              This deletes the <code style={s.code}>{removeEco.toLowerCase()}-quarantine</code> proxy and the{" "}
+              <code style={s.code}>{removeEco.toLowerCase()}-approved</code> repo, <b>including any quarantine
+              history</b> held there. The gate will stop polling it. This cannot be undone.
+            </div>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+              <button onClick={() => setRemoveEco(null)}
+                style={{ ...s.btn, background: "transparent", color: C.sub, border: `1px solid ${C.line}`, padding: "8px 14px", fontSize: 12.5, borderRadius: 6, cursor: "pointer" }}>Cancel</button>
+              <button onClick={() => deprovision(removeEco)}
+                style={{ ...s.btn, background: "#c0392b", color: "#fff", border: "none", padding: "8px 14px", fontSize: 12.5, borderRadius: 6, cursor: "pointer" }}>Delete proxy + history</button>
+            </div>
+          </div>
+        </div>
       )}
       {!loading && data?.configured && sub === "repositories" && (
         <div style={s.card}>
@@ -2318,11 +2533,63 @@ function IntakeQueue() {
 }
 
 // OSS Catalog — JFrog-style package overview from free public sources (npm + PyPI live).
+// Full JFrog-Catalog ecosystem list (carbon-copy). Order & labels mirror demo.jfrog.io.
+// `key` is the Ecosystem enum value the API expects; all are live.
 const CATALOG_ECOS = [
-  { key: "npm", label: "npm", live: true }, { key: "PyPI", label: "PyPI", live: true },
-  { key: "NuGet", label: "NuGet", live: false }, { key: "Cargo", label: "Cargo", live: false },
-  { key: "Go", label: "Go", live: false }, { key: "HuggingFace", label: "Hugging Face", live: false },
+  { key: "AIEditorExtensions", label: "AI Editor Extensions", live: true },
+  { key: "Maven", label: "Maven", live: true },
+  { key: "npm", label: "npm", live: true },
+  { key: "PyPI", label: "PyPI", live: true },
+  { key: "NuGet", label: "NuGet", live: true },
+  { key: "Go", label: "Go", live: true },
+  { key: "Cargo", label: "Cargo (crates.io)", live: true },
+  { key: "Conan", label: "Conan", live: true },
+  { key: "RubyGems", label: "RubyGems", live: true },
+  { key: "Composer", label: "PHP (Composer)", live: true },
+  { key: "CRAN", label: "CRAN (R)", live: true },
+  { key: "DartPub", label: "Dart (Pub)", live: true },
+  { key: "Conda", label: "Conda", live: true },
+  { key: "HuggingFace", label: "Hugging Face", live: true },
+  { key: "Alpine", label: "Alpine", live: true },
+  { key: "Debian", label: "Debian", live: true },
+  { key: "Ubuntu", label: "Ubuntu", live: true },
 ];
+// Animated loader for the Catalog — shows real progress so a slow lookup (esp. the deep .vsix code
+// scan, which downloads + unpacks + YARA-scans the extension) never looks hung.
+function CatalogLoading({ view, eco }) {
+  const isExt = eco === "AIEditorExtensions" && view === "package";
+  const steps = isExt
+    ? ["Fetching extension metadata from the Marketplace…", "Resolving publisher trust + versions…",
+       "Downloading the .vsix and unpacking it…", "Deep code scan: AST, IOC, obfuscation…",
+       "Running YARA malware/RAT signatures…", "Cross-checking Open VSX + malicious feeds…", "Compiling the risk assessment…"]
+    : view === "cve"
+      ? ["Looking up the advisory in OSV…", "Enriching with CISA KEV + EPSS…", "Resolving affected packages…"]
+      : ["Querying the registry…", "Checking OSV / KEV / EPSS…", "Computing health + verdict…"];
+  const [i, setI] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => setI((x) => Math.min(x + 1, steps.length - 1)), isExt ? 4500 : 1400);
+    return () => clearInterval(t);
+  }, []);
+  return (
+    <div style={{ maxWidth: 560, margin: "60px auto", textAlign: "center", animation: "fwfade .2s ease" }}>
+      <div style={{ width: 38, height: 38, margin: "0 auto 18px", borderRadius: "50%",
+        border: `3px solid ${C.line}`, borderTopColor: C.accent, animation: "fwspin .8s linear infinite" }} />
+      <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 6 }}>
+        {isExt ? "Scanning extension — this can take up to ~90s" : "Loading…"}
+      </div>
+      <div style={{ fontSize: 12.5, color: C.sub, minHeight: 18, marginBottom: 16 }}>{steps[i]}</div>
+      {/* indeterminate progress bar */}
+      <div style={{ position: "relative", height: 4, borderRadius: 4, background: C.line, overflow: "hidden" }}>
+        <div style={{ position: "absolute", top: 0, width: "40%", height: "100%", borderRadius: 4,
+          background: C.accent, animation: "fwbar 1.3s ease-in-out infinite" }} />
+      </div>
+      {isExt && <div style={{ fontSize: 11, color: C.dim, marginTop: 14 }}>
+        Inspecting the real .vsix bytes (vsix-audit + YARA-X) for data-exfiltration, RAT &amp; credential-theft patterns — not just reputation.
+      </div>}
+    </div>
+  );
+}
+
 function Catalog() {
   const [eco, setEco] = useState("npm");
   const [ecoOpen, setEcoOpen] = useState(false);
@@ -2333,25 +2600,36 @@ function Catalog() {
   const [loading, setLoading] = useState(false);
   const [ac, setAc] = useState([]);               // autocomplete hits
   const [acOpen, setAcOpen] = useState(false);
+  // For AI Editor Extensions: which registry to search (VS Code Marketplace vs Open VSX).
+  const [registry, setRegistry] = useState("marketplace");
+  const isExtEco = eco === "AIEditorExtensions";
+  const CVE_RE = /^(CVE|GHSA|PYSEC|GO|RUSTSEC)-/i;   // typing one of these searches the CVE/advisory directly
 
   // live autocomplete (debounced)
   useEffect(() => {
-    if (!q.trim() || q.trim().length < 2) { setAc([]); return; }
+    if (!q.trim() || q.trim().length < 2 || CVE_RE.test(q.trim())) { setAc([]); return; }
     let active = true;
     const t = setTimeout(() => {
-      api.searchPackages(eco, q.trim(), 8).then((d) => { if (active) { setAc(d.results || []); setAcOpen(true); } }).catch(() => {});
+      api.searchPackages(eco, q.trim(), 8, isExtEco ? registry : undefined).then((d) => { if (active) { setAc(d.results || []); setAcOpen(true); } }).catch(() => {});
     }, 250);
     return () => { active = false; clearTimeout(t); };
-  }, [q, eco]);
+  }, [q, eco, registry]);
 
   const runSearch = (term) => {
     const t = (term ?? q).trim(); if (!t) return;
+    // Search-by-CVE: a CVE/advisory id opens its detail directly (the search box covers "packages AND CVEs").
+    if (CVE_RE.test(t)) { openCve(t.toUpperCase()); return; }
     setQ(t); setAcOpen(false); setLoading(true); setView("results"); setResults(null);
-    api.searchPackages(eco, t, 30).then((d) => setResults(d)).catch(() => setResults({ results: [], query: t })).finally(() => setLoading(false));
+    api.searchPackages(eco, t, 30, isExtEco ? registry : undefined).then((d) => setResults(d)).catch(() => setResults({ results: [], query: t })).finally(() => setLoading(false));
   };
   const openPkg = (name, version) => {
     setAcOpen(false); setLoading(true); setView("package"); setPkg(null);
     api.getPackage(eco, name, version).then(setPkg).catch(() => setPkg({ verdict: "Unknown", name, ecosystem: eco, notes: ["Lookup failed."] })).finally(() => setLoading(false));
+  };
+  const [cve, setCve] = useState(null);
+  const openCve = (id) => {
+    setAcOpen(false); setLoading(true); setView("cve"); setCve(null);
+    api.getCve(id).then(setCve).catch(() => setCve({ id, found: false })).finally(() => setLoading(false));
   };
 
   const crumb = (
@@ -2362,6 +2640,7 @@ function Catalog() {
         onClick={() => { setView("landing"); setPkg(null); setResults(null); }}>Explore</span>
       {view === "results" && <><span style={{ color: C.dim }}>›</span><span style={{ color: C.ink }}>{results?.query || q}</span></>}
       {view === "package" && <><span style={{ color: C.dim }}>›</span><span style={{ color: C.ink }}>{pkg?.name || "Package"}</span></>}
+      {view === "cve" && <><span style={{ color: C.dim }}>›</span><span style={{ color: C.ink }}>{cve?.id || "CVE"}</span></>}
       {view === "insights" && <><span style={{ color: C.dim }}>›</span><span style={{ color: C.ink }}>Security Insights</span></>}
     </div>
   );
@@ -2373,10 +2652,10 @@ function Catalog() {
       {crumb}
       {/* hero */}
       <div style={{ textAlign: "center", padding: "14px 0 4px" }}>
-        <div style={{ fontSize: 24, fontWeight: 700, letterSpacing: -0.5 }}>Search for open-source packages and CVEs</div>
+        <div style={{ fontSize: 24, fontWeight: 700, letterSpacing: -0.5 }}>Search for over 16 million packages and CVEs</div>
         <div style={{ display: "inline-flex", alignItems: "center", gap: 12, color: C.sub, fontSize: 13, marginTop: 8 }}>
-          Search npm &amp; PyPI packages, vulnerabilities, and project health
-          <span style={{ ...s.capPill, cursor: "pointer" }} onClick={() => setView("insights")}>All from free open sources ›</span>
+          Search packages across 17 ecosystems, their vulnerabilities, and project health
+          <span style={{ ...s.capPill, cursor: "pointer" }} onClick={() => setView("insights")}>See the Full Capabilities ›</span>
         </div>
       </div>
       {/* search row + autocomplete */}
@@ -2399,9 +2678,21 @@ function Catalog() {
             ))}
           </div>
         )}
+        {/* AI Editor Extensions: choose which registry to search — Marketplace vs Open VSX (different results). */}
+        {isExtEco && (
+          <div style={{ display: "flex", borderTop: `1px solid ${C.line}`, borderBottom: `1px solid ${C.line}`, background: C.surface }}>
+            {[["marketplace", "Marketplace"], ["openvsx", "Open VSX"]].map(([k, l]) => (
+              <button key={k} onClick={() => { setRegistry(k); if (q.trim()) runSearch(); }}
+                title={k === "marketplace" ? "VS Code Marketplace" : "Open VSX (open registry)"}
+                style={{ border: "none", padding: "0 12px", fontSize: 11.5, fontWeight: 600, cursor: "pointer",
+                  background: registry === k ? `${C.accent}14` : "transparent",
+                  color: registry === k ? C.accentDim : C.sub }}>{l}</button>
+            ))}
+          </div>
+        )}
         <input value={q} onChange={(e) => setQ(e.target.value)} onFocus={() => ac.length && setAcOpen(true)}
           onKeyDown={(e) => e.key === "Enter" && runSearch()}
-          placeholder="Search by package name…" style={s.catInput} />
+          placeholder={isExtEco ? `Search ${registry === "openvsx" ? "Open VSX" : "the Marketplace"}, or paste a CVE id…` : "Search by package name, or paste a CVE id (CVE-…)…"} style={s.catInput} />
         <button onClick={() => runSearch()} style={s.catSearchBtn}>⌕ Search</button>
         {acOpen && ac.length > 0 && (
           <div style={s.acMenu} onMouseLeave={() => setAcOpen(false)}>
@@ -2419,17 +2710,19 @@ function Catalog() {
         )}
       </div>
 
-      {loading && view !== "landing" && <div style={s.kevEmpty}>Loading…</div>}
-      {!loading && view === "landing" && <CatalogLanding eco={eco} setQ={setQ} search={() => runSearch()} onSample={(t) => { const at = t.lastIndexOf("@"); at > 0 ? openPkg(t.slice(0, at), t.slice(at + 1)) : runSearch(t); }} onInsights={() => setView("insights")} />}
-      {!loading && view === "results" && <SearchResults data={results} eco={eco} onOpen={openPkg} />}
+      {loading && view !== "landing" && <CatalogLoading view={view} eco={eco} />}
+      {!loading && view === "landing" && <CatalogLanding eco={eco} setQ={setQ} search={() => runSearch()} onSample={(t) => { const at = t.lastIndexOf("@"); at > 0 ? openPkg(t.slice(0, at), t.slice(at + 1)) : runSearch(t); }} onInsights={() => setView("insights")} onCve={openCve} onPick={setEco} />}
+      {!loading && view === "results" && <SearchResults data={results} eco={eco} onOpen={openPkg} onCve={openCve} />}
       {!loading && view === "package" && pkg && <PackageOverview pkg={pkg} onVersion={(v) => openPkg(pkg.name, v)} />}
+      {!loading && view === "cve" && cve && <CveDetail cve={cve} onPkg={(eco2, name) => { setEco(eco2); openPkg(name); }} />}
     </div>
   );
 }
 
 // Search-results list (image 4): "N Results Found", sub-tabs, package table.
-function SearchResults({ data, eco, onOpen }) {
+function SearchResults({ data, eco, onOpen, onCve }) {
   const [sub, setSub] = useState("packages");
+  const [pkgView, setPkgView] = useState("catalog");   // catalog (public) | mine (our repositories)
   const rows = data?.results || [];
   const subTabs = [["packages", `Packages (${rows.length})`], ["ondemand", "On Demand Packages"], ["cves", "CVEs"]];
   return (
@@ -2439,28 +2732,83 @@ function SearchResults({ data, eco, onOpen }) {
           style={{ ...s.hTab, ...(sub === k ? s.hTabOn : {}), cursor: "pointer" }}>{l}</button>)}
       </div>
       {sub === "ondemand" && <OnDemandPackages onOpen={onOpen} />}
-      {sub === "cves" && <SearchCves rows={rows} />}
+      {sub === "cves" && <SearchCves rows={rows} onCve={onCve} />}
       {sub === "packages" && (
-      <div style={s.card}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "16px 20px", borderBottom: `1px solid ${C.lineSoft}` }}>
-          <div style={{ fontSize: 16, fontWeight: 600 }}>{rows.length} results found for “{data?.query}”</div>
-          <span style={{ width: 32, height: 32, border: `1px solid ${C.line}`, borderRadius: 6, display: "grid", placeItems: "center", color: C.sub }}>⚙</span>
-        </div>
-        <table style={s.table}><thead><tr>
-          {["Package name", "Type", "Description", "Latest version"].map((c) => <th key={c} style={s.th}>{c}</th>)}
-        </tr></thead><tbody>
-          {rows.length === 0 && <tr><td style={s.td} colSpan={4}>No packages matched.</td></tr>}
-          {rows.map((r, i) => (
-            <tr key={i} style={{ ...s.tr, cursor: "pointer" }} onClick={() => onOpen(r.name, r.latestVersion)}>
-              <td style={{ ...s.td, fontWeight: 600, color: C.accentDim }}>{r.name}</td>
-              <td style={s.td}><BrandIcon format={r.ecosystem} /></td>
-              <td style={{ ...s.td, color: C.sub, fontSize: 12.5, maxWidth: 520 }}>{r.description || "—"}</td>
-              <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11.5 }}>{r.latestVersion || "—"}</td>
-            </tr>
+      <>
+        {/* Public catalog vs. My repositories — JFrog shows both your repos and the public catalog. */}
+        <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+          {[["catalog", "Public catalog", rows.length], ["mine", "My repositories", null]].map(([k, l, n]) => (
+            <button key={k} onClick={() => setPkgView(k)} style={{ ...s.sampleChip,
+              borderColor: pkgView === k ? C.accent : C.line, color: pkgView === k ? C.accentDim : C.sub,
+              background: pkgView === k ? `${C.accent}10` : "transparent", fontWeight: 600 }}>
+              {l}{n != null ? ` (${n})` : ""}
+            </button>
           ))}
-        </tbody></table>
-      </div>
+        </div>
+        {pkgView === "mine" ? <MyPackages query={data?.query} onOpen={onOpen} onCve={onCve} />
+        : (
+        <div style={s.card}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "16px 20px", borderBottom: `1px solid ${C.lineSoft}` }}>
+            <div style={{ fontSize: 16, fontWeight: 600 }}>{rows.length} results found for “{data?.query}”</div>
+            <span style={{ width: 32, height: 32, border: `1px solid ${C.line}`, borderRadius: 6, display: "grid", placeItems: "center", color: C.sub }}>⚙</span>
+          </div>
+          <table style={s.table}><thead><tr>
+            {["Package name", "Type", "Description", "Latest version"].map((c) => <th key={c} style={s.th}>{c}</th>)}
+          </tr></thead><tbody>
+            {rows.length === 0 && <tr><td style={s.td} colSpan={4}>No packages matched.</td></tr>}
+            {rows.map((r, i) => (
+              <tr key={i} style={{ ...s.tr, cursor: "pointer" }} onClick={() => onOpen(r.name, r.latestVersion)}>
+                <td style={{ ...s.td, fontWeight: 600, color: C.accentDim }}>{r.name}</td>
+                <td style={s.td}><BrandIcon format={r.ecosystem} /></td>
+                <td style={{ ...s.td, color: C.sub, fontSize: 12.5, maxWidth: 520 }}>{r.description || "—"}</td>
+                <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11.5 }}>{r.latestVersion || "—"}</td>
+              </tr>
+            ))}
+          </tbody></table>
+        </div>
+        )}
+      </>
       )}
+    </div>
+  );
+}
+
+// LIVE "My repositories" — the real packages WE'VE ingested + scanned (Nexus/ScanStore), not the
+// public registry. This is "my own packages": every artifact that flowed through the gate.
+function MyPackages({ query, onOpen, onCve }) {
+  const [data, setData] = useState(null);
+  const [q, setQ] = useState(query || "");
+  useEffect(() => { api.myPackages().then(setData).catch(() => setData({ packages: [] })); }, []);
+  if (!data) return <div style={s.kevEmpty}>Loading your repository packages…</div>;
+  const all = data.packages || [];
+  const ql = (q || "").toLowerCase();
+  const rows = ql ? all.filter((p) => (p.name || "").toLowerCase().includes(ql) || (p.repository || "").toLowerCase().includes(ql)) : all;
+  return (
+    <div style={s.card}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "16px 20px", borderBottom: `1px solid ${C.lineSoft}`, gap: 12 }}>
+        <div style={{ fontSize: 16, fontWeight: 600 }}>{rows.length} of {all.length} packages in your repositories</div>
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Filter your packages…"
+          style={{ ...s.formInput, width: 240 }} />
+      </div>
+      <table style={s.table}><thead><tr>
+        {["Package", "Type", "Version", "Repository", "Vulns", "Verdict", "Last scan"].map((c) => <th key={c} style={s.th}>{c}</th>)}
+      </tr></thead><tbody>
+        {all.length === 0 && <tr><td style={s.td} colSpan={7}>No packages ingested yet. Pull packages through a quarantine repo to populate this.</td></tr>}
+        {all.length > 0 && rows.length === 0 && <tr><td style={s.td} colSpan={7}>None of your {all.length} packages match “{q}”.</td></tr>}
+        {rows.slice(0, 200).map((p, i) => (
+          <tr key={i} style={{ ...s.tr, cursor: "pointer" }} onClick={() => onOpen(p.name, p.version)}>
+            <td style={{ ...s.td, fontWeight: 600, color: C.accentDim }}>{p.name}</td>
+            <td style={s.td}><BrandIcon format={p.ecosystem} /></td>
+            <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11.5 }}>{p.version}</td>
+            <td style={{ ...s.td, fontSize: 12, color: C.sub }}>{p.repository}</td>
+            <td style={{ ...s.td, fontFamily: C.mono, color: (p.vulnerabilities ?? 0) > 0 ? C.block : C.allow }}>
+              {p.vulnerabilities ?? 0}{(p.critical ?? 0) + (p.high ?? 0) > 0 ? ` (${(p.critical ?? 0) + (p.high ?? 0)} C/H)` : ""}
+            </td>
+            <td style={s.td}><span style={{ color: p.verdict === "Vulnerable" || p.verdict === "Block" ? C.block : p.verdict === "Caution" || p.verdict === "Quarantine" ? C.warn : C.allow, fontWeight: 600, fontSize: 12 }}>{p.verdict || "—"}</span></td>
+            <td style={{ ...s.td, fontSize: 11, color: C.sub }}>{p.lastScan ? new Date(p.lastScan).toLocaleDateString() : "—"}</td>
+          </tr>
+        ))}
+      </tbody></table>
     </div>
   );
 }
@@ -2491,7 +2839,7 @@ function OnDemandPackages({ onOpen }) {
 }
 
 // LIVE CVEs — every CVE across the matched packages, aggregated from their real scans.
-function SearchCves({ rows }) {
+function SearchCves({ rows, onCve }) {
   const [cves, setCves] = useState(null);
   useEffect(() => {
     let alive = true;
@@ -2510,16 +2858,18 @@ function SearchCves({ rows }) {
     <Card title={`CVEs (${cves.length})`} desc="Vulnerabilities found across the matched packages.">
       <Table cols={["Severity", "CVSS", "CVE", "Package", "Component", "Fix"]}>
         {cves.length === 0 && <tr><td style={s.td} colSpan={6}>No CVEs in the matched packages.</td></tr>}
-        {cves.map((v, i) => (
-          <tr key={i} style={s.tr}>
+        {cves.map((v, i) => {
+          const cveId = (v.aliases || []).find((a) => a.startsWith("CVE")) || v.id;
+          return (
+          <tr key={i} style={{ ...s.tr, cursor: onCve ? "pointer" : "default" }} onClick={() => onCve && onCve(cveId)}>
             <td style={s.td}><SevPill sev={v.severity} /></td>
             <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11 }}>{v.cvss ?? "—"}</td>
-            <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11.5, color: C.accent }}>{(v.aliases || []).find((a) => a.startsWith("CVE")) || v.id}</td>
+            <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11.5, color: C.accent }}>{cveId}</td>
             <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11.5 }}>{v.pkg}</td>
             <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11 }}>{v.component || "—"}</td>
             <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11.5, color: v.fixedVersion ? C.allow : C.sub }}>{v.fixedVersion || "—"}</td>
           </tr>
-        ))}
+        );})}
       </Table>
     </Card>
   );
@@ -2533,11 +2883,7 @@ function SecurityInsights({ onClose, onPick }) {
     { t: "Malicious packages", n: "OpenSSF", d: "Typosquats, dependency-confusion and malicious releases — caught even without a CVE.", icon: "☠" },
     { t: "Project health", n: "OpenSSF Scorecard", d: "18 automated security-health checks per repository, via deps.dev.", icon: "❤" },
   ];
-  const ecos = [
-    { k: "npm", label: "npm", live: true, pop: true }, { k: "PyPI", label: "PyPI", live: true, pop: true },
-    { k: "NuGet", label: "NuGet", live: false }, { k: "Cargo", label: "Cargo", live: false },
-    { k: "Go", label: "Go", live: false }, { k: "HuggingFace", label: "Hugging Face", live: false },
-  ];
+  const ecos = CATALOG_ECOS.map((e) => ({ k: e.key, label: e.label, live: e.live, pop: e.live }));
   return (
     <div style={{ animation: "fwfade .2s ease" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", margin: "10px 0 16px" }}>
@@ -2575,14 +2921,161 @@ function SecurityInsights({ onClose, onPick }) {
   );
 }
 
-function CatalogLanding({ eco, setQ, search, onSample, onInsights }) {
-  const samples = eco === "PyPI"
-    ? [["requests", "clean"], ["pyyaml", "vuln"], ["urllib3", "vuln"], ["flask", "clean"]]
-    : [["express", "clean"], ["lodash@4.17.15", "vuln"], ["left-pad", "clean"], ["minimist@1.2.0", "vuln"]];
+// CVE / advisory detail — live OSV record + KEV exploited flag + EPSS. JFrog-style layout.
+function CveDetail({ cve, onPkg }) {
+  if (!cve.found) return (
+    <div style={{ ...s.card, padding: "26px 24px", textAlign: "center" }}>
+      <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 6 }}>{cve.id}</div>
+      <div style={{ color: C.sub, fontSize: 13 }}>No advisory found in OSV for this id{cve.knownExploited ? " — but it IS on the CISA KEV list." : "."}</div>
+    </div>
+  );
+  const sevTitle = (cve.severity || "Unknown").charAt(0).toUpperCase() + (cve.severity || "Unknown").slice(1).toLowerCase();
+  const refType = (t) => ({ ADVISORY: "Advisory", Advisory: "Advisory", FIX: "Patch", Patch: "Patch", REPORT: "Report", PACKAGE: "Package", WEB: "Web", ARTICLE: "Article", EVIDENCE: "Evidence" }[t] || t || "Web");
+  return (
+    <div style={{ animation: "fwfade .15s ease", display: "grid", gridTemplateColumns: "300px 1fr", gap: 20, alignItems: "start" }}>
+      {/* left info card */}
+      <div style={{ ...s.card, padding: "18px 18px" }}>
+        <div style={{ fontSize: 18, fontWeight: 700, fontFamily: C.mono, marginBottom: 10 }}>{cve.id}</div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
+          <SevPill sev={sevTitle} />
+          {cve.knownExploited && <span style={{ fontSize: 10, fontWeight: 700, padding: "3px 9px", borderRadius: 20, color: C.block, background: `${C.block}1f` }}>● EXPLOITED</span>}
+          {cve.vcRansomware && <span style={{ fontSize: 10, fontWeight: 700, padding: "3px 9px", borderRadius: 20, color: C.block, background: `${C.block}1f` }}>☠ RANSOMWARE</span>}
+        </div>
+        <InfoRow k="CVSS base score" v={cve.cvss != null ? `${cve.cvss.toFixed(1)} / 10` : "—"} />
+        <InfoRow k="CVSS vector" v={cve.cvssVector || "—"} mono />
+        <InfoRow k="EPSS (exploit prob.)" v={cve.epss != null ? `${(cve.epss * 100).toFixed(2)}%` : "—"} />
+        <InfoRow k="Known exploited" v={cve.knownExploited ? "Yes" : "No"} />
+        {/* VulnCheck exploited-in-the-wild intel (richer than CISA KEV). */}
+        {cve.vcExploited && <>
+          <InfoRow k="VulnCheck KEV" v="Exploited in the wild" />
+          <InfoRow k="Ransomware use" v={cve.vcRansomware ? "Known" : "Not reported"} />
+          <InfoRow k="Reported exploitations" v={Number(cve.vcReportedExploitationCount || 0).toLocaleString()} />
+          <InfoRow k="Exploit references" v={Number(cve.vcExploitRefCount || 0).toLocaleString()} />
+        </>}
+        <InfoRow k="Published" v={cve.published ? new Date(cve.published).toLocaleDateString() : "—"} />
+        <InfoRow k="Modified" v={cve.modified ? new Date(cve.modified).toLocaleDateString() : "—"} />
+        {cve.cwes?.length > 0 && <InfoRow k="CWE" v={cve.cwes.join(", ")} />}
+        {cve.aliases?.length > 0 && <InfoRow k="Aliases" v={cve.aliases.join(", ")} mono />}
+      </div>
+      {/* right detail */}
+      <div>
+        {(cve.summary || cve.details) && (
+          <div style={{ ...s.card, padding: "18px 20px" }}>
+            {cve.summary && <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 8 }}>{cve.summary}</div>}
+            {cve.details && <div style={{ color: C.sub, fontSize: 12.5, lineHeight: 1.6, whiteSpace: "pre-wrap" }}>{cve.details.length > 1400 ? cve.details.slice(0, 1400) + "…" : cve.details}</div>}
+          </div>
+        )}
+        <div style={{ ...s.card, padding: 0 }}>
+          <div style={{ padding: "14px 20px", borderBottom: `1px solid ${C.lineSoft}`, fontWeight: 600 }}>Affected packages ({cve.affected?.length || 0})</div>
+          <table style={s.table}><thead><tr>
+            {["Type", "Package", "Introduced", "Fixed in"].map((c) => <th key={c} style={s.th}>{c}</th>)}
+          </tr></thead><tbody>
+            {(!cve.affected || cve.affected.length === 0) && <tr><td style={s.td} colSpan={4}>No affected-package ranges recorded in OSV for this advisory.</td></tr>}
+            {(cve.affected || []).slice(0, 40).map((a, i) => (
+              <tr key={i} style={{ ...s.tr, cursor: onPkg ? "pointer" : "default" }} onClick={() => onPkg && onPkg(a.ecosystem, a.name)}>
+                <td style={s.td}><span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}><BrandIcon format={a.ecosystem} />{a.ecosystem || "—"}</span></td>
+                <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11.5, color: C.accent }}>{a.name}</td>
+                <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11 }}>{a.introducedVersion || "0"}</td>
+                <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11, color: a.fixedVersion ? C.allow : C.dim }}>{a.fixedVersion || "no fix"}</td>
+              </tr>
+            ))}
+          </tbody></table>
+        </div>
+        {cve.references?.length > 0 && (
+          <div style={{ ...s.card, padding: "16px 20px" }}>
+            <div style={{ fontWeight: 600, marginBottom: 10 }}>References ({cve.references.length})</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+              {cve.references.slice(0, 30).map((r, i) => (
+                <a key={i} href={r.url} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: C.accent, textDecoration: "none", display: "flex", gap: 8, alignItems: "center" }}>
+                  <span style={{ fontSize: 9, color: C.sub, border: `1px solid ${C.line}`, borderRadius: 4, padding: "1px 6px", minWidth: 56, textAlign: "center" }}>{refType(r.type)}</span>
+                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.url}</span>
+                </a>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+function InfoRow({ k, v, mono }) {
+  return (
+    <div style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "6px 0", borderBottom: `1px solid ${C.lineSoft}`, fontSize: 12 }}>
+      <span style={{ color: C.sub }}>{k}</span>
+      <span style={{ fontFamily: mono ? C.mono : C.sans, fontSize: mono ? 10.5 : 12, textAlign: "right", wordBreak: "break-word", maxWidth: 180 }}>{v}</span>
+    </div>
+  );
+}
+
+// Real, known-exploited CVEs (all resolve live via /catalog/cve → OSV + KEV). No fixtures.
+const SAMPLE_CVES = [
+  ["CVE-2021-44228", "Log4Shell — Log4j RCE"],
+  ["CVE-2014-0160", "Heartbleed — OpenSSL"],
+  ["CVE-2021-3156", "Sudo Baron Samedit"],
+  ["CVE-2022-22965", "Spring4Shell"],
+  ["CVE-2018-1000007", "curl/libcurl"],
+];
+
+// Live sample repositories — pulls the real Nexus repos from the running stack (no seed data).
+// The real public upstream registries each ecosystem's packages come from. This is what the
+// "Repositories" sample tab shows (matching JFrog's public catalog) — the source repos for the
+// SELECTED ecosystem, not your internal Nexus repos. Clicking opens the registry.
+const ECO_REGISTRIES = {
+  npm: [["registry.npmjs.org", "https://www.npmjs.com"]],
+  PyPI: [["pypi.org", "https://pypi.org"]],
+  Maven: [["Maven Central", "https://central.sonatype.com"], ["repo1.maven.org", "https://repo1.maven.org/maven2/"]],
+  NuGet: [["nuget.org", "https://www.nuget.org"]],
+  Go: [["pkg.go.dev", "https://pkg.go.dev"], ["proxy.golang.org", "https://proxy.golang.org"]],
+  Cargo: [["crates.io", "https://crates.io"]],
+  Conan: [["ConanCenter", "https://conan.io/center"]],
+  RubyGems: [["rubygems.org", "https://rubygems.org"]],
+  Composer: [["Packagist", "https://packagist.org"]],
+  CRAN: [["CRAN", "https://cran.r-project.org"]],
+  DartPub: [["pub.dev", "https://pub.dev"]],
+  Conda: [["anaconda.org", "https://anaconda.org"]],
+  HuggingFace: [["huggingface.co", "https://huggingface.co"]],
+  Alpine: [["Alpine packages", "https://pkgs.alpinelinux.org"], ["secdb.alpinelinux.org", "https://secdb.alpinelinux.org"]],
+  Debian: [["Debian packages", "https://packages.debian.org"], ["security-tracker.debian.org", "https://security-tracker.debian.org"]],
+  Ubuntu: [["Ubuntu Archive", "https://packages.ubuntu.com"], ["Launchpad", "https://launchpad.net/ubuntu"], ["ubuntu.com/security", "https://ubuntu.com/security/cves"]],
+  AIEditorExtensions: [["VS Code Marketplace", "https://marketplace.visualstudio.com"], ["Open VSX", "https://open-vsx.org"]],
+};
+function SampleRepoChips({ eco }) {
+  const regs = ECO_REGISTRIES[eco] || [];
+  if (regs.length === 0) return <span style={{ fontSize: 11, color: C.dim }}>no public registry mapped for this ecosystem</span>;
+  return <>{regs.map(([label, url]) => (
+    <a key={url} href={url} target="_blank" rel="noreferrer" title={`Public source registry for ${eco}`}
+      style={{ ...s.sampleChip, display: "inline-flex", alignItems: "center", gap: 6, textDecoration: "none", color: C.ink }}>
+      <BrandIcon format={eco} />{label}
+    </a>
+  ))}</>;
+}
+
+function CatalogLanding({ eco, setQ, search, onSample, onInsights, onCve, onPick }) {
+  const [sampleTab, setSampleTab] = useState("packages");
+  const SAMPLES = {
+    npm: [["express", "clean"], ["lodash@4.17.15", "vuln"], ["left-pad", "clean"], ["minimist@1.2.0", "vuln"]],
+    PyPI: [["requests", "clean"], ["pyyaml", "vuln"], ["urllib3", "vuln"], ["flask", "clean"]],
+    Maven: [["com.google.guava:guava", "clean"], ["org.apache.logging.log4j:log4j-core", "vuln"], ["org.springframework:spring-core", "clean"]],
+    NuGet: [["Newtonsoft.Json", "clean"], ["Serilog", "clean"], ["System.Text.Json", "clean"]],
+    Go: [["github.com/gin-gonic/gin", "clean"], ["golang.org/x/text", "vuln"], ["github.com/gorilla/websocket", "clean"]],
+    Cargo: [["serde", "clean"], ["tokio", "clean"], ["regex", "clean"]],
+    Conan: [["zlib", "clean"], ["openssl", "vuln"], ["boost", "clean"]],
+    RubyGems: [["rails", "clean"], ["nokogiri", "vuln"], ["devise", "clean"]],
+    Composer: [["laravel/framework", "clean"], ["symfony/http-kernel", "vuln"], ["guzzlehttp/guzzle", "clean"]],
+    CRAN: [["ggplot2", "clean"], ["dplyr", "clean"], ["shiny", "clean"]],
+    DartPub: [["http", "clean"], ["dio", "clean"], ["provider", "clean"]],
+    Conda: [["numpy", "clean"], ["pandas", "clean"], ["scipy", "clean"]],
+    HuggingFace: [["bert-base-uncased", "clean"], ["gpt2", "clean"]],
+    Alpine: [["openssl", "vuln"], ["busybox", "clean"], ["musl", "clean"]],
+    Debian: [["nginx", "clean"], ["openssl", "vuln"], ["curl", "clean"]],
+    Ubuntu: [["curl", "clean"], ["openssl", "vuln"], ["bash", "clean"]],
+    AIEditorExtensions: [["GitHub.copilot", "clean"], ["ms-python.python", "clean"]],
+  };
+  const samples = SAMPLES[eco] || SAMPLES.npm;
   const run = (term) => (onSample ? onSample(term) : (setQ(term), setTimeout(search, 0)));
   const cards = [
-    { iconKind: "oss", t: "Centralized OSS Intelligence", d: "A single source of truth for open-source packages and their CVEs — research and vet packages before they enter your org. npm and PyPI live today; more coming.",
-      foot: <span style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", justifyContent: "center" }}><Tag tone={C.allow}>npm</Tag><Tag tone={C.allow}>PyPI</Tag><span style={{ fontSize: 10, color: C.dim }}>NuGet · Cargo · Go · HF soon</span></span> },
+    { iconKind: "oss", t: "Centralized OSS Intelligence", d: "A single source of truth for open-source packages and their CVEs — research and vet packages before they enter your org, across every major ecosystem.",
+      foot: <span style={{ display: "flex", gap: 5, alignItems: "center", flexWrap: "wrap", justifyContent: "center" }}>{CATALOG_ECOS.slice(0, 5).map((e) => <BrandIcon key={e.key} format={e.key} />)}<span style={{ fontSize: 10, color: C.dim }}>+{CATALOG_ECOS.length - 5} more</span></span> },
     { iconKind: "sec", t: "Enriched Security & Remediation", d: "Deep vulnerability analysis with CVSS, KEV exploited-status, and the exact fixed-in version to upgrade to — actionable mitigation, not just a list.",
       foot: <span style={{ color: C.sub, fontSize: 11.5 }}>CVE example <a onClick={() => run("lodash@4.17.15")} style={{ color: C.accent, cursor: "pointer" }}>GHSA-29mw-wpgm-hmr9 ›</a></span> },
     { iconKind: "ctrl", t: "Custom Control & Policy", d: "Map packages to watches and policy rules to enforce fine-grained gate decisions, with violations attributed back to the watch that caught them.",
@@ -2592,16 +3085,22 @@ function CatalogLanding({ eco, setQ, search, onSample, onInsights }) {
   ];
   return (
     <>
-      {/* Sample row: tabs (Packages/Repositories/CVEs) + Try Now, like JFrog */}
+      {/* Sample row: tabs (Packages/Repositories/CVEs) — each backed by real data, like JFrog */}
       <div style={{ display: "flex", alignItems: "center", gap: 18, margin: "0 0 6px" }}>
-        <span style={{ fontSize: 14, fontWeight: 600 }}>Sample packages</span>
-        <span style={{ ...s.hTabOn, fontSize: 13, paddingBottom: 6 }}>Packages</span>
-        <span style={{ color: C.dim, fontSize: 13, cursor: "default" }} title="Coming soon">Repositories <span style={{ fontSize: 9, color: C.dim }}>soon</span></span>
-        <span style={{ color: C.dim, fontSize: 13, cursor: "default" }} title="Coming soon">CVEs <span style={{ fontSize: 9, color: C.dim }}>soon</span></span>
-        <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6 }}>
-          {samples.map(([term, kind]) => (
+        <span style={{ fontSize: 14, fontWeight: 600 }}>Samples</span>
+        {[["packages", "Packages"], ["repositories", "Repositories"], ["cves", "CVEs"]].map(([k, l]) => (
+          <span key={k} onClick={() => setSampleTab(k)}
+            style={{ ...(sampleTab === k ? s.hTabOn : {}), fontSize: 13, paddingBottom: 6, cursor: "pointer", color: sampleTab === k ? undefined : C.sub }}>{l}</span>
+        ))}
+        <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", justifyContent: "flex-end", maxWidth: 560 }}>
+          {sampleTab === "packages" && samples.map(([term, kind]) => (
             <button key={term} onClick={() => run(term)} style={{ ...s.sampleChip,
               borderColor: kind === "vuln" ? C.block : C.line, color: kind === "vuln" ? C.block : C.ink }}>{term}</button>
+          ))}
+          {sampleTab === "repositories" && <SampleRepoChips eco={eco} />}
+          {sampleTab === "cves" && SAMPLE_CVES.map(([id, label]) => (
+            <button key={id} onClick={() => onCve && onCve(id)} title={label}
+              style={{ ...s.sampleChip, borderColor: C.block, color: C.block }}>{id}</button>
           ))}
         </span>
       </div>
@@ -2619,7 +3118,7 @@ function CatalogLanding({ eco, setQ, search, onSample, onInsights }) {
         ))}
       </div>
       <div style={{ textAlign: "center", color: C.dim, fontSize: 11.5, marginTop: 20 }}>
-        Last catalog index updated just now · sourced from npm, PyPI, OSV.dev, CISA KEV &amp; OpenSSF — all free.
+        Last Public Catalog update just now · 17 ecosystems · sourced live from each public registry + OSV.dev, CISA KEV &amp; OpenSSF — all free.
       </div>
     </>
   );
@@ -2666,6 +3165,41 @@ function licenseInfo(name) {
 const RISK_TONE = { H: C.block, M: C.warn, L: C.allow };
 
 // Package detail — JFrog two-column layout: left info card + right tabbed content.
+// Condense a license into a short chip label. Known SPDX ids pass through; a long legal blob
+// (e.g. a proprietary "© … All rights reserved") collapses to "Proprietary" so it doesn't overflow
+// the small left-card row. Returns the original if it's already short.
+function shortLicense(lic) {
+  if (!lic) return "—";
+  const t = lic.trim();
+  if (t.length <= 18) return t;                                  // MIT, Apache-2.0, BSD-3-Clause…
+  if (/all rights reserved|proprietary|©|copyright/i.test(t)) return "Proprietary";
+  return t.slice(0, 16).trim() + "…";
+}
+// Per-ecosystem install command — matches each ecosystem's real package manager.
+function installCommand(eco, name, version) {
+  const v = version || "latest";
+  switch (eco) {
+    case "npm": return `npm install ${name}@${v}`;
+    case "PyPI": return `pip install ${name}==${v}`;
+    case "Conda": return `conda install ${name}=${v}`;
+    case "NuGet": return `dotnet add package ${name} --version ${v}`;
+    case "Cargo": return `cargo add ${name}@${v}`;
+    case "Go": return `go get ${name}@v${v}`;
+    case "Maven": { const [g, a] = (name || "").split(":"); return `<dependency>\n  <groupId>${g || name}</groupId>\n  <artifactId>${a || ""}</artifactId>\n  <version>${v}</version>\n</dependency>`; }
+    case "RubyGems": return `gem install ${name} -v ${v}`;
+    case "Composer": return `composer require ${name}:${v}`;
+    case "CRAN": return `install.packages("${name}")`;
+    case "DartPub": return `dart pub add ${name}:${v}`;
+    case "Conan": return `conan install --requires=${name}/${v}`;
+    case "HuggingFace": return `huggingface-cli download ${name}`;
+    case "Alpine": return `apk add ${name}=${v}`;
+    case "Debian":
+    case "Ubuntu": return `apt-get install ${name}=${v}`;
+    case "AIEditorExtensions": return `code --install-extension ${name}@${v}`;
+    case "Docker": return `docker pull ${name}:${v}`;
+    default: return `# install ${name} ${v} (${eco})`;
+  }
+}
 function PackageOverview({ pkg, onVersion }) {
   const [tab, setTab] = useState("vulnerabilities");
   const [verOpen, setVerOpen] = useState(false);
@@ -2675,9 +3209,13 @@ function PackageOverview({ pkg, onVersion }) {
   const high = vulns.filter((v) => v.severity === "High").length;
   const med = vulns.filter((v) => v.severity === "Medium").length + vulns.filter((v) => v.severity === "Low").length;
   const approved = pkg.verdict === "Clean" || pkg.verdict === "Caution";
-  const installCmd = pkg.ecosystem === "npm" ? `npm install ${pkg.name}@${pkg.version}` : `pip install ${pkg.name}==${pkg.version}`;
+  const installCmd = installCommand(pkg.ecosystem, pkg.name, pkg.version);
   const lic = licenseInfo(pkg.license);
-  const tabs = [["vulnerabilities", "Vulnerabilities"], ["dependencies", "Dependencies"], ["openssf", "OpenSSF"], ["licenses", "Licenses"], ["oprisk", "Operational Risk"]];
+  const er = pkg.extensionRisk;
+  const tabs = [
+    ["vulnerabilities", "Vulnerabilities"],
+    ...(er ? [["extrisk", "Extension Risk"]] : []),
+    ["dependencies", "Dependencies"], ["openssf", "OpenSSF"], ["licenses", "Licenses"], ["oprisk", "Operational Risk"]];
 
   return (
     <div style={{ display: "grid", gridTemplateColumns: "340px 1fr", gap: 20, alignItems: "start", animation: "fwfade .2s ease" }}>
@@ -2735,7 +3273,19 @@ function PackageOverview({ pkg, onVersion }) {
                 <Cnt n={crit} c={C.block} /><Cnt n={high} c="#ef6a3d" /><Cnt n={med} c={C.warn} />
               </span>} />
             <KV k="Dependencies" v={`${pkg.dependencies?.length ?? 0}`} />
-            <KV k="Licenses" v={pkg.license ? <Tag tone={C.sub}>{pkg.license}</Tag> : "—"} />
+            <KV k="Licenses" v={pkg.license ? <Tag tone={C.sub}>{shortLicense(pkg.license)}</Tag> : "—"} />
+            {er && <KV k="Extension Risk" v={
+              <button onClick={() => setTab("extrisk")} style={{ background: "none", border: "none", cursor: "pointer", padding: 0, display: "inline-flex", alignItems: "center", gap: 5,
+                fontWeight: 700, color: er.verdict === "High-Risk" ? C.block : er.verdict === "Caution" ? C.warn : C.allow }}>
+                {er.verdict === "High-Risk" ? "⛔" : er.verdict === "Caution" ? "⚠" : "🛡"} {er.verdict}
+                {(er.confirmedThreats || 0) > 0 && <span style={{ fontSize: 10, color: C.block }}>· {er.confirmedThreats} confirmed</span>}
+              </button>} />}
+            {pkg.operationalRisk && <KV k="Operational Risk" v={
+              <button onClick={() => setTab("oprisk")} style={{ background: "none", border: "none", cursor: "pointer", padding: 0, display: "inline-flex", alignItems: "center", gap: 5,
+                fontWeight: 700, color: (OPR_TONE[pkg.operationalRisk.severity] || C.dim) }}>
+                {pkg.operationalRisk.severity === "None" ? "No risk" : pkg.operationalRisk.severity}
+                {pkg.operationalRisk.riskReason && <span style={{ fontSize: 10, color: C.sub, fontWeight: 400 }}>· {pkg.operationalRisk.riskReason}</span>}
+              </button>} />}
             <KV k="OpenSSF Score" v={sc?.overall != null
               ? <span style={{ fontWeight: 700, color: sc.overall >= 7 ? C.allow : sc.overall >= 4 ? C.warn : C.block }}>{sc.overall.toFixed(1)}/10</span>
               : <Tag tone={C.dim}>N/A</Tag>} last />
@@ -2778,8 +3328,21 @@ function PackageOverview({ pkg, onVersion }) {
               <SumCard title="Transitive Vulnerabilities" n={0} />
               <SumCard title="Enriched (EPSS + KEV)" n={vulns.filter(v => v.knownExploited || v.epss != null).length} enriched />
             </div>
+            {er && (
+              <div onClick={() => setTab("extrisk")} style={{ cursor: "pointer", marginBottom: 16, padding: "12px 16px", borderRadius: 10, display: "flex", alignItems: "center", gap: 12,
+                border: `1px solid ${er.verdict === "Trusted" ? C.allow : C.warn}`, background: `${er.verdict === "Trusted" ? C.allow : C.warn}12` }}>
+                <span style={{ fontSize: 18 }}>{er.verdict === "High-Risk" ? "⛔" : er.verdict === "Caution" ? "⚠" : "🛡"}</span>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 600, fontSize: 13 }}>Extension Risk: {er.verdict} — fully assessed (deep code scan + publisher trust + exfiltration analysis)</div>
+                  <div style={{ fontSize: 11.5, color: C.sub }}>
+                    {(er.confirmedThreats || 0) > 0 ? `${er.confirmedThreats} confirmed threat(s)` : "No confirmed threats"} · {er.codeScanned ? "deep code scan ran" : "code scan unavailable"} · {er.publisherVerified ? "verified publisher" : "unverified publisher"} · {er.knownMalicious ? "ON MALICIOUS FEED" : "not on any malicious feed"} — click for the full assessment.
+                  </div>
+                </div>
+                <span style={{ color: C.accent, fontSize: 12 }}>View ›</span>
+              </div>
+            )}
             {vulns.length === 0
-              ? <EmptyState title="No Vulnerabilities Found" sub="Great news! We haven't found any vulnerabilities for this version." />
+              ? <EmptyState title="No CVEs Found" sub={er ? "No known CVEs. This extension is also fully assessed by the deep code scan, publisher-trust and exfiltration analysis — see the Extension Risk tab above." : "Great news! We haven't found any vulnerabilities for this version."} />
               : <div style={s.card}>
                   <div style={{ padding: "14px 20px", borderBottom: `1px solid ${C.lineSoft}`, fontWeight: 600 }}>{vulns.length} Vulnerabilities</div>
                   <Table cols={["Severity", "ID", "Fix version", "CVSS v3", "CVSS v4", "KEV", "EPSS %"]}>
@@ -2802,7 +3365,9 @@ function PackageOverview({ pkg, onVersion }) {
           <div style={s.card}>
             <div style={{ padding: "14px 20px", borderBottom: `1px solid ${C.lineSoft}`, fontWeight: 600 }}>Dependencies ({pkg.dependencies?.length ?? 0})</div>
             {(pkg.dependencies?.length ?? 0) === 0
-              ? <div style={{ padding: 24, textAlign: "center", color: C.sub, fontSize: 13 }}>No declared dependencies for this version.</div>
+              ? <div style={{ padding: 24, textAlign: "center", color: C.sub, fontSize: 13 }}>
+                  {er ? "VS Code extensions bundle their dependencies into a single file (extension.js), so they declare none separately. The bundled code IS inspected by the deep code scan — see the Extension Risk tab." : "No declared dependencies for this version."}
+                </div>
               : <div style={{ padding: 18, display: "flex", flexWrap: "wrap", gap: 7 }}>
                   {pkg.dependencies.slice(0, 80).map((d, i) => (
                     <span key={i} style={{ fontFamily: C.mono, fontSize: 11, padding: "4px 10px", background: C.surface2, border: `1px solid ${C.line}`, borderRadius: 6, color: C.ink }}>{d}</span>
@@ -2834,7 +3399,7 @@ function PackageOverview({ pkg, onVersion }) {
                     );
                   })}
                 </Table>
-              : <EmptyState title="No Scorecard Published" sub={sc?.stars != null ? `Repository resolved (★ ${sc.stars.toLocaleString()}) but OpenSSF hasn't scored it yet.` : "No source repository resolved for this package."} />}
+              : <EmptyState title="No Scorecard Published" sub={er ? "OpenSSF Scorecard scores public source repositories. This extension doesn't publish a linked repo, so there's no scorecard — its security is assessed by the Extension Risk deep scan instead." : sc?.stars != null ? `Repository resolved (★ ${sc.stars.toLocaleString()}) but OpenSSF hasn't scored it yet.` : "No source repository resolved for this package."} />}
           </div>
         )}
 
@@ -2877,7 +3442,177 @@ function PackageOverview({ pkg, onVersion }) {
           </div>
         )}
 
-        {tab === "oprisk" && <OpRiskTab risk={pkg.operationalRisk} />}
+        {tab === "oprisk" && <OpRiskTab risk={pkg.operationalRisk} isExtension={!!er} />}
+        {tab === "extrisk" && <ExtensionRiskTab er={er} />}
+      </div>
+    </div>
+  );
+}
+
+// Extension Risk tab — capability + publisher + exfiltration assessment for AI-editor extensions.
+// This is the real "is it safe" answer for a VSIX, where CVE scanning alone says nothing.
+function ExtensionRiskTab({ er }) {
+  const [criteriaOpen, setCriteriaOpen] = useState(false);
+  const [heurOpen, setHeurOpen] = useState(false);
+  if (!er) return <EmptyState title="No Extension Risk Data" sub="Capability analysis is available for AI Editor Extensions only." />;
+  const tone = (lvl) => ({ High: C.block, Medium: C.warn, Low: C.sub, Info: C.allow })[lvl] || C.sub;
+  const vColor = er.verdict === "High-Risk" ? C.block : er.verdict === "Caution" ? C.warn : C.allow;
+  const gc = er.gateAction === "Block" ? C.block : er.gateAction === "Notify" ? C.warn : C.allow;
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "300px 1fr", gap: 20, alignItems: "start" }}>
+      <div style={{ ...s.card, padding: "18px 18px" }}>
+        {/* Header — verdict on its own line, policy badge below (no longer squashed). */}
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
+          <span style={{ fontSize: 22 }}>{er.verdict === "High-Risk" ? "⛔" : er.verdict === "Caution" ? "⚠" : "🛡"}</span>
+          <div style={{ fontSize: 20, fontWeight: 700, color: vColor }}>{er.verdict}</div>
+        </div>
+        <div style={{ fontSize: 11, color: C.sub, marginBottom: 10 }}>Capability &amp; reputation assessment</div>
+        {er.gateAction && (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+            <span style={{ fontSize: 10, fontWeight: 700, padding: "4px 9px", borderRadius: 6, color: gc, border: `1px solid ${gc}` }}>
+              Policy: {er.gateAction === "Block" ? "BLOCK" : er.gateAction === "Notify" ? "ALLOW + FLAG" : "ALLOW"}
+            </span>
+            <button onClick={() => setCriteriaOpen(true)} style={{ background: "none", border: "none", color: C.accent, fontSize: 11, cursor: "pointer", padding: 0 }}>How is this decided? ⓘ</button>
+          </div>
+        )}
+        {er.gateActionReason && <div style={{ fontSize: 10.5, color: C.sub, marginBottom: 10 }}>{er.gateActionReason}</div>}
+        {/* Why this verdict — stated as a deterministic rule, not an opaque AI call. */}
+        {er.verdictBasis && <div style={{ fontSize: 11.5, color: C.sub, lineHeight: 1.5, padding: "8px 10px", borderRadius: 8,
+          background: `${vColor}10`, border: `1px solid ${vColor}40`, marginBottom: 12 }}>{er.verdictBasis}</div>}
+        {/* Threat tally — separates CONFIRMED from HEURISTIC so an analyst isn't alarmed by YARA leads. */}
+        <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+          <div style={{ flex: 1, textAlign: "center", padding: "8px 4px", borderRadius: 8, border: `1px solid ${(er.confirmedThreats || 0) > 0 ? C.block : C.line}`, background: (er.confirmedThreats || 0) > 0 ? `${C.block}12` : "transparent" }}>
+            <div style={{ fontSize: 20, fontWeight: 800, color: (er.confirmedThreats || 0) > 0 ? C.block : C.allow }}>{er.confirmedThreats || 0}</div>
+            <div style={{ fontSize: 9.5, color: C.sub, textTransform: "uppercase", letterSpacing: 0.3 }}>Confirmed threats</div>
+          </div>
+          <div style={{ flex: 1, textAlign: "center", padding: "8px 4px", borderRadius: 8, border: `1px solid ${C.line}` }}>
+            <div style={{ fontSize: 20, fontWeight: 800, color: C.warn }}>{er.heuristicMatches || 0}</div>
+            <div style={{ fontSize: 9.5, color: C.sub, textTransform: "uppercase", letterSpacing: 0.3 }}>Heuristic leads</div>
+          </div>
+        </div>
+        <InfoRow k="Publisher verified" v={er.publisherVerified ? "Yes (domain-verified)" : "NO — unverified"} />
+        {er.publisherDomain && <InfoRow k="Publisher domain" v={er.publisherDomain} />}
+        {/* Open VSX cross-verification — upfront trust signal. */}
+        <InfoRow k="On Open VSX" v={er.onOpenVsx ? "Yes — cross-verified ✓" : "No — Marketplace-only"} />
+        <InfoRow k="Malicious advisory" v={er.knownMalicious ? "YES — DO NOT INSTALL" : "None"} />
+        <InfoRow k="Deep code scan" v={er.codeScanned ? (er.codeScanStatus === "Clean" ? "Ran — clean" : `Ran — ${(er.codeFindings || []).length} finding(s)`) : "Unavailable"} />
+        <InfoRow k="Executes native code" v={er.executesCode ? "Yes (FS/network/proc)" : "No"} />
+        <InfoRow k="Runs automatically" v={er.runsAutomatically ? "Yes (on startup)" : "No (manual)"} />
+        <InfoRow k="Untrusted workspaces" v={er.supportsUntrustedWorkspaces ? "Allowed" : "Blocked (safer)"} />
+        <InfoRow k="Installs" v={er.installs != null ? Number(er.installs).toLocaleString() : "—"} />
+        {er.dependencies?.length > 0 && <InfoRow k="Extension deps" v={er.dependencies.join(", ")} />}
+      </div>
+      <div>
+        {/* Decision criteria as a POPUP — reclaims the space it used to eat at the top. */}
+        {criteriaOpen && er.verdictCriteria?.length > 0 && (
+          <div onClick={() => setCriteriaOpen(false)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.45)", zIndex: 100, display: "grid", placeItems: "center" }}>
+            <div onClick={(e) => e.stopPropagation()} style={{ ...s.card, maxWidth: 620, width: "90%", padding: "22px 24px", marginBottom: 0 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+                <div style={{ fontWeight: 700, fontSize: 15, display: "flex", alignItems: "center", gap: 8 }}>⚖️ How this verdict is decided</div>
+                <button onClick={() => setCriteriaOpen(false)} style={{ background: "none", border: "none", fontSize: 20, color: C.sub, cursor: "pointer" }}>×</button>
+              </div>
+              <div style={{ fontSize: 11, color: C.sub, marginBottom: 12 }}>Deterministic rules — for security review. The verdict is a rule, not an opaque AI call.</div>
+              <ul style={{ margin: 0, paddingLeft: 18, display: "flex", flexDirection: "column", gap: 9 }}>
+                {er.verdictCriteria.map((c, i) => <li key={i} style={{ fontSize: 12.5, color: C.ink, lineHeight: 1.55 }}>{c}</li>)}
+              </ul>
+            </div>
+          </div>
+        )}
+        <div style={{ ...s.card, padding: 0 }}>
+          <div style={{ padding: "14px 20px", borderBottom: `1px solid ${C.lineSoft}`, fontWeight: 600 }}>Capability signals</div>
+          <table style={s.table}><thead><tr>{["Signal", "Level", "Detail"].map((c) => <th key={c} style={s.th}>{c}</th>)}</tr></thead>
+            <tbody>{er.signals.map((sg, i) => (
+              <tr key={i} style={s.tr}>
+                <td style={{ ...s.td, fontWeight: 600 }}>{sg.name}</td>
+                <td style={s.td}><span style={{ fontFamily: C.mono, fontSize: 10, padding: "3px 9px", borderRadius: 20, color: tone(sg.level), background: `${tone(sg.level)}1f`, fontWeight: 600 }}>{sg.level.toUpperCase()}</span></td>
+                <td style={{ ...s.td, color: C.sub, fontSize: 12, maxWidth: 520 }}>{sg.detail}</td>
+              </tr>
+            ))}</tbody>
+          </table>
+        </div>
+        {/* REAL code-level findings — only CONFIRMED issues are shown. Heuristic YARA leads (which
+            false-positive on minified JS) are suppressed from the list; their count is noted only. */}
+        {(() => {
+          const all = er.codeFindings || [];
+          // CONFIRMED = concrete IOC evidence only (matches the API's IsConcreteThreat). Capability
+          // observations (ast/manifest) and YARA heuristics are not threats and are not listed.
+          const isThreat = (c) => c.category === "ioc" && /C2|DOMAIN|IP_|KNOWN_BAD|HASH|GITHUB_C2|MALICIOUS/i.test(c.id || "");
+          const confirmed = all.filter(isThreat);
+          const heuristics = all.filter((c) => c.category === "yara");
+          // Collapse repeated rule ids (e.g. process.binding x7) to one row + a count.
+          const heurGrouped = Object.values(heuristics.reduce((m, c) => {
+            const key = c.id || c.title;
+            if (!m[key]) m[key] = { ...c, count: 0 };
+            m[key].count++; return m;
+          }, {}));
+          const heuristicN = heuristics.length;
+          // A clean, friendly title from the YARA rule id (YARA_SUSP_JS_Process_Binding_Jan25 -> "Process Binding").
+          const ruleLabel = (c) => (c.title && c.title.length < 60 ? c.title : (c.id || "")
+            .replace(/^YARA_/, "").replace(/_(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\d+$/i, "")
+            .replace(/^(SUSP|MAL|RAT|STEALER|LOADER|C2)_JS_/i, "").replace(/_/g, " ").trim()) || "signature match";
+          return (
+        <div style={{ ...s.card, padding: 0 }}>
+          <div style={{ padding: "14px 20px", borderBottom: `1px solid ${C.lineSoft}`, fontWeight: 600, display: "flex", alignItems: "center", gap: 8 }}>
+            🧬 Code scan findings (vsix-audit)
+            <span style={{ fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 20,
+              color: !er.codeScanned ? C.sub : confirmed.length === 0 ? C.allow : C.block,
+              background: `${!er.codeScanned ? C.sub : confirmed.length === 0 ? C.allow : C.block}1f` }}>
+              {er.codeScanned ? (confirmed.length === 0 ? "NO CONFIRMED ISSUES" : `${confirmed.length} CONFIRMED`) : "NOT RUN"}
+            </span>
+          </div>
+          {!er.codeScanned
+            ? <div style={{ padding: "16px 20px", fontSize: 12.5, color: C.sub }}>Deep .vsix code scan not available (scanner sidecar unreachable). The assessment above is static + reputational only.</div>
+            : <>
+                {confirmed.length === 0
+                  ? <div style={{ padding: "16px 20px", fontSize: 12.5, color: C.sub }}>
+                      vsix-audit downloaded and inspected the published .vsix — <b style={{ color: C.allow }}>no confirmed exfiltration / RAT / IOC indicators</b> in the code.
+                    </div>
+                  : <table style={s.table}><thead><tr>{["Severity", "Finding", "Category", "Detail"].map((c) => <th key={c} style={s.th}>{c}</th>)}</tr></thead>
+                      <tbody>{confirmed.map((cf, i) => (
+                        <tr key={i} style={s.tr}>
+                          <td style={s.td}><span style={{ fontFamily: C.mono, fontSize: 10, padding: "3px 9px", borderRadius: 20, color: C.block, background: `${C.block}1f`, fontWeight: 600 }}>{(cf.severity || "").toUpperCase()}</span></td>
+                          <td style={{ ...s.td, fontWeight: 600, fontSize: 12.5 }}>{cf.title}</td>
+                          <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11, color: C.sub }}>{cf.category}</td>
+                          <td style={{ ...s.td, color: C.sub, fontSize: 11.5, maxWidth: 460 }}>{cf.detail}{cf.file ? ` · ${cf.file}` : ""}</td>
+                        </tr>
+                      ))}</tbody>
+                    </table>}
+                {/* Heuristic leads — collapsed by default. Visible proof the scan ran, clearly labeled
+                    low-confidence, never affects the verdict. */}
+                {heuristicN > 0 && (
+                  <div style={{ borderTop: `1px solid ${C.lineSoft}` }}>
+                    <button onClick={() => setHeurOpen(!heurOpen)} style={{ width: "100%", textAlign: "left", background: "none", border: "none", cursor: "pointer",
+                      padding: "11px 20px", fontSize: 12, color: C.sub, display: "flex", alignItems: "center", gap: 8 }}>
+                      <span style={{ color: C.warn }}>{heurOpen ? "▾" : "▸"}</span>
+                      <b style={{ color: C.ink }}>Heuristic leads ({heuristicN})</b>
+                      <span style={{ color: C.dim }}>— low-confidence YARA signatures, for review · do NOT affect the verdict (they false-positive on minified JS)</span>
+                    </button>
+                    {heurOpen && (
+                      <table style={s.table}><thead><tr>{["Severity", "Signature", "Detail"].map((c) => <th key={c} style={s.th}>{c}</th>)}</tr></thead>
+                        <tbody>{heurGrouped.map((cf, i) => {
+                          const sc = cf.severity === "critical" || cf.severity === "high" ? C.warn : C.sub;
+                          return (
+                            <tr key={i} style={s.tr}>
+                              <td style={s.td}><span style={{ fontFamily: C.mono, fontSize: 10, padding: "3px 9px", borderRadius: 20, color: sc, background: `${sc}1f`, fontWeight: 600 }}>{(cf.severity || "").toUpperCase()}</span></td>
+                              <td style={{ ...s.td, fontWeight: 600, fontSize: 12.5 }}>{ruleLabel(cf)}{cf.count > 1 ? <span style={{ color: C.dim, fontWeight: 400 }}> ×{cf.count}</span> : ""}</td>
+                              <td style={{ ...s.td, color: C.sub, fontSize: 11.5, maxWidth: 480 }}>{(cf.detail || "").replace(/^HEURISTIC signature match \(not a confirmed threat\)\.\s*/, "")}</td>
+                            </tr>
+                          );
+                        })}</tbody>
+                      </table>
+                    )}
+                  </div>
+                )}
+              </>}
+        </div>
+          );
+        })()}
+        <div style={{ ...s.card, padding: "16px 20px" }}>
+          <div style={{ fontWeight: 600, marginBottom: 10, display: "flex", alignItems: "center", gap: 8 }}>🔎 Data-exfiltration assessment</div>
+          <ul style={{ margin: 0, paddingLeft: 18, display: "flex", flexDirection: "column", gap: 8 }}>
+            {er.exfiltrationNotes.map((n, i) => <li key={i} style={{ fontSize: 12.5, color: C.sub, lineHeight: 1.55 }}>{n}</li>)}
+          </ul>
+        </div>
       </div>
     </div>
   );
@@ -2891,9 +3626,9 @@ function OprBadge({ sev }) {
   return <span style={{ display: "inline-block", fontSize: 11, fontWeight: 700, color: c,
     border: `1px solid ${c}`, borderRadius: 4, padding: "2px 8px" }}>{sev === "None" ? "No risk" : sev}</span>;
 }
-function OpRiskTab({ risk }) {
+function OpRiskTab({ risk, isExtension }) {
   if (!risk) return <EmptyState title="No Operational Risk Data"
-    sub="Operational-risk analysis is computed from registry release history (npm + PyPI)." />;
+    sub={isExtension ? "Operational-risk (EOL / version-age / release-cadence) is computed from package-registry history. VS Code extensions use the Extension Risk assessment instead — see that tab." : "Operational-risk analysis is computed from registry release history (npm, PyPI, NuGet, Cargo, RubyGems, Composer)."} />;
   const factors = [
     ["End-of-Life / Deprecated", risk.eol ? "High" : "None",
       risk.eol ? (risk.eolReason || "Version deprecated by maintainer") : "Not deprecated or yanked"],
@@ -6086,7 +6821,9 @@ const FONTS = `@import url('https://fonts.googleapis.com/css2?family=Inter:wght@
   ::selection{background:rgba(22,82,212,.16)}
   @keyframes fwpulse{0%,100%{opacity:1}50%{opacity:.4}}
   @keyframes fwfade{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
-  @keyframes fwslide{from{transform:translateX(24px);opacity:.4}to{transform:none;opacity:1}}`;
+  @keyframes fwslide{from{transform:translateX(24px);opacity:.4}to{transform:none;opacity:1}}
+  @keyframes fwbar{0%{left:-40%}100%{left:100%}}
+  @keyframes fwspin{to{transform:rotate(360deg)}}`;
 
 const DEMO = {
   policy: { version: "12", cvssBlockThreshold: 7.0, blockKnownExploited: true, epssBlockThreshold: 0.5,

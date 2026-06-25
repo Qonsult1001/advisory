@@ -13,18 +13,15 @@ public class OsvSource : IVulnSource
     public bool IsAvailable => true;
     public OsvSource(IHttpClientFactory f) => _http = f.CreateClient("osv");
 
-    private static string EcosystemName(Ecosystem e) => e switch
-    {
-        Ecosystem.PyPI => "PyPI", Ecosystem.npm => "npm", Ecosystem.NuGet => "NuGet",
-        Ecosystem.Cargo => "crates.io", Ecosystem.Go => "Go", _ => ""
-    };
+    // Centralized in OsvEcosystems so CVE + malware coverage never drift apart per-ecosystem.
+    private static string EcosystemName(Ecosystem e) => OsvEcosystems.Name(e) ?? "";
 
     public async Task<SourceResult> QueryAsync(PackageRef pkg, CancellationToken ct)
     {
         var sw = Stopwatch.StartNew();
         // A Docker-image package carries its real OSV ecosystem (Debian:12 / Alpine:v3.18 / Go / npm…)
-        // in OsvEcosystem — use it directly so OS + language packages match real CVEs.
-        var eco = !string.IsNullOrEmpty(pkg.OsvEcosystem) ? pkg.OsvEcosystem! : EcosystemName(pkg.Ecosystem);
+        // in OsvEcosystem — OsvEcosystems.For uses it directly so OS + language packages match real CVEs.
+        var eco = OsvEcosystems.For(pkg) ?? "";
         if (string.IsNullOrEmpty(eco))
             return new SourceResult(Key, SourceStatus.Skipped, Array.Empty<Finding>(),
                 $"ecosystem {pkg.Ecosystem} not covered by OSV", sw.ElapsedMilliseconds);
@@ -94,13 +91,53 @@ public class OsvSource : IVulnSource
         return (Severity.Medium, null, vector);
     }
 
-    /// <summary>Pulls the base score from a CVSS vector, if the vector embeds one; else null.
-    /// OSV vectors don't always carry the score, so this is best-effort.</summary>
+    /// <summary>Public alias — compute the CVSS base score from a vector string (OSV severity[].score
+    /// carries the vector, not a number). Returns null for vectors we can't score.</summary>
+    public static double? CvssFromVector(string vector) => CvssBaseScore(vector);
+
+    /// <summary>Computes the CVSS v3.0/3.1 base score from a vector string per the official spec.
+    /// OSV's severity[].score is the vector (e.g. "CVSS:3.1/AV:N/AC:L/..."), so we do the real math
+    /// rather than leaving the score blank. CVSS v2/v4 vectors return null (label-based rating used).</summary>
     private static double? CvssBaseScore(string vector)
     {
-        // Some feeds append /score or include it; OSV usually doesn't. Return null when absent so
-        // the textual severity label drives the rating instead. (Kept simple — no CVSS math here.)
-        return null;
+        if (string.IsNullOrWhiteSpace(vector)) return null;
+        var m = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var part in vector.Split('/'))
+        {
+            var kv = part.Split(':', 2);
+            if (kv.Length == 2) m[kv[0]] = kv[1];
+        }
+        // Only CVSS:3.0 / 3.1 are scored here.
+        if (!m.TryGetValue("CVSS", out var ver) || (ver != "3.0" && ver != "3.1")) return null;
+        if (!m.ContainsKey("AV") || !m.ContainsKey("AC") || !m.ContainsKey("PR") ||
+            !m.ContainsKey("UI") || !m.ContainsKey("S") || !m.ContainsKey("C") ||
+            !m.ContainsKey("I") || !m.ContainsKey("A")) return null;
+
+        double av = m["AV"].ToUpperInvariant() switch { "N" => 0.85, "A" => 0.62, "L" => 0.55, "P" => 0.20, _ => 0.85 };
+        double ac = m["AC"].ToUpperInvariant() == "L" ? 0.77 : 0.44;
+        bool scopeChanged = m["S"].ToUpperInvariant() == "C";
+        double pr = m["PR"].ToUpperInvariant() switch
+        {
+            "N" => 0.85,
+            "L" => scopeChanged ? 0.68 : 0.62,
+            "H" => scopeChanged ? 0.50 : 0.27,
+            _ => 0.85
+        };
+        double ui = m["UI"].ToUpperInvariant() == "N" ? 0.85 : 0.62;
+        double Imp(string k) => m[k].ToUpperInvariant() switch { "H" => 0.56, "L" => 0.22, _ => 0.0 };
+        double iscBase = 1 - ((1 - Imp("C")) * (1 - Imp("I")) * (1 - Imp("A")));
+
+        double impact = scopeChanged
+            ? 7.52 * (iscBase - 0.029) - 3.25 * Math.Pow(iscBase - 0.02, 15)
+            : 6.42 * iscBase;
+        double exploitability = 8.22 * av * ac * pr * ui;
+
+        if (impact <= 0) return 0.0;
+        double raw = scopeChanged
+            ? Math.Min(1.08 * (impact + exploitability), 10.0)
+            : Math.Min(impact + exploitability, 10.0);
+        // Round up to one decimal (CVSS "roundup").
+        return Math.Ceiling(raw * 10) / 10.0;
     }
 
     private static IReadOnlyList<string>? ExtractStringArray(JsonElement v, string prop)

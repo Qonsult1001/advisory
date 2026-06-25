@@ -27,6 +27,7 @@ public class GateEngine : IGateEngine
     private readonly IEnumerable<IDependencyResolver> _resolvers;
     private readonly KevSource _kev;
     private readonly EpssSource _epss;
+    private readonly VulnCheckSource _vc;
     private readonly PickleScanner _pickle;
     private readonly SecretScanner _secrets;
     private readonly IacScanner _iac;
@@ -39,11 +40,11 @@ public class GateEngine : IGateEngine
     private readonly ICurrentUser _user;
 
     public GateEngine(IEnumerable<IVulnSource> sources, IEnumerable<IDependencyResolver> resolvers,
-                      KevSource kev, EpssSource epss, PickleScanner pickle, SecretScanner secrets,
+                      KevSource kev, EpssSource epss, VulnCheckSource vc, PickleScanner pickle, SecretScanner secrets,
                       IacScanner iac, ReachabilityAnalyzer reach, OpRiskService opRisk, IPolicyStore policy,
                       IAuditLog audit, IResearchAgent agent, IItsmNotifier itsm, ICurrentUser user)
     {
-        _sources = sources; _resolvers = resolvers; _kev = kev; _epss = epss;
+        _sources = sources; _resolvers = resolvers; _kev = kev; _epss = epss; _vc = vc;
         _pickle = pickle; _secrets = secrets; _iac = iac; _reach = reach; _opRisk = opRisk;
         _policy = policy; _audit = audit; _agent = agent; _itsm = itsm; _user = user;
     }
@@ -61,7 +62,7 @@ public class GateEngine : IGateEngine
     {
         if (!_opRisk.Supports(root.Ecosystem))
             return (new SourceCoverage("package-intel", "Skipped", 0,
-                "operational-risk / license / scorecard intel supported for npm + PyPI", 0, false), null);
+                $"operational-risk / license intel not available for {root.Ecosystem} (registry exposes no version-date metadata)", 0, false), null);
 
         var sw = System.Diagnostics.Stopwatch.StartNew();
         var risk = await _opRisk.AnalyzeAsync(root.Ecosystem, root.Name, root.Version, ct);
@@ -217,12 +218,13 @@ public class GateEngine : IGateEngine
             foreach (var src in _sources.Where(s => p.EnabledSources.Contains(s.Key)))
             {
                 if (!src.IsAvailable) { Merge(src.Key, SourceStatus.NotConfigured, 0, "source not configured", 0); continue; }
-                if (src.Key is "kev" or "epss") continue; // enrichment, handled separately
+                if (src.Key is "kev" or "epss" or "vulncheck") continue; // enrichment, handled separately (per-CVE)
                 var res = await src.QueryAsync(node.Package, ct);
                 Merge(src.Key, res.Status, res.Findings.Count, res.Detail, res.ElapsedMs);
                 nodeFindings.AddRange(res.Findings);
             }
 
+            var vcOn = p.EnabledSources.Contains("vulncheck") && _vc.IsAvailable;
             foreach (var f in nodeFindings)
             {
                 var kev = p.EnabledSources.Contains("kev") && _kev.IsKnownExploited(f.Id);
@@ -232,7 +234,21 @@ public class GateEngine : IGateEngine
                     var (sc, st, detail) = await _epss.ScoreAsync(f.Id, ct);
                     epss = sc; Merge("epss", st, sc is null ? 0 : 1, detail, 0);
                 }
-                collected.Add((f with { KnownExploited = f.KnownExploited || kev, EpssScore = epss }, node));
+                // VulnCheck exploited-in-the-wild enrichment (per-CVE, free vulncheck-kev index). VulnCheck
+                // KEV is a SUPERSET of CISA KEV, so a hit here marks the finding exploited and strengthens
+                // the SEC-VULN-02 block rule even when CISA hasn't listed it.
+                bool vcExploited = false;
+                if (vcOn)
+                {
+                    var cve = f.Aliases?.FirstOrDefault(a => a.StartsWith("CVE", StringComparison.OrdinalIgnoreCase))
+                              ?? (f.Id.StartsWith("CVE", StringComparison.OrdinalIgnoreCase) ? f.Id : null);
+                    if (cve is not null)
+                    {
+                        var hit = await _vc.LookupCveAsync(cve, ct);
+                        if (hit is not null) { vcExploited = true; Merge("vulncheck", SourceStatus.Ok, 1, "exploited-in-the-wild (VulnCheck KEV)", 0); }
+                    }
+                }
+                collected.Add((f with { KnownExploited = f.KnownExploited || kev || vcExploited, EpssScore = epss }, node));
             }
         }
 
@@ -248,6 +264,12 @@ public class GateEngine : IGateEngine
             if (p.DowngradeUnreachable && enriched.Reachability == "NotReachable") continue;
 
             var label = node.Depth == 0 ? "" : $"[transitive d{node.Depth}:{node.Package.Name}]";
+            // SEC-MAL-01 — a malicious-package advisory (OpenSSF MAL-*, or a Socket behavioural exfil
+            // signal) is confirmed-bad, not a severity score. It ALWAYS blocks, regardless of CVSS,
+            // source, or ecosystem. This is the control that stops a malicious package being "allowed"
+            // just because it carries no high-CVSS CVE.
+            if (IsMalicious(enriched))
+            { decision = GateDecision.Block; triggered.Add($"SEC-MAL-01:MALICIOUS:{enriched.Id}{label}"); }
             if (p.BlockKnownExploited && enriched.KnownExploited)
             { decision = GateDecision.Block; triggered.Add($"SEC-VULN-02:KEV:{enriched.Id}{label}"); }
             if (enriched.EpssScore is double e && e >= p.EpssBlockThreshold)
@@ -402,6 +424,17 @@ public class GateEngine : IGateEngine
            || r.Findings.Count > 0
            || r.TriggeredRules.Count > 0
            || (r.Coverage is { AllRequiredConclusive: false });
+
+    /// <summary>
+    /// True for a confirmed-malicious finding — an OpenSSF Malicious Packages advisory (MAL-*),
+    /// GitHub's malware advisories (GHSA flagged malware via the "MAL" alias), or a Socket
+    /// behavioural exfiltration/injection signal. These are categorically bad and must hard-block
+    /// regardless of CVSS — a malicious package rarely carries a high numeric score.
+    /// </summary>
+    private static bool IsMalicious(Finding f)
+        => f.Id.StartsWith("MAL-", StringComparison.OrdinalIgnoreCase)
+           || f.Id.StartsWith("SOCKET-", StringComparison.OrdinalIgnoreCase)
+           || (f.Aliases?.Any(a => a.StartsWith("MAL-", StringComparison.OrdinalIgnoreCase)) ?? false);
 
     /// <summary>CVSS-band floor for a severity label (NVD v3 bands), for advisories with no numeric score.</summary>
     private static double SeverityFloor(Severity s) => s switch

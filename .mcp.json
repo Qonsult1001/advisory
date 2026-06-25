@@ -3,7 +3,7 @@
     "said": {
       "command": "tools/said/said-mcp.exe",
       "args": ["--said", "Advisory.said"],
-      "description": "Project memory — the .said brain. Tools: ask (semantic+symbol recall), remember (store a learning), sym, get, session_end (flush an episodic summary), journal, history. Agents recall relevant code/learnings instead of re-reading the repo, and write back what they learn so memory compounds across runs."
+      "description": "Project memory — the .said brain (said 0.11.1). Tools: ask (semantic+symbol recall), remember (store a learning), sym, get, session_end (flush an episodic summary), journal, history. Agents recall relevant code/learnings instead of re-reading the repo, and write back what they learn so memory compounds across runs. This (.exe) is the WINDOWS host/IDE binary (outside Docker); the container uses said-mcp-linux and the worker drives the closed loop via said-orchestrate (.exe on host, -linux in the container)."
     }
   }
 }

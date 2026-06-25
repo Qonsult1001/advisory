@@ -80,6 +80,7 @@ fixture test), which is the bulk of the cycle's tickets.
 ## Related
 
 - Diagnostic logging that surfaced the real errors: PR #119 (`FirstErrorLine`).
-- The analogous anchor fix: `RealEndpointAnchors` (see `said-edit-handoff.md`).
+- The analogous anchor fix: `RealEndpointAnchors` (historical — the `said edit` handoff docs are
+  superseded by the closed-loop orchestrator; see `docs/said-orchestrator-design.md`).
 - Deferred fix-replay (would skip the LLM entirely for recurring shapes, blocked
   on a said indexing bug): `docs/superpowers/specs/2026-06-15-fix-replay-groqcycle-design.md`.

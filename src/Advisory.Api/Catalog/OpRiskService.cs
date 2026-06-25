@@ -35,7 +35,21 @@ public class OpRiskService
     private readonly HttpClient _http;
     public OpRiskService(IHttpClientFactory f) => _http = f.CreateClient("oprisk");
 
-    public bool Supports(Ecosystem e) => e is Ecosystem.npm or Ecosystem.PyPI;
+    public bool Supports(Ecosystem e) => e is Ecosystem.npm or Ecosystem.PyPI
+        or Ecosystem.NuGet or Ecosystem.Cargo or Ecosystem.RubyGems or Ecosystem.Composer
+        or Ecosystem.AIEditorExtensions;
+
+    /// <summary>
+    /// Operational-risk for an AI-editor extension from version history we already have (the Marketplace
+    /// gives every version + publish date). Same JFrog model as packages: version age, # newer versions,
+    /// and release cadence — so an abandoned/stale extension is flagged, not left blank.
+    /// </summary>
+    public OperationalRisk? AnalyzeExtension(string? resolved, string? latest,
+        List<(string Ver, DateTimeOffset At)> releases, string? license, string? repoUrl)
+    {
+        if (releases.Count == 0 || resolved is null) return null;
+        return Compute(resolved, latest, releases, false, null, license, repoUrl);
+    }
 
     public async Task<OperationalRisk?> AnalyzeAsync(Ecosystem eco, string name, string? version, CancellationToken ct)
     {
@@ -45,6 +59,10 @@ public class OpRiskService
             {
                 Ecosystem.npm => await Npm(name, version, ct),
                 Ecosystem.PyPI => await PyPi(name, version, ct),
+                Ecosystem.NuGet => await NuGet(name, version, ct),
+                Ecosystem.Cargo => await Cargo(name, version, ct),
+                Ecosystem.RubyGems => await RubyGems(name, version, ct),
+                Ecosystem.Composer => await Composer(name, version, ct),
                 _ => null,
             };
         }
@@ -112,6 +130,105 @@ public class OpRiskService
                 if (p.Name.Contains("source", StringComparison.OrdinalIgnoreCase) || p.Name.Contains("repo", StringComparison.OrdinalIgnoreCase))
                 { repo = p.Value.GetString(); break; }
         return Compute(resolved, latest, releases, yanked, yankReason, license, repo);
+    }
+
+    // ---- NuGet: registration index carries per-version published dates + deprecation. ----
+    private async Task<OperationalRisk?> NuGet(string name, string? version, CancellationToken ct)
+    {
+        using var doc = JsonDocument.Parse(await _http.GetStringAsync(
+            $"https://api.nuget.org/v3/registration5-semver1/{Uri.EscapeDataString(name.ToLowerInvariant())}/index.json", ct));
+        var releases = new List<(string Ver, DateTimeOffset At)>();
+        bool deprecated = false; string? license = null;
+        if (doc.RootElement.TryGetProperty("items", out var pages))
+            foreach (var page in pages.EnumerateArray())
+                if (page.TryGetProperty("items", out var leaves))
+                    foreach (var leaf in leaves.EnumerateArray())
+                        if (leaf.TryGetProperty("catalogEntry", out var ce))
+                        {
+                            var ver = ce.TryGetProperty("version", out var v) ? v.GetString() : null;
+                            if (ver is null) continue;
+                            if (ce.TryGetProperty("published", out var pub) && DateTimeOffset.TryParse(pub.GetString(), out var at))
+                                releases.Add((ver, at));
+                            if (ce.TryGetProperty("deprecation", out _)) deprecated = true;
+                            license ??= ce.TryGetProperty("licenseExpression", out var le) && le.ValueKind == JsonValueKind.String ? le.GetString() : null;
+                        }
+        var latest = releases.OrderByDescending(r => r.At).Select(r => r.Ver).FirstOrDefault();
+        var resolved = version ?? latest;
+        if (resolved is null) return null;
+        return Compute(resolved, latest, releases, deprecated, deprecated ? "version deprecated on NuGet" : null, license, null);
+    }
+
+    // ---- Cargo (crates.io): versions[] carry created_at + yanked. ----
+    private async Task<OperationalRisk?> Cargo(string name, string? version, CancellationToken ct)
+    {
+        using var req = new HttpRequestMessage(HttpMethod.Get, $"https://crates.io/api/v1/crates/{Uri.EscapeDataString(name)}");
+        req.Headers.Add("User-Agent", "Advisory-OpRisk");
+        using var resp = await _http.SendAsync(req, ct);
+        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
+        var releases = new List<(string Ver, DateTimeOffset At)>();
+        bool yanked = false; string? license = null;
+        if (doc.RootElement.TryGetProperty("versions", out var vs))
+            foreach (var v in vs.EnumerateArray())
+            {
+                var num = v.TryGetProperty("num", out var n) ? n.GetString() : null;
+                if (num is null) continue;
+                if (v.TryGetProperty("created_at", out var ca) && DateTimeOffset.TryParse(ca.GetString(), out var at))
+                    releases.Add((num, at));
+                license ??= v.TryGetProperty("license", out var l) && l.ValueKind == JsonValueKind.String ? l.GetString() : null;
+                if (v.TryGetProperty("yanked", out var y) && y.ValueKind == JsonValueKind.True && num == (version ?? num)) yanked = true;
+            }
+        var latest = releases.OrderByDescending(r => r.At).Select(r => r.Ver).FirstOrDefault();
+        var resolved = version ?? latest;
+        if (resolved is null) return null;
+        return Compute(resolved, latest, releases, yanked, yanked ? "version yanked on crates.io" : null, license, null);
+    }
+
+    // ---- RubyGems: versions API carries created_at per version. ----
+    private async Task<OperationalRisk?> RubyGems(string name, string? version, CancellationToken ct)
+    {
+        using var doc = JsonDocument.Parse(await _http.GetStringAsync(
+            $"https://rubygems.org/api/v1/versions/{Uri.EscapeDataString(name)}.json", ct));
+        var releases = new List<(string Ver, DateTimeOffset At)>();
+        string? license = null;
+        if (doc.RootElement.ValueKind == JsonValueKind.Array)
+            foreach (var v in doc.RootElement.EnumerateArray())
+            {
+                var num = v.TryGetProperty("number", out var n) ? n.GetString() : null;
+                if (num is null) continue;
+                if (v.TryGetProperty("created_at", out var ca) && DateTimeOffset.TryParse(ca.GetString(), out var at))
+                    releases.Add((num, at));
+                if (license is null && v.TryGetProperty("licenses", out var ls) && ls.ValueKind == JsonValueKind.Array && ls.GetArrayLength() > 0)
+                    license = ls[0].GetString();
+            }
+        var latest = releases.OrderByDescending(r => r.At).Select(r => r.Ver).FirstOrDefault();
+        var resolved = version ?? latest;
+        if (resolved is null) return null;
+        return Compute(resolved, latest, releases, false, null, license, null);
+    }
+
+    // ---- Composer (Packagist p2): each version carries a `time` + license[]. ----
+    private async Task<OperationalRisk?> Composer(string name, string? version, CancellationToken ct)
+    {
+        using var doc = JsonDocument.Parse(await _http.GetStringAsync(
+            $"https://repo.packagist.org/p2/{name.ToLowerInvariant()}.json", ct));
+        var releases = new List<(string Ver, DateTimeOffset At)>();
+        string? license = null;
+        if (doc.RootElement.TryGetProperty("packages", out var pkgs) && pkgs.ValueKind == JsonValueKind.Object)
+            foreach (var p in pkgs.EnumerateObject())
+                if (p.Value.ValueKind == JsonValueKind.Array)
+                    foreach (var v in p.Value.EnumerateArray())
+                    {
+                        var ver = v.TryGetProperty("version", out var vv) ? vv.GetString() : null;
+                        if (ver is null) continue;
+                        if (v.TryGetProperty("time", out var tm) && DateTimeOffset.TryParse(tm.GetString(), out var at))
+                            releases.Add((ver, at));
+                        if (license is null && v.TryGetProperty("license", out var ls) && ls.ValueKind == JsonValueKind.Array && ls.GetArrayLength() > 0)
+                            license = ls[0].GetString();
+                    }
+        var latest = releases.OrderByDescending(r => r.At).Select(r => r.Ver).FirstOrDefault();
+        var resolved = version ?? latest;
+        if (resolved is null) return null;
+        return Compute(resolved, latest, releases, false, null, license, null);
     }
 
     /// <summary>OpenSSF Scorecard overall score for a GitHub repo URL (null when unpublished).</summary>

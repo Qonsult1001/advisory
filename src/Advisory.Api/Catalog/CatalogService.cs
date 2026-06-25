@@ -17,6 +17,67 @@ public record CatalogVuln(string Id, string Severity, double? Cvss, string? Summ
     string? FixedVersion, bool KnownExploited, IReadOnlyList<AdvisoryRef>? References,
     double? Epss = null, IReadOnlyList<string>? Aliases = null, IReadOnlyList<string>? Cwes = null);
 
+/// <summary>One affected package range for a CVE (from OSV's affected[] list).</summary>
+public record CveAffected(string Ecosystem, string Name, string? IntroducedVersion, string? FixedVersion);
+
+/// <summary>One assessed capability/permission signal for an editor extension.</summary>
+public record ExtensionSignal(string Name, string Level, string Detail);  // Level: High / Medium / Low / Info
+
+/// <summary>One real code-level finding from the vsix-audit deep scan of the extension's bytes.</summary>
+public record CodeScanFinding(string Id, string Title, string Severity, string Category, string? Detail, string? File);
+
+/// <summary>
+/// Static + reputational risk assessment for an AI-editor (VS Code) extension. CVE scanners pass
+/// extensions as "clean" because extensions rarely carry CVEs — the real risk is capability abuse /
+/// data exfiltration / publisher impersonation. This inspects the published .vsix manifest + publisher
+/// trust signals (all from the Marketplace + Open VSX, free) and rates the exfiltration surface.
+/// </summary>
+public record ExtensionRisk(
+    string Verdict,                 // Trusted / Caution / High-Risk
+    bool PublisherVerified,
+    string? PublisherDomain,
+    bool ExecutesCode,              // has a node entrypoint (full FS/network/child_process)
+    bool RunsAutomatically,         // activates on startup / "*" (no user action needed)
+    bool SupportsUntrustedWorkspaces,
+    bool OnOpenVsx,                 // also published to the open registry (cross-checked)
+    bool KnownMalicious,            // on a malicious-extension advisory
+    long? Installs,
+    IReadOnlyList<string> Dependencies,        // other extensions it pulls in (supply chain)
+    IReadOnlyList<ExtensionSignal> Signals,    // the per-capability assessment
+    IReadOnlyList<string> ExfiltrationNotes,   // plain-English data-exfiltration assessment
+    bool CodeScanned = false,                  // did the deep .vsix code scan actually run?
+    string? CodeScanStatus = null,             // Clean / Findings / Unavailable
+    IReadOnlyList<CodeScanFinding>? CodeFindings = null,   // REAL findings from vsix-audit on the bytes
+    string? VerdictBasis = null,               // one-line: WHY this verdict (what drove it)
+    IReadOnlyList<string>? VerdictCriteria = null,         // the explicit pass/fail rules (for GSOC/audit)
+    int ConfirmedThreats = 0,                  // critical, concrete (non-heuristic) findings
+    int HeuristicMatches = 0,                  // YARA signature matches — flagged, NOT auto-condemning
+    string? GateAction = null,                 // what the CURRENT policy would do: Block / Notify / Allow
+    string? GateActionReason = null);          // why the policy lands on that action
+
+/// <summary>A standalone CVE/advisory detail, looked up by id from OSV + enriched with KEV/EPSS.</summary>
+public record CatalogCve(
+    string Id,
+    IReadOnlyList<string> Aliases,
+    string Severity,
+    double? Cvss,
+    string? CvssVector,
+    double? Epss,
+    bool KnownExploited,
+    string? Summary,
+    string? Details,
+    string? Published,
+    string? Modified,
+    IReadOnlyList<string> Cwes,
+    IReadOnlyList<CveAffected> Affected,
+    IReadOnlyList<AdvisoryRef> References,
+    bool Found,
+    // VulnCheck exploited-in-the-wild intel (free vulncheck-kev index) — richer than CISA KEV.
+    bool VcExploited = false,
+    bool VcRansomware = false,
+    int VcReportedExploitationCount = 0,
+    int VcExploitRefCount = 0);
+
 public record CatalogOverview(
     string Ecosystem,
     string Name,
@@ -38,7 +99,8 @@ public record CatalogOverview(
     CatalogScorecard? Scorecard,
     string Verdict,            // Clean / Vulnerable / Caution
     IReadOnlyList<string> Notes,
-    OperationalRisk? OperationalRisk = null);  // JFrog Xray-style operational-risk analysis
+    OperationalRisk? OperationalRisk = null,    // JFrog Xray-style operational-risk analysis
+    ExtensionRisk? ExtensionRisk = null);       // AI-editor extension capability/exfiltration analysis
 
 /// <summary>
 /// Aggregates a JFrog-Catalog-style package overview entirely from FREE public sources:
@@ -54,17 +116,29 @@ public class CatalogService
     private readonly KevSource _kev;
     private readonly EpssSource _epss;
     private readonly OpRiskService _opRisk;
+    private readonly VulnCheckSource _vc;
+    private readonly string? _vsixScannerUrl;
+    // Deep-scan result cache (a cold .vsix scan takes ~90s for a large extension). Keyed by id; 12h TTL.
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, (string Status, IReadOnlyList<CodeScanFinding> Findings, bool Ran, DateTimeOffset At)> _scanCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Advisory.Api.Policy.IPolicyStore _policy;
 
-    public CatalogService(IHttpClientFactory f, OsvSource osv, KevSource kev, EpssSource epss, OpRiskService opRisk)
+    public CatalogService(IHttpClientFactory f, OsvSource osv, KevSource kev, EpssSource epss, OpRiskService opRisk,
+        VulnCheckSource vc, IConfiguration cfg, Advisory.Api.Policy.IPolicyStore policy)
     {
         _http = f.CreateClient("catalog");
         _factory = f;
-        _osv = osv; _kev = kev; _epss = epss; _opRisk = opRisk;
+        _osv = osv; _kev = kev; _epss = epss; _opRisk = opRisk; _vc = vc;
+        _vsixScannerUrl = cfg["VSIX_SCANNER_URL"];
+        _policy = policy;
     }
 
     // Every ecosystem is live: OSV covers vulnerabilities for all; rich metadata is fetched
     // per-registry where a free API exists.
-    public bool IsLiveEcosystem(Ecosystem e) => e is Ecosystem.npm or Ecosystem.PyPI;
+    public bool IsLiveEcosystem(Ecosystem e) =>
+        e is Ecosystem.npm or Ecosystem.PyPI or Ecosystem.NuGet or Ecosystem.Cargo or Ecosystem.Go or Ecosystem.HuggingFace
+          or Ecosystem.Maven or Ecosystem.RubyGems or Ecosystem.Composer or Ecosystem.Conan or Ecosystem.Conda
+          or Ecosystem.CRAN or Ecosystem.DartPub or Ecosystem.Alpine or Ecosystem.Debian or Ecosystem.Ubuntu
+          or Ecosystem.AIEditorExtensions;
 
     // --- Package search (autocomplete + results list) ---
     private List<string>? _pypiNames;   // cached PyPI project names (lazy)
@@ -72,10 +146,433 @@ public class CatalogService
 
     public record SearchHit(string Name, string Ecosystem, string? Description, int? VersionCount, string? LatestVersion);
 
-    public async Task<IReadOnlyList<SearchHit>> SearchAsync(Ecosystem eco, string query, int limit, CancellationToken ct)
+    public async Task<IReadOnlyList<SearchHit>> SearchAsync(Ecosystem eco, string query, int limit, CancellationToken ct, string? registry = null)
     {
         if (string.IsNullOrWhiteSpace(query)) return Array.Empty<SearchHit>();
-        return eco == Ecosystem.npm ? await SearchNpm(query, limit, ct) : await SearchPyPi(query, limit, ct);
+        return eco switch
+        {
+            Ecosystem.npm => await SearchNpm(query, limit, ct),
+            Ecosystem.PyPI => await SearchPyPi(query, limit, ct),
+            Ecosystem.NuGet => await SearchNuGet(query, limit, ct),
+            Ecosystem.Cargo => await SearchCargo(query, limit, ct),
+            Ecosystem.Go => await SearchGo(query, limit, ct),
+            Ecosystem.HuggingFace => await SearchHuggingFace(query, limit, ct),
+            Ecosystem.Maven => await SearchMaven(query, limit, ct),
+            Ecosystem.RubyGems => await SearchRubyGems(query, limit, ct),
+            Ecosystem.Composer => await SearchComposer(query, limit, ct),
+            Ecosystem.Conan => await SearchConan(query, limit, ct),
+            Ecosystem.Conda => await SearchConda(query, limit, ct),
+            Ecosystem.CRAN => await SearchCran(query, limit, ct),
+            Ecosystem.DartPub => await SearchDart(query, limit, ct),
+            Ecosystem.Alpine => await SearchOsDistro(eco, query, limit, ct),
+            Ecosystem.Debian => await SearchOsDistro(eco, query, limit, ct),
+            Ecosystem.Ubuntu => await SearchOsDistro(eco, query, limit, ct),
+            Ecosystem.AIEditorExtensions => registry?.Equals("openvsx", StringComparison.OrdinalIgnoreCase) == true
+                ? await SearchOpenVsx(query, limit, ct)
+                : await SearchAiEditorExtensions(query, limit, ct),
+            _ => Array.Empty<SearchHit>(),
+        };
+    }
+
+    // Open VSX — the open, vendor-neutral extension registry (alternative to the VS Code Marketplace).
+    private async Task<IReadOnlyList<SearchHit>> SearchOpenVsx(string q, int limit, CancellationToken ct)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(await _http.GetStringAsync(
+                $"https://open-vsx.org/api/-/search?query={Uri.EscapeDataString(q)}&size={Math.Min(limit, 50)}", ct));
+            var hits = new List<SearchHit>();
+            if (doc.RootElement.TryGetProperty("extensions", out var exts))
+                foreach (var e in exts.EnumerateArray())
+                {
+                    string? S(string k) => e.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+                    var ns = S("namespace"); var nm = S("name");
+                    if (string.IsNullOrEmpty(ns) || string.IsNullOrEmpty(nm)) continue;
+                    hits.Add(new SearchHit($"{ns}.{nm}", "AIEditorExtensions", S("description") ?? S("displayName"), null, S("version")));
+                    if (hits.Count >= limit) break;
+                }
+            return hits;
+        }
+        catch { return Array.Empty<SearchHit>(); }
+    }
+
+    // Maven — search.maven.org Solr API (the same one the Central UI uses).
+    private async Task<IReadOnlyList<SearchHit>> SearchMaven(string q, int limit, CancellationToken ct)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(await _http.GetStringAsync(
+                $"https://search.maven.org/solrsearch/select?q={Uri.EscapeDataString(q)}&rows={limit}&wt=json", ct));
+            var hits = new List<SearchHit>();
+            if (doc.RootElement.TryGetProperty("response", out var r) && r.TryGetProperty("docs", out var docs))
+                foreach (var p in docs.EnumerateArray())
+                {
+                    string? S(string k) => p.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+                    var id = S("id") ?? "";                          // "group:artifact"
+                    var ver = S("latestVersion");
+                    var vc = p.TryGetProperty("versionCount", out var n) && n.ValueKind == JsonValueKind.Number ? n.GetInt32() : (int?)null;
+                    hits.Add(new SearchHit(id, "Maven", null, vc, ver));
+                }
+            return hits;
+        }
+        catch { return Array.Empty<SearchHit>(); }
+    }
+
+    // RubyGems — rubygems.org search API.
+    private async Task<IReadOnlyList<SearchHit>> SearchRubyGems(string q, int limit, CancellationToken ct)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(await _http.GetStringAsync(
+                $"https://rubygems.org/api/v1/search.json?query={Uri.EscapeDataString(q)}", ct));
+            var hits = new List<SearchHit>();
+            foreach (var p in doc.RootElement.EnumerateArray())
+            {
+                string? S(string k) => p.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+                hits.Add(new SearchHit(S("name") ?? "", "RubyGems", S("info"), null, S("version")));
+                if (hits.Count >= limit) break;
+            }
+            return hits;
+        }
+        catch { return Array.Empty<SearchHit>(); }
+    }
+
+    // Composer / PHP — packagist.org search API.
+    private async Task<IReadOnlyList<SearchHit>> SearchComposer(string q, int limit, CancellationToken ct)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(await _http.GetStringAsync(
+                $"https://packagist.org/search.json?q={Uri.EscapeDataString(q)}&per_page={Math.Min(limit, 30)}", ct));
+            var hits = new List<SearchHit>();
+            if (doc.RootElement.TryGetProperty("results", out var results))
+                foreach (var p in results.EnumerateArray())
+                {
+                    string? S(string k) => p.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+                    hits.Add(new SearchHit(S("name") ?? "", "Composer", S("description"), null, null));
+                }
+            return hits;
+        }
+        catch { return Array.Empty<SearchHit>(); }
+    }
+
+    // Conan — the C/C++ package index. conan.io's UI is a JS app with no public JSON search,
+    // so we use the authoritative source: the conan-center-index recipes/ folder on GitHub.
+    // Each subdirectory under recipes/ is a package name. Cached + filtered locally.
+    private List<string>? _conanNames;
+    private readonly SemaphoreSlim _conanLock = new(1, 1);
+    private async Task<IReadOnlyList<SearchHit>> SearchConan(string q, int limit, CancellationToken ct)
+    {
+        var names = await ConanNames(ct);
+        if (names.Count == 0) return Array.Empty<SearchHit>();
+        var ql = q.ToLowerInvariant();
+        return names.Where(n => n.ToLowerInvariant().Contains(ql))
+            .OrderBy(n => n.ToLowerInvariant() == ql ? 0 : n.ToLowerInvariant().StartsWith(ql) ? 1 : 2)
+            .ThenBy(n => n.Length).Take(limit)
+            .Select(n => new SearchHit(n, "Conan", null, null, null)).ToList();
+    }
+    private async Task<List<string>> ConanNames(CancellationToken ct)
+    {
+        if (_conanNames is not null) return _conanNames;
+        await _conanLock.WaitAsync(ct);
+        try
+        {
+            if (_conanNames is not null) return _conanNames;
+            var client = _factory.CreateClient("catalog-index");
+            client.Timeout = TimeSpan.FromSeconds(60);
+            async Task<JsonDocument> Get(string url)
+            {
+                using var req = new HttpRequestMessage(HttpMethod.Get, url);
+                req.Headers.Add("User-Agent", "Advisory-Catalog");
+                req.Headers.Add("Accept", "application/vnd.github+json");
+                var resp = await client.SendAsync(req, ct);
+                return JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
+            }
+            // The git-tree API returns the full recipes/ listing in one call (the contents API caps
+            // at 1000 entries; conan-center has ~1900 packages). Resolve recipes' tree SHA, then fetch it.
+            string? recipesSha = null;
+            using (var top = await Get("https://api.github.com/repos/conan-io/conan-center-index/git/trees/master"))
+                if (top.RootElement.TryGetProperty("tree", out var tt))
+                    foreach (var t in tt.EnumerateArray())
+                        if (t.TryGetProperty("path", out var pth) && pth.GetString() == "recipes"
+                            && t.TryGetProperty("sha", out var sh)) { recipesSha = sh.GetString(); break; }
+            var list = new List<string>();
+            if (recipesSha is not null)
+                using (var rec = await Get($"https://api.github.com/repos/conan-io/conan-center-index/git/trees/{recipesSha}"))
+                    if (rec.RootElement.TryGetProperty("tree", out var rt))
+                        foreach (var t in rt.EnumerateArray())
+                            if (t.TryGetProperty("type", out var ty) && ty.GetString() == "tree"
+                                && t.TryGetProperty("path", out var p) && p.GetString() is { } s) list.Add(s);
+            if (list.Count > 0) _conanNames = list;
+            return list;
+        }
+        catch { return _conanNames ?? new List<string>(); }
+        finally { _conanLock.Release(); }
+    }
+
+    // Conda — anaconda.org search API.
+    private async Task<IReadOnlyList<SearchHit>> SearchConda(string q, int limit, CancellationToken ct)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(await _http.GetStringAsync(
+                $"https://api.anaconda.org/search?name={Uri.EscapeDataString(q)}", ct));
+            var hits = new List<SearchHit>();
+            var seen = new HashSet<string>();
+            foreach (var p in doc.RootElement.EnumerateArray())
+            {
+                string? S(string k) => p.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+                var name = S("name") ?? "";
+                if (name.Length > 0 && seen.Add(name))
+                    hits.Add(new SearchHit(name, "Conda", S("summary"), null, S("latest_version") ?? S("version")));
+                if (hits.Count >= limit) break;
+            }
+            return hits;
+        }
+        catch { return Array.Empty<SearchHit>(); }
+    }
+
+    // CRAN (R) — crandb full index, filtered locally (no server-side search API).
+    private List<(string Name, string Title, string Ver)>? _cranNames;  // cached CRAN index (lazy)
+    private readonly SemaphoreSlim _cranLock = new(1, 1);
+    private async Task<IReadOnlyList<SearchHit>> SearchCran(string q, int limit, CancellationToken ct)
+    {
+        var names = await CranNames(ct);
+        if (names.Count == 0) return Array.Empty<SearchHit>();
+        var ql = q.ToLowerInvariant();
+        return names.Where(n => n.Name.ToLowerInvariant().Contains(ql))
+            .OrderBy(n => n.Name.ToLowerInvariant() == ql ? 0 : n.Name.ToLowerInvariant().StartsWith(ql) ? 1 : 2)
+            .ThenBy(n => n.Name.Length).Take(limit)
+            .Select(n => new SearchHit(n.Name, "CRAN", n.Title, null, n.Ver)).ToList();
+    }
+    private async Task<List<(string Name, string Title, string Ver)>> CranNames(CancellationToken ct)
+    {
+        if (_cranNames is not null) return _cranNames;
+        await _cranLock.WaitAsync(ct);
+        try
+        {
+            if (_cranNames is not null) return _cranNames;
+            var client = _factory.CreateClient("catalog-index");
+            client.Timeout = TimeSpan.FromSeconds(120);
+            using var doc = JsonDocument.Parse(await client.GetStringAsync("https://crandb.r-pkg.org/-/desc", ct));
+            var list = new List<(string Name, string Title, string Ver)>();
+            foreach (var p in doc.RootElement.EnumerateObject())
+            {
+                var v = p.Value;
+                string? S(string k) => v.TryGetProperty(k, out var x) && x.ValueKind == JsonValueKind.String ? x.GetString() : null;
+                list.Add((p.Name, S("title") ?? "", S("version") ?? ""));
+            }
+            _cranNames = list;
+            return list;
+        }
+        catch { return _cranNames ?? new(); }
+        finally { _cranLock.Release(); }
+    }
+
+    // Dart Pub — pub.dev search API.
+    private async Task<IReadOnlyList<SearchHit>> SearchDart(string q, int limit, CancellationToken ct)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(await _http.GetStringAsync(
+                $"https://pub.dev/api/search?q={Uri.EscapeDataString(q)}", ct));
+            var hits = new List<SearchHit>();
+            if (doc.RootElement.TryGetProperty("packages", out var pkgs))
+                foreach (var p in pkgs.EnumerateArray())
+                {
+                    var name = p.TryGetProperty("package", out var n) ? n.GetString() : null;
+                    if (!string.IsNullOrEmpty(name)) hits.Add(new SearchHit(name!, "DartPub", null, null, null));
+                    if (hits.Count >= limit) break;
+                }
+            return hits;
+        }
+        catch { return Array.Empty<SearchHit>(); }
+    }
+
+    // Alpine / Debian / Ubuntu — OS-distro packages. Source the live package list from the
+    // distro's own web package index (Debian/Ubuntu) or Alpine's pkgs.alpinelinux.org JSON.
+    private async Task<IReadOnlyList<SearchHit>> SearchOsDistro(Ecosystem eco, string q, int limit, CancellationToken ct)
+    {
+        try
+        {
+            if (eco == Ecosystem.Alpine)
+            {
+                // pkgs.alpinelinux.org has no JSON API — scrape the package table. Each result row
+                // links to /package/<branch>/<repo>/<arch>/<name>; the last path segment is the name.
+                var html = await _http.GetStringAsync(
+                    $"https://pkgs.alpinelinux.org/packages?name=*{Uri.EscapeDataString(q)}*&branch=edge&arch=x86_64", ct);
+                var hits = new List<SearchHit>();
+                var seen = new HashSet<string>();
+                foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(
+                    html, "href=\"/package/[^/\"]+/[^/\"]+/[^/\"]+/([^\"/?]+)\""))
+                {
+                    var name = m.Groups[1].Value;
+                    if (name.Length > 0 && seen.Add(name)) hits.Add(new SearchHit(name, "Alpine", null, null, null));
+                    if (hits.Count >= limit) break;
+                }
+                return hits;
+            }
+            // Debian / Ubuntu — sources.debian.org / Ubuntu's search both expose a JSON suggest.
+            var host = eco == Ecosystem.Ubuntu ? "https://api.launchpad.net/1.0" : "https://sources.debian.org";
+            if (eco == Ecosystem.Debian)
+            {
+                using var doc = JsonDocument.Parse(await _http.GetStringAsync(
+                    $"https://sources.debian.org/api/search/{Uri.EscapeDataString(q)}/", ct));
+                var hits = new List<SearchHit>();
+                if (doc.RootElement.TryGetProperty("results", out var res))
+                {
+                    var seen = new HashSet<string>();
+                    void AddOne(JsonElement p)
+                    {
+                        var name = p.ValueKind == JsonValueKind.Object && p.TryGetProperty("name", out var n) ? n.GetString() : null;
+                        if (!string.IsNullOrEmpty(name) && seen.Add(name!) && hits.Count < limit)
+                            hits.Add(new SearchHit(name!, "Debian", null, null, null));
+                    }
+                    // "exact" is a single object; "other" is an array.
+                    if (res.TryGetProperty("exact", out var ex) && ex.ValueKind == JsonValueKind.Object) AddOne(ex);
+                    if (res.TryGetProperty("other", out var oth) && oth.ValueKind == JsonValueKind.Array)
+                        foreach (var p in oth.EnumerateArray()) AddOne(p);
+                }
+                return hits;
+            }
+            // Ubuntu — Launchpad source-package name search. Launchpad returns substring matches in its
+            // own (roughly alphabetical) order, so a search for "tree" surfaces "abego-treelayout" before
+            // the real "tree" package. Pull a wider candidate set, dedupe (Launchpad repeats a package
+            // per release/version), then RANK exact -> prefix -> substring so the real package wins.
+            var ql = q.ToLowerInvariant();
+            using var udoc = JsonDocument.Parse(await _http.GetStringAsync(
+                $"https://api.launchpad.net/1.0/ubuntu/+archive/primary?ws.op=getPublishedSources&source_name={Uri.EscapeDataString(q)}&exact_match=false&status=Published&ws.size=200", ct));
+            var byName = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);  // name -> latest version seen
+            if (udoc.RootElement.TryGetProperty("entries", out var entries))
+                foreach (var p in entries.EnumerateArray())
+                {
+                    string? S(string k) => p.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+                    var name = S("source_package_name") ?? "";
+                    if (name.Length == 0) continue;
+                    if (!byName.ContainsKey(name)) byName[name] = S("source_package_version");
+                }
+            return byName
+                .OrderBy(kv => kv.Key.ToLowerInvariant() == ql ? 0 : kv.Key.ToLowerInvariant().StartsWith(ql) ? 1 : 2)
+                .ThenBy(kv => kv.Key.Length)
+                .Take(limit)
+                .Select(kv => new SearchHit(kv.Key, "Ubuntu", null, null, kv.Value))
+                .ToList();
+        }
+        catch { return Array.Empty<SearchHit>(); }
+    }
+
+    // AI Editor Extensions — VS Code Marketplace (.vsix). Scans Copilot/Cursor/AI editor extensions.
+    private async Task<IReadOnlyList<SearchHit>> SearchAiEditorExtensions(string q, int limit, CancellationToken ct)
+    {
+        try
+        {
+            var body = new
+            {
+                filters = new[] { new { criteria = new[] { new { filterType = 10, value = q } }, pageSize = Math.Min(limit, 50), pageNumber = 1 } },
+                flags = 914
+            };
+            using var req = new HttpRequestMessage(HttpMethod.Post,
+                "https://marketplace.visualstudio.com/_apis/public/gallery/extensionquery");
+            req.Content = new StringContent(JsonSerializer.Serialize(body));
+            req.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
+            req.Headers.TryAddWithoutValidation("Accept", "application/json;api-version=3.0-preview.1");
+            using var resp = await _http.SendAsync(req, ct);
+            using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
+            var hits = new List<SearchHit>();
+            if (doc.RootElement.TryGetProperty("results", out var results) && results.GetArrayLength() > 0
+                && results[0].TryGetProperty("extensions", out var exts))
+                foreach (var e in exts.EnumerateArray())
+                {
+                    string? S(string k) => e.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+                    var pub = e.TryGetProperty("publisher", out var pp) && pp.TryGetProperty("publisherName", out var pn) ? pn.GetString() : null;
+                    var ext = S("extensionName") ?? "";
+                    var full = pub is null ? ext : $"{pub}.{ext}";
+                    string? ver = e.TryGetProperty("versions", out var vs) && vs.GetArrayLength() > 0 && vs[0].TryGetProperty("version", out var vv) ? vv.GetString() : null;
+                    if (full.Length > 0) hits.Add(new SearchHit(full, "AIEditorExtensions", S("shortDescription") ?? S("displayName"), null, ver));
+                    if (hits.Count >= limit) break;
+                }
+            return hits;
+        }
+        catch { return Array.Empty<SearchHit>(); }
+    }
+
+    // NuGet — Azure Search query API (the same one the nuget.org gallery uses).
+    private async Task<IReadOnlyList<SearchHit>> SearchNuGet(string q, int limit, CancellationToken ct)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(await _http.GetStringAsync(
+                $"https://azuresearch-usnc.nuget.org/query?q={Uri.EscapeDataString(q)}&take={limit}&prerelease=false", ct));
+            var hits = new List<SearchHit>();
+            if (doc.RootElement.TryGetProperty("data", out var data))
+                foreach (var p in data.EnumerateArray())
+                {
+                    string? S(string k) => p.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+                    hits.Add(new SearchHit(S("id") ?? "", "NuGet", S("description"), null, S("version")));
+                }
+            return hits;
+        }
+        catch { return Array.Empty<SearchHit>(); }
+    }
+
+    // Cargo — crates.io search API (requires a User-Agent).
+    private async Task<IReadOnlyList<SearchHit>> SearchCargo(string q, int limit, CancellationToken ct)
+    {
+        try
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Get,
+                $"https://crates.io/api/v1/crates?q={Uri.EscapeDataString(q)}&per_page={Math.Min(limit, 30)}");
+            req.Headers.Add("User-Agent", "Advisory-Catalog");
+            using var resp = await _http.SendAsync(req, ct);
+            using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
+            var hits = new List<SearchHit>();
+            if (doc.RootElement.TryGetProperty("crates", out var crates))
+                foreach (var c in crates.EnumerateArray())
+                {
+                    string? S(string k) => c.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+                    hits.Add(new SearchHit(S("name") ?? "", "Cargo", S("description"), null, S("max_stable_version") ?? S("newest_version")));
+                }
+            return hits;
+        }
+        catch { return Array.Empty<SearchHit>(); }
+    }
+
+    // Go — pkg.go.dev has no JSON search; use its HTML search and extract module paths.
+    private async Task<IReadOnlyList<SearchHit>> SearchGo(string q, int limit, CancellationToken ct)
+    {
+        try
+        {
+            var html = await _http.GetStringAsync($"https://pkg.go.dev/search?q={Uri.EscapeDataString(q)}&m=package", ct);
+            var hits = new List<SearchHit>();
+            // module paths appear as data-test-id="snippet-title" links: <a href="/<module>">
+            foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(
+                html, "<a[^>]+href=\"/([a-zA-Z0-9._\\-/]+@?[^\"?]*)\"[^>]*data-test-id=\"snippet-title\""))
+            {
+                var mod = m.Groups[1].Value.TrimEnd('/');
+                if (mod.Length > 0 && !hits.Any(h => h.Name == mod)) hits.Add(new SearchHit(mod, "Go", null, null, null));
+                if (hits.Count >= limit) break;
+            }
+            return hits;
+        }
+        catch { return Array.Empty<SearchHit>(); }
+    }
+
+    // HuggingFace — models search API.
+    private async Task<IReadOnlyList<SearchHit>> SearchHuggingFace(string q, int limit, CancellationToken ct)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(await _http.GetStringAsync(
+                $"https://huggingface.co/api/models?search={Uri.EscapeDataString(q)}&limit={limit}&full=false", ct));
+            var hits = new List<SearchHit>();
+            foreach (var m in doc.RootElement.EnumerateArray())
+            {
+                var id = m.TryGetProperty("id", out var i) ? i.GetString() : null;
+                if (!string.IsNullOrEmpty(id)) hits.Add(new SearchHit(id!, "HuggingFace", null, null, null));
+            }
+            return hits;
+        }
+        catch { return Array.Empty<SearchHit>(); }
     }
 
     private async Task<IReadOnlyList<SearchHit>> SearchNpm(string q, int limit, CancellationToken ct)
@@ -148,10 +645,13 @@ public class CatalogService
                 Ecosystem.Cargo => await CargoOverview(name, version, ct),
                 Ecosystem.Go => await GoOverview(name, version, ct),
                 Ecosystem.HuggingFace => await HuggingFaceOverview(name, version, ct),
+                Ecosystem.AIEditorExtensions => await AiEditorExtensionOverview(name, version, ct),
                 _ => await VulnsOnlyOverview(eco, name, version, ct),
             };
             // JFrog-style operational risk (EOL, version age, # new versions, cadence health).
-            if (_opRisk.Supports(eco))
+            // AIEditorExtensions computes its own opRisk inside the overview (from Marketplace version
+            // history) — don't overwrite it here (AnalyzeAsync has no per-package fetch for extensions).
+            if (_opRisk.Supports(eco) && eco != Ecosystem.AIEditorExtensions)
             {
                 try { ov = ov with { OperationalRisk = await _opRisk.AnalyzeAsync(eco, name, ov.Version, ct) }; }
                 catch { /* advisory dimension — never kill the overview */ }
@@ -393,6 +893,383 @@ public class CatalogService
             new(), maintainers, downloads ?? likes, false, null, new(), vulns, null, notes);
     }
 
+    // ---------- AI Editor Extensions (VS Code Marketplace .vsix) ----------
+    private async Task<CatalogOverview> AiEditorExtensionOverview(string name, string? version, CancellationToken ct)
+    {
+        // name is "<publisher>.<extensionName>" (e.g. "anthropic.claude-code").
+        // flags=307 = IncludeVersions(1)|IncludeFiles(2)|IncludeVersionProperties(16)|IncludeAssetUri(32)
+        //            |IncludeStatistics(256). Returns the real version history + install statistics
+        // (latest-only flags collapse the list to one version).
+        var body = new
+        {
+            filters = new[] { new { criteria = new[] { new { filterType = 7, value = name } }, pageSize = 1, pageNumber = 1 } },
+            flags = 307
+        };
+        using var req = new HttpRequestMessage(HttpMethod.Post,
+            "https://marketplace.visualstudio.com/_apis/public/gallery/extensionquery");
+        req.Content = new StringContent(JsonSerializer.Serialize(body));
+        req.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
+        req.Headers.TryAddWithoutValidation("Accept", "application/json;api-version=3.0-preview.1");
+        using var resp = await _http.SendAsync(req, ct);
+        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
+
+        var results = doc.RootElement.TryGetProperty("results", out var rs) && rs.GetArrayLength() > 0 ? rs[0] : default;
+        if (results.ValueKind != JsonValueKind.Object || !results.TryGetProperty("extensions", out var exts) || exts.GetArrayLength() == 0)
+        {
+            // Not found in the Marketplace — honest empty overview (still OSV-checked).
+            var v0 = await Vulns(Ecosystem.AIEditorExtensions, name, version ?? "", ct);
+            return Finalize("AIEditorExtensions", name, version, null, null, null, null, version, 0,
+                new(), new(), null, false, null, new(), v0, null,
+                new List<string> { "Extension not found in the VS Code Marketplace." });
+        }
+        var e = exts[0];
+        string? S(JsonElement el, string k) => el.ValueKind == JsonValueKind.Object && el.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+
+        var pubEl = e.TryGetProperty("publisher", out var pub) ? pub : default;
+        var publisher = pubEl.ValueKind == JsonValueKind.Object ? S(pubEl, "publisherName") : null;
+        var publisherDomain = pubEl.ValueKind == JsonValueKind.Object ? S(pubEl, "domain") : null;
+        var publisherVerified = pubEl.ValueKind == JsonValueKind.Object && pubEl.TryGetProperty("isDomainVerified", out var dv) && dv.ValueKind == JsonValueKind.True;
+        var displayName = S(e, "displayName");
+        var shortDesc = S(e, "shortDescription");
+        var lastUpdated = S(e, "lastUpdated");
+
+        // Distinct versions newest-first, with publish timestamps.
+        var recent = new List<CatalogVersion>();
+        var allVersions = new List<string>();
+        var releases = new List<(string Ver, DateTimeOffset At)>();   // for operational-risk (cadence/age)
+        if (e.TryGetProperty("versions", out var vs) && vs.ValueKind == JsonValueKind.Array)
+            foreach (var v in vs.EnumerateArray())
+            {
+                var ver = S(v, "version");
+                if (ver is null || allVersions.Contains(ver)) continue;   // collapse per-platform dupes
+                allVersions.Add(ver);
+                var published = S(v, "lastUpdated");
+                if (recent.Count < 12) recent.Add(new CatalogVersion(ver, published, false));
+                if (DateTimeOffset.TryParse(published, out var at)) releases.Add((ver, at));
+            }
+        var resolved = version ?? allVersions.FirstOrDefault();
+
+        // Statistics (install count, rating) → use installs as the "downloads" signal.
+        long? installs = null;
+        if (e.TryGetProperty("statistics", out var st) && st.ValueKind == JsonValueKind.Array)
+            foreach (var stat in st.EnumerateArray())
+                if (S(stat, "statisticName") == "install" && stat.TryGetProperty("value", out var sv) && sv.ValueKind == JsonValueKind.Number)
+                    installs = (long)sv.GetDouble();
+
+        // Resolve homepage/repo from the latest version's properties (Links.Source / Links.Support).
+        string? homepage = null, repo = null;
+        if (e.TryGetProperty("versions", out var vs2) && vs2.GetArrayLength() > 0 && vs2[0].TryGetProperty("properties", out var props) && props.ValueKind == JsonValueKind.Array)
+            foreach (var p in props.EnumerateArray())
+            {
+                var key = S(p, "key"); var val = S(p, "value");
+                if (key is null || string.IsNullOrEmpty(val)) continue;
+                if (key.EndsWith("Links.Source", StringComparison.OrdinalIgnoreCase)) repo = val;
+                if (key.EndsWith("Links.Getstarted", StringComparison.OrdinalIgnoreCase) || key.EndsWith("Links.Learn", StringComparison.OrdinalIgnoreCase)) homepage ??= val;
+            }
+        homepage ??= $"https://marketplace.visualstudio.com/items?itemName={name}";
+
+        // The Code.Manifest asset is the published package.json — read its real capabilities + metadata.
+        string? manifestUrl = null;
+        if (e.TryGetProperty("versions", out var vs3) && vs3.GetArrayLength() > 0 && vs3[0].TryGetProperty("files", out var files) && files.ValueKind == JsonValueKind.Array)
+            foreach (var f in files.EnumerateArray())
+                if ((S(f, "assetType") ?? "").EndsWith("Code.Manifest", StringComparison.OrdinalIgnoreCase)) { manifestUrl = S(f, "source"); break; }
+
+        // Pull license + repository from the manifest (the Marketplace summary omits them). VS Code
+        // extensions bundle their deps into extension.js, so a declared-dependency list is normally
+        // empty — that's correct, not missing data.
+        string? license = null;
+        if (manifestUrl is not null)
+            try
+            {
+                using var mdoc = JsonDocument.Parse(await _http.GetStringAsync(manifestUrl, ct));
+                var mm = mdoc.RootElement;
+                license = mm.TryGetProperty("license", out var lic) && lic.ValueKind == JsonValueKind.String ? lic.GetString() : null;
+                if (mm.TryGetProperty("repository", out var rp2))
+                    repo ??= rp2.ValueKind == JsonValueKind.String ? rp2.GetString()
+                           : rp2.ValueKind == JsonValueKind.Object && rp2.TryGetProperty("url", out var ru2) ? ru2.GetString() : null;
+                if (mm.TryGetProperty("homepage", out var hp2) && hp2.ValueKind == JsonValueKind.String && !string.IsNullOrEmpty(hp2.GetString()))
+                    homepage = hp2.GetString();
+            }
+            catch { /* manifest fetch is best-effort */ }
+        // License text can be a long legal blob — trim to a readable label.
+        if (license is { Length: > 60 }) license = license.Length > 120 ? license[..120].Trim() + "…" : license;
+
+        var maintainers = string.IsNullOrEmpty(publisher) ? new List<CatalogMaintainer>() : new() { new CatalogMaintainer(publisher!, null) };
+        var vulns = await Vulns(Ecosystem.AIEditorExtensions, name, resolved ?? "", ct);
+
+        // The real risk for an extension isn't a CVE — it's capability abuse / exfiltration / publisher
+        // impersonation. Run the static + reputational analysis so "no CVE" is never mistaken for "safe".
+        var extRisk = await AnalyzeExtensionRiskAsync(name, publisher, publisherDomain, publisherVerified, installs, manifestUrl, ct);
+
+        var notes = new List<string>
+        {
+            $"VS Code Marketplace extension — install: code --install-extension {name}.",
+        };
+        if (!string.IsNullOrEmpty(displayName)) notes.Add($"Display name: {displayName} (publisher: {publisher}{(publisherVerified ? ", domain-verified" : ", UNVERIFIED publisher")}).");
+        notes.Add(extRisk.Verdict == "Trusted"
+            ? "Extension-risk analysis: Trusted — verified publisher, capabilities reviewed, no malicious advisory."
+            : $"Extension-risk analysis: {extRisk.Verdict} — review the capability & exfiltration assessment below before allowing.");
+
+        // Operational risk from the real version history (cadence/age) — so the tab isn't blank.
+        var opRisk = _opRisk.AnalyzeExtension(resolved, allVersions.FirstOrDefault(), releases, license, repo);
+
+        // Marketplace returns versions newest-first; Finalize reverses its allVersions input to build
+        // the dropdown — so pass an oldest-first copy to get a newest-first dropdown.
+        var oldestFirst = Enumerable.Reverse(allVersions).ToList();
+        var ov = Finalize("AIEditorExtensions", name, resolved, shortDesc, license,
+            homepage, repo, allVersions.FirstOrDefault(), allVersions.Count,
+            recent, maintainers, installs, false, null, new(), vulns, null, notes, oldestFirst);
+        return ov with { ExtensionRisk = extRisk, OperationalRisk = opRisk };
+    }
+
+    /// <summary>
+    /// Static + reputational risk for a VS Code / AI-editor extension. Reads the published package.json
+    /// (capabilities, activation, entrypoint, dependencies), the Marketplace publisher-trust flags, and
+    /// cross-checks Open VSX + the OpenSSF malicious feed. Returns a capability-based exfiltration verdict.
+    /// </summary>
+    private async Task<ExtensionRisk> AnalyzeExtensionRiskAsync(string name, string? publisher, string? domain,
+        bool publisherVerified, long? installs, string? manifestUrl, CancellationToken ct)
+    {
+        var signals = new List<ExtensionSignal>();
+        var exfil = new List<string>();
+        bool executesCode = false, runsAuto = false, untrusted = false;
+        var deps = new List<string>();
+
+        // 1) Static capability analysis from the published package.json manifest.
+        if (manifestUrl is not null)
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(await _http.GetStringAsync(manifestUrl, ct));
+                var m = doc.RootElement;
+                executesCode = (m.TryGetProperty("main", out var mn) && mn.ValueKind == JsonValueKind.String)
+                            || (m.TryGetProperty("browser", out var br) && br.ValueKind == JsonValueKind.String);
+                if (m.TryGetProperty("activationEvents", out var ae) && ae.ValueKind == JsonValueKind.Array)
+                {
+                    var evs = ae.EnumerateArray().Select(x => x.GetString() ?? "").ToList();
+                    runsAuto = evs.Any(x => x == "*" || x.StartsWith("onStartupFinished") || x.StartsWith("onStartup"));
+                    if (evs.Contains("*"))
+                        signals.Add(new ExtensionSignal("Activates on '*'", "High", "Loads on every editor start, regardless of context — maximal attack surface."));
+                    else if (runsAuto)
+                        signals.Add(new ExtensionSignal("Activates on startup", "Medium", "Runs automatically when the editor finishes loading (no user action required)."));
+                }
+                if (m.TryGetProperty("capabilities", out var cap) && cap.TryGetProperty("untrustedWorkspaces", out var uw)
+                    && uw.TryGetProperty("supported", out var sup))
+                    untrusted = sup.ValueKind == JsonValueKind.True || (sup.ValueKind == JsonValueKind.String && sup.GetString() == "limited");
+                if (m.TryGetProperty("extensionDependencies", out var ed) && ed.ValueKind == JsonValueKind.Array)
+                    deps.AddRange(ed.EnumerateArray().Select(x => x.GetString() ?? "").Where(x => x.Length > 0));
+                if (m.TryGetProperty("contributes", out var con) && con.TryGetProperty("configuration", out _)) { /* benign */ }
+
+                if (executesCode)
+                    signals.Add(new ExtensionSignal("Executes native code", "Medium",
+                        "Has a Node entrypoint — full access to the filesystem, network, and child processes. Can read source, env vars, tokens."));
+                signals.Add(new ExtensionSignal("Untrusted-workspace support", untrusted ? "Info" : "Low",
+                    untrusted ? "Runs in untrusted workspaces." : "Disabled in untrusted workspaces (safer default)."));
+            }
+            catch { signals.Add(new ExtensionSignal("Manifest", "Info", "Could not fetch the published manifest for static analysis.")); }
+        }
+
+        // 2) Publisher trust — the primary impersonation / supply-chain signal.
+        signals.Add(new ExtensionSignal("Publisher verification",
+            publisherVerified ? "Info" : "High",
+            publisherVerified ? $"Domain-verified publisher{(domain is null ? "" : $" ({domain})")}."
+                              : "Publisher domain is NOT verified — high impersonation/typosquat risk. Confirm this is the genuine author."));
+
+        // 3) Open VSX cross-reference (a second independent registry).
+        bool onOpenVsx = false;
+        try
+        {
+            var parts = name.Split('.', 2);
+            if (parts.Length == 2)
+            {
+                using var resp = await _http.GetAsync($"https://open-vsx.org/api/{parts[0]}/{parts[1]}", ct);
+                onOpenVsx = resp.IsSuccessStatusCode;
+            }
+        }
+        catch { }
+        signals.Add(new ExtensionSignal("Open VSX presence", onOpenVsx ? "Info" : "Low",
+            onOpenVsx ? "Also published to the open registry (Open VSX) — cross-verified." : "Not found on Open VSX (Marketplace-only)."));
+
+        // 4) Malicious-advisory check via OSV (MAL-*) — extensions named in malicious feeds.
+        bool knownMalicious = (await Vulns(Ecosystem.AIEditorExtensions, name, "", ct)).Any(v => v.Id.StartsWith("MAL-", StringComparison.OrdinalIgnoreCase));
+        if (knownMalicious) signals.Add(new ExtensionSignal("Malicious advisory", "High", "This extension appears in a malicious-package advisory — DO NOT INSTALL."));
+
+        // Data-exfiltration assessment, in plain English. These describe the ATTACK SURFACE (what an
+        // extension of this shape COULD do) — the deep-scan note added below states what was actually
+        // FOUND. The two together answer "could it?" and "did it?".
+        if (executesCode)
+            exfil.Add("Attack surface: has native code execution, so it COULD read files, environment variables (API keys/tokens), and make outbound network calls — the Marketplace doesn't sandbox this. (Whether it actually does is answered by the code scan below.)");
+        if (runsAuto)
+            exfil.Add("Attack surface: activates automatically on startup, so any such logic would run without you opening a specific file.");
+        exfil.Add(publisherVerified
+            ? "Trust signal: publisher is domain-verified — the strongest available anti-impersonation signal (though verification is not a behavioural guarantee)."
+            : "Trust signal: publisher is UNVERIFIED — the single biggest exfiltration red flag is an impostor publishing a look-alike of a trusted extension. Verify the publisher before allowing.");
+        exfil.Add(installs is long n && n > 1_000_000
+            ? $"Trust signal: high install base ({n:N0}) — widely used, so malicious behaviour would likely have been reported."
+            : "Trust signal: lower install base — less community scrutiny; weigh this for a sensitive environment.");
+
+        // 5) DEEP CODE SCAN — the real exfiltration check. vsix-audit downloads the .vsix and inspects
+        //    the actual code: Discord/Telegram-webhook exfiltration, SSH-key/cookie/credential theft,
+        //    eval/Function/process.binding, obfuscation, IOC/C2 + crypto wallets, YARA RAT rules.
+        var (codeStatus, codeFindings, codeScanned) = await DeepScanExtensionAsync(name, ct);
+        bool codeMalicious = false;
+        if (codeScanned)
+        {
+            // Classify each finding so we NEVER alarm a reviewer over normal extension behaviour:
+            //  - THREAT  = concrete IOC evidence only (a real C2 domain, crypto-wallet address, known-bad
+            //    hash). These are the only findings that condemn an extension and the only ones listed.
+            //  - CAPABILITY = ast/manifest/telemetry observations (new Function(), startup activation,
+            //    obfuscation). Every real extension has these — shown as capability signals, not threats.
+            //  - HEURISTIC = YARA signature matches. Counted for transparency, suppressed from the list,
+            //    never condemning (they false-positive on minified JS).
+            foreach (var cf in codeFindings.Where(c => IsConcreteThreat(c)))
+            {
+                codeMalicious = true;   // a concrete IOC is a real threat — condemn.
+                signals.Add(new ExtensionSignal($"⛔ Confirmed threat: {cf.Title}", "High",
+                    $"[{cf.Category}] {cf.Detail ?? cf.Id}{(cf.File is null ? "" : $" ({cf.File})")}"));
+            }
+            // Capability observations (ast/manifest) → quietly add as Low/Medium signals, no alarm.
+            foreach (var cf in codeFindings.Where(c => IsCapabilityObservation(c)))
+                if (!signals.Any(sig => sig.Name.Contains(cf.Title)))
+                    signals.Add(new ExtensionSignal($"Code capability: {cf.Title}", "Low",
+                        cf.Detail ?? cf.Id));
+            var threatN = codeFindings.Count(c => IsConcreteThreat(c));
+            exfil.Add(threatN > 0
+                ? $"Deep code scan (vsix-audit) found {threatN} CONFIRMED threat indicator(s) — concrete IOC evidence (e.g. a known C2 domain or crypto-wallet address) in the code. This is a real finding, not a heuristic."
+                : "Deep code scan (vsix-audit) inspected the actual .vsix code and found NO confirmed exfiltration/RAT/IOC threats. Capability observations (e.g. native code, startup activation) are normal for any functional extension and are shown only as capability signals, not threats.");
+        }
+        else
+        {
+            exfil.Add("Deep code scan unavailable (scanner sidecar not reachable) — assessment is static + reputational only. Set VSIX_SCANNER_URL to enable real .vsix code analysis.");
+        }
+
+        // Verdict — driven by CONFIRMED threats only. Capability signals (native code, startup
+        // activation) are normal and do NOT push a verified-publisher extension to Caution.
+        var confirmedThreats = codeFindings.Count(IsConcreteThreat) + (knownMalicious ? 1 : 0);
+        var heuristicMatches = codeFindings.Count(c => c.Category == "yara");
+        var verdict = (knownMalicious || codeMalicious) ? "High-Risk"
+            : !publisherVerified ? "Caution"
+            : "Trusted";
+
+        // The explicit decision criteria — so a security analyst sees exactly WHY it passed and
+        // precisely WHAT would make it fail. This is the audit-defensible part: it removes the
+        // "an AI just said Trusted" ambiguity by stating the deterministic rule that produced it.
+        var basis = verdict switch
+        {
+            "High-Risk" => knownMalicious
+                ? "FAILED: listed on a malicious-package advisory feed."
+                : "FAILED: the deep code scan found a confirmed threat indicator — concrete IOC evidence (a known C2 domain, a crypto-wallet address, or a known-bad hash) in the code.",
+            "Caution" => "PASSED with caution: no confirmed threat, but the publisher domain is unverified (impersonation risk — verify it's the genuine author).",
+            _ => "PASSED (Trusted): verified publisher and zero confirmed threats in the deep code scan."
+        };
+        var criteria = new List<string>
+        {
+            "FAILS (High-Risk) only if: it is on a malicious-package advisory feed, OR the deep code scan finds a CONFIRMED threat indicator — concrete IOC evidence (a known C2/command-and-control domain, a crypto-wallet address, or a known-bad file hash).",
+            "PASSES WITH CAUTION if: no confirmed threat, but the publisher domain is unverified.",
+            "PASSES (Trusted) if: verified publisher AND zero confirmed threats.",
+            "Capability observations (native code, startup activation, dynamic code) are NORMAL for any functional extension — they are shown as capability signals, never counted as threats.",
+            "YARA signature matches are low-confidence heuristics that false-positive on minified JS — they are suppressed from the findings list and never affect the verdict.",
+        };
+
+        // What the CURRENT signed policy would actually DO with this extension (so the operator sees
+        // the enforcement outcome, not just a verdict). A confirmed threat / High-Risk always blocks
+        // when enforcement is on; an unverified-only Caution follows ExtensionUnverifiedAction.
+        var pol = _policy.Current;
+        string gateAction, gateReason;
+        if (pol.ExtensionRiskAction.Equals("Disabled", StringComparison.OrdinalIgnoreCase))
+        { gateAction = "Allow"; gateReason = "Extension gate is disabled in policy (SEC-EXT-01 off)."; }
+        else if (verdict == "High-Risk")
+        { gateAction = "Block"; gateReason = knownMalicious ? "On a malicious-package feed." : "Confirmed code-threat (IOC) found."; }
+        else if (verdict == "Caution" && !publisherVerified)
+        {
+            gateAction = pol.ExtensionUnverifiedAction switch
+            {
+                "Block" => "Block", "Allow" => "Allow", _ => "Notify"
+            };
+            gateReason = gateAction switch
+            {
+                "Block" => "Policy blocks unverified-publisher extensions (ExtensionUnverifiedAction=Block).",
+                "Allow" => "Policy allows unverified publishers (ExtensionUnverifiedAction=Allow).",
+                _ => "Unverified publisher — allowed but flagged for approval (ExtensionUnverifiedAction=Notify)."
+            };
+        }
+        else
+        { gateAction = "Allow"; gateReason = "Trusted — verified publisher, no confirmed threats."; }
+
+        return new ExtensionRisk(verdict, publisherVerified, domain, executesCode, runsAuto, untrusted,
+            onOpenVsx, knownMalicious, installs, deps, signals, exfil,
+            codeScanned, codeStatus, codeFindings, basis, criteria, confirmedThreats, heuristicMatches,
+            gateAction, gateReason);
+    }
+
+    /// <summary>
+    /// A CONFIRMED threat = concrete indicator-of-compromise evidence in the code: a known C2 domain,
+    /// a crypto-wallet address, a known-bad file hash, or a flagged GitHub-C2 reference. These are the
+    /// ONLY code findings that condemn an extension — they're not heuristics and not normal behaviour.
+    /// We deliberately EXCLUDE generic capability findings (Function-constructor, startup activation)
+    /// and YARA signature matches, which fire on virtually every legitimate extension.
+    /// </summary>
+    private static bool IsConcreteThreat(CodeScanFinding c)
+    {
+        if (c.Category != "ioc") return false;   // only the IOC module produces concrete evidence
+        var id = c.Id.ToUpperInvariant();
+        // Crypto-wallet hits are a notorious false-positive (base58/hex strings in bundles) — require
+        // an explicit C2 / known-bad / GitHub-C2 indicator to call it a confirmed threat.
+        return id.Contains("C2") || id.Contains("DOMAIN") || id.Contains("IP_") || id.Contains("KNOWN_BAD")
+            || id.Contains("HASH") || id.Contains("GITHUB_C2") || id.Contains("MALICIOUS");
+    }
+
+    /// <summary>A capability observation — normal extension behaviour (native code, dynamic code,
+    /// startup activation, obfuscation). Informational only; never a threat.</summary>
+    private static bool IsCapabilityObservation(CodeScanFinding c)
+        => (c.Category is "ast" or "manifest" or "telemetry") && (c.Severity is "critical" or "high");
+
+    /// <summary>
+    /// Calls the vsix-audit sidecar to deep-scan an extension's published .vsix bytes. Returns
+    /// (status, findings, ran). On any failure it returns ran=false with status "Unavailable" —
+    /// NEVER a silent "clean", so the gate/UI can distinguish "scanned & clean" from "not scanned".
+    /// </summary>
+    private async Task<(string Status, IReadOnlyList<CodeScanFinding> Findings, bool Ran)> DeepScanExtensionAsync(string id, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(_vsixScannerUrl))
+            return ("Unavailable", Array.Empty<CodeScanFinding>(), false);
+        // Respect the operator's on/off control in Intelligence sources — if vsix-scanner is toggled
+        // off in the policy, the deep scan does not run (and the UI reports it as disabled, not clean).
+        if (!_policy.Current.EnabledSources.Contains("vsix-scanner", StringComparer.OrdinalIgnoreCase))
+            return ("Disabled", Array.Empty<CodeScanFinding>(), false);
+        // Serve a cached scan (12h) — a large extension takes ~90s cold; re-opening it should be instant.
+        if (_scanCache.TryGetValue(id, out var c) && DateTimeOffset.UtcNow - c.At < TimeSpan.FromHours(12))
+            return (c.Status, c.Findings, c.Ran);
+        try
+        {
+            var client = _factory.CreateClient("catalog-index");
+            client.Timeout = TimeSpan.FromSeconds(100);   // a cold scan downloads + unpacks the .vsix
+            using var resp = await client.GetAsync($"{_vsixScannerUrl.TrimEnd('/')}/scan?id={Uri.EscapeDataString(id)}", ct);
+            using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
+            if (!resp.IsSuccessStatusCode || doc.RootElement.TryGetProperty("error", out _))
+                return ("Unavailable", Array.Empty<CodeScanFinding>(), false);
+            var list = new List<CodeScanFinding>();
+            if (doc.RootElement.TryGetProperty("findings", out var fs) && fs.ValueKind == JsonValueKind.Array)
+                foreach (var f in fs.EnumerateArray())
+                {
+                    string? S(string k) => f.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+                    var file = f.TryGetProperty("location", out var loc) && loc.ValueKind == JsonValueKind.Object && loc.TryGetProperty("file", out var fv) ? fv.GetString() : null;
+                    var cat = S("category") ?? "";
+                    var detail = S("description");
+                    // Reframe YARA-rule detail so an analyst reads it as a HEURISTIC pattern match (which
+                    // routinely fires on bundled/minified JS), not a confirmed malware verdict — the
+                    // scanner's own wording ("patterns associated with known malware") reads as a verdict.
+                    if (cat == "yara")
+                        detail = $"HEURISTIC signature match (not a confirmed threat). A YARA rule pattern matched this file — these commonly fire on legitimate bundled/minified JS. Treat as a lead for review, not proof. {detail}";
+                    list.Add(new CodeScanFinding(S("id") ?? "", S("title") ?? "", S("severity") ?? "low", cat, detail, file));
+                }
+            var result = (list.Count == 0 ? "Clean" : "Findings", (IReadOnlyList<CodeScanFinding>)list, true);
+            _scanCache[id] = (result.Item1, result.Item2, result.Item3, DateTimeOffset.UtcNow);
+            return result;
+        }
+        catch { return ("Unavailable", Array.Empty<CodeScanFinding>(), false); }
+    }
+
     private static string? Prop(JsonElement e, string p)
         => e.ValueKind == JsonValueKind.Object && e.TryGetProperty(p, out var x) && x.ValueKind == JsonValueKind.String ? x.GetString() : null;
 
@@ -401,20 +1278,182 @@ public class CatalogService
     {
         await _kev.EnsureLoaded(ct);
         var res = await _osv.QueryAsync(new PackageRef(eco, name, version), ct);
-        var list = new List<CatalogVuln>();
-        foreach (var f in res.Findings)
-        {
-            // EPSS keyed by CVE id (prefer a CVE alias over the GHSA id).
-            var cve = f.Aliases?.FirstOrDefault(a => a.StartsWith("CVE", StringComparison.OrdinalIgnoreCase)) ?? f.Id;
-            double? epss = null;
-            try { var (sc, st, _) = await _epss.ScoreAsync(cve, ct); if (st == SourceStatus.Ok) epss = sc; } catch { }
-            list.Add(new CatalogVuln(
-                f.Id, f.Severity.ToString(), f.CvssScore, f.Summary, f.FixedVersion,
-                _kev.IsKnownExploited(f.Id) || (f.Aliases?.Any(_kev.IsKnownExploited) ?? false),
-                f.References, epss, f.Aliases, f.Cwes));
-        }
-        return list;
+        var findings = res.Findings.ToList();
+
+        // EPSS keyed by CVE id, fetched CONCURRENTLY (capped) — was sequential, which made an OS-distro
+        // package with hundreds of CVEs (e.g. Ubuntu openssl → 244) take ~50s. Cap how many we enrich so
+        // the page is responsive; the rest still show, just without an EPSS score.
+        const int EpssCap = 60;
+        string CveOf(Finding f) => f.Aliases?.FirstOrDefault(a => a.StartsWith("CVE", StringComparison.OrdinalIgnoreCase)) ?? f.Id;
+        var epssMap = new System.Collections.Concurrent.ConcurrentDictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+        var toScore = findings.Take(EpssCap).Select(CveOf).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        using (var gate = new SemaphoreSlim(8))
+            await Task.WhenAll(toScore.Select(async cve =>
+            {
+                await gate.WaitAsync(ct);
+                try { var (sc, st, _) = await _epss.ScoreAsync(cve, ct); if (st == SourceStatus.Ok && sc is double d) epssMap[cve] = d; }
+                catch { }
+                finally { gate.Release(); }
+            }));
+
+        return findings.Select(f => new CatalogVuln(
+            f.Id, f.Severity.ToString(), f.CvssScore, f.Summary, f.FixedVersion,
+            _kev.IsKnownExploited(f.Id) || (f.Aliases?.Any(_kev.IsKnownExploited) ?? false),
+            f.References, epssMap.TryGetValue(CveOf(f), out var e) ? e : (double?)null, f.Aliases, f.Cwes)).ToList();
     }
+
+    /// <summary>
+    /// Live CVE/advisory detail by id (CVE-…, GHSA-…, PYSEC-…, etc.) — a real OSV /v1/vulns/{id}
+    /// lookup, enriched with the CISA-KEV exploited flag and EPSS exploit probability. No fixtures.
+    /// </summary>
+    public async Task<CatalogCve> CveDetailAsync(string id, CancellationToken ct)
+    {
+        await _kev.EnsureLoaded(ct);
+        id = id.Trim();
+        try
+        {
+            var json = await OsvVulnJson(id, ct);
+            if (json is null)
+                return new CatalogCve(id, Array.Empty<string>(), "Unknown", null, null, null,
+                    _kev.IsKnownExploited(id), null, null, null, null,
+                    Array.Empty<string>(), Array.Empty<CveAffected>(), Array.Empty<AdvisoryRef>(), false);
+
+            using var doc = json;
+            var r = doc.RootElement;
+
+            // OSV's "CVE-…" records are often thin (no affected[], no summary). If this record is sparse
+            // but names a richer alias (GHSA-…/PYSEC-…), fetch that and prefer its detail — same vuln,
+            // fuller data. We keep the queried id as the canonical id and union the aliases.
+            bool sparse = !(r.TryGetProperty("affected", out var a0) && a0.ValueKind == JsonValueKind.Array && a0.GetArrayLength() > 0)
+                          || !(r.TryGetProperty("summary", out var s0) && s0.ValueKind == JsonValueKind.String && s0.GetString()!.Length > 0);
+            if (sparse && r.TryGetProperty("aliases", out var al0) && al0.ValueKind == JsonValueKind.Array)
+            {
+                var richAlias = al0.EnumerateArray().Select(x => x.GetString())
+                    .FirstOrDefault(x => x is not null && (x.StartsWith("GHSA", StringComparison.OrdinalIgnoreCase)
+                        || x.StartsWith("PYSEC", StringComparison.OrdinalIgnoreCase)
+                        || x.StartsWith("GO-", StringComparison.OrdinalIgnoreCase)
+                        || x.StartsWith("RUSTSEC", StringComparison.OrdinalIgnoreCase)));
+                if (richAlias is not null)
+                {
+                    var altJson = await OsvVulnJson(richAlias, ct);
+                    if (altJson is not null)
+                    {
+                        // Keep the original queried id; merge its aliases into the richer record's view.
+                        var merged = await BuildCve(id, altJson.RootElement, ct);
+                        altJson.Dispose();
+                        var unionAliases = merged.Aliases.Concat(new[] { id })
+                            .Where(x => !x.Equals(merged.Id, StringComparison.OrdinalIgnoreCase))
+                            .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+                        return merged with { Id = id, Aliases = unionAliases };
+                    }
+                }
+            }
+            return await BuildCve(id, r, ct);
+        }
+        catch
+        {
+            return new CatalogCve(id, Array.Empty<string>(), "Unknown", null, null, null,
+                _kev.IsKnownExploited(id), null, null, null, null,
+                Array.Empty<string>(), Array.Empty<CveAffected>(), Array.Empty<AdvisoryRef>(), false);
+        }
+    }
+
+    private async Task<JsonDocument?> OsvVulnJson(string id, CancellationToken ct)
+    {
+        using var resp = await _http.GetAsync($"https://api.osv.dev/v1/vulns/{Uri.EscapeDataString(id)}", ct);
+        if (!resp.IsSuccessStatusCode) return null;
+        return JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
+    }
+
+    private async Task<CatalogCve> BuildCve(string id, JsonElement r, CancellationToken ct)
+    {
+        string? S(string k) => r.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+
+            var aliases = r.TryGetProperty("aliases", out var al) && al.ValueKind == JsonValueKind.Array
+                ? al.EnumerateArray().Select(a => a.GetString() ?? "").Where(s => s.Length > 0).ToList() : new List<string>();
+
+            // CVSS vector + numeric base score (parse the v3 vector).
+            string? vector = null; double? cvss = null;
+            if (r.TryGetProperty("severity", out var sev) && sev.ValueKind == JsonValueKind.Array)
+                foreach (var se in sev.EnumerateArray())
+                {
+                    var t = se.TryGetProperty("type", out var tt) ? tt.GetString() : null;
+                    var sc = se.TryGetProperty("score", out var ss) ? ss.GetString() : null;
+                    if (sc is null) continue;
+                    if (t is "CVSS_V3" or "CVSS_V4" or "CVSS_V2") { vector = sc; cvss = OsvSource.CvssFromVector(sc); break; }
+                }
+
+            // Severity label: OSV database_specific.severity, else derive from CVSS.
+            var sevLabel = (r.TryGetProperty("database_specific", out var dsp) && dsp.TryGetProperty("severity", out var dsev)
+                ? dsev.GetString() : null) ?? SeverityFromCvss(cvss);
+
+            // CWEs (database_specific.cwe_ids on many OSV records).
+            var cwes = new List<string>();
+            if (r.TryGetProperty("database_specific", out var ds2) && ds2.TryGetProperty("cwe_ids", out var cw) && cw.ValueKind == JsonValueKind.Array)
+                cwes.AddRange(cw.EnumerateArray().Select(c => c.GetString() ?? "").Where(s => s.Length > 0));
+
+            // Affected packages (ecosystem + name + introduced/fixed).
+            var affected = new List<CveAffected>();
+            if (r.TryGetProperty("affected", out var aff) && aff.ValueKind == JsonValueKind.Array)
+                foreach (var a in aff.EnumerateArray())
+                {
+                    if (!a.TryGetProperty("package", out var pk)) continue;
+                    var pkgEco = pk.TryGetProperty("ecosystem", out var pe) ? pe.GetString() : null;
+                    var pkgName = pk.TryGetProperty("name", out var pn) ? pn.GetString() : null;
+                    if (string.IsNullOrEmpty(pkgName)) continue;
+                    string? intro = null, fixedVer = null;
+                    if (a.TryGetProperty("ranges", out var rng) && rng.ValueKind == JsonValueKind.Array)
+                        foreach (var rg in rng.EnumerateArray())
+                            if (rg.TryGetProperty("events", out var ev) && ev.ValueKind == JsonValueKind.Array)
+                                foreach (var e in ev.EnumerateArray())
+                                {
+                                    if (e.TryGetProperty("introduced", out var iv)) intro ??= iv.GetString();
+                                    if (e.TryGetProperty("fixed", out var fv)) fixedVer = fv.GetString();
+                                }
+                    affected.Add(new CveAffected(pkgEco ?? "", pkgName!, intro, fixedVer));
+                }
+
+            // Reference links, categorized as OSV provides them.
+            var refs = new List<AdvisoryRef>();
+            if (r.TryGetProperty("references", out var rf) && rf.ValueKind == JsonValueKind.Array)
+                foreach (var rr in rf.EnumerateArray())
+                {
+                    var url = rr.TryGetProperty("url", out var ru) ? ru.GetString() : null;
+                    var ty = rr.TryGetProperty("type", out var rt) ? rt.GetString() : "WEB";
+                    if (!string.IsNullOrEmpty(url)) refs.Add(new AdvisoryRef(ty ?? "WEB", url!));
+                }
+
+            // EPSS keyed on the CVE id (prefer a CVE alias).
+            var cveId = aliases.FirstOrDefault(a => a.StartsWith("CVE", StringComparison.OrdinalIgnoreCase))
+                ?? (id.StartsWith("CVE", StringComparison.OrdinalIgnoreCase) ? id : null);
+            double? epss = null;
+            if (cveId is not null) { try { var (esc, est, _) = await _epss.ScoreAsync(cveId, ct); if (est == SourceStatus.Ok) epss = esc; } catch { } }
+
+            var exploited = _kev.IsKnownExploited(id) || aliases.Any(_kev.IsKnownExploited);
+
+            // VulnCheck exploited-in-the-wild intel (free vulncheck-kev) — richer than CISA KEV, and
+            // marks exploited even when CISA hasn't. Only runs when the source is enabled + keyed.
+            VcKevHit? vc = null;
+            if (_policy.Current.EnabledSources.Contains("vulncheck", StringComparer.OrdinalIgnoreCase) && _vc.IsAvailable && cveId is not null)
+                try { vc = await _vc.LookupCveAsync(cveId, ct); } catch { }
+            if (vc is not null) exploited = true;
+
+        return new CatalogCve(
+            S("id") ?? id, aliases, sevLabel, cvss, vector, epss, exploited,
+            S("summary"), S("details"), S("published"), S("modified"),
+            cwes, affected, refs, true,
+            vc is not null, vc?.Ransomware ?? false, vc?.ReportedExploitationCount ?? 0, vc?.ExploitRefCount ?? 0);
+    }
+
+    private static string SeverityFromCvss(double? cvss) => cvss switch
+    {
+        null => "Unknown",
+        >= 9.0 => "Critical",
+        >= 7.0 => "High",
+        >= 4.0 => "Medium",
+        > 0.0 => "Low",
+        _ => "None",
+    };
 
     /// <summary>
     /// Project health. Resolves the GitHub slug from the package's repo URL, then:

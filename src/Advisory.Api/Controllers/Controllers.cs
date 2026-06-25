@@ -84,11 +84,11 @@ public class CatalogController : ControllerBase
     /// <summary>Search packages by name. ?ecosystem=npm&amp;q=express[&amp;limit=30]</summary>
     [HttpGet("search")]
     public async Task<ActionResult> Search([FromQuery] string ecosystem, [FromQuery] string q,
-        [FromQuery] int limit = 30, CancellationToken ct = default)
+        [FromQuery] int limit = 30, [FromQuery] string? registry = null, CancellationToken ct = default)
     {
         if (!Enum.TryParse<Ecosystem>(ecosystem, true, out var eco)) eco = Ecosystem.npm;
-        var hits = await _catalog.SearchAsync(eco, q?.Trim() ?? "", Math.Clamp(limit, 1, 50), ct);
-        return Ok(new { query = q, ecosystem = eco.ToString(), count = hits.Count, results = hits });
+        var hits = await _catalog.SearchAsync(eco, q?.Trim() ?? "", Math.Clamp(limit, 1, 50), ct, registry);
+        return Ok(new { query = q, ecosystem = eco.ToString(), registry, count = hits.Count, results = hits });
     }
 
     /// <summary>Full package overview. ?ecosystem=npm&amp;name=express[&amp;version=4.18.2]</summary>
@@ -99,6 +99,15 @@ public class CatalogController : ControllerBase
         if (string.IsNullOrWhiteSpace(name)) return BadRequest(new { error = "name is required" });
         if (!Enum.TryParse<Ecosystem>(ecosystem, true, out var eco)) eco = Ecosystem.npm;
         return Ok(await _catalog.OverviewAsync(eco, name.Trim(), string.IsNullOrWhiteSpace(version) ? null : version.Trim(), ct));
+    }
+
+    /// <summary>Live CVE/advisory detail by id (CVE-…, GHSA-…, PYSEC-…). Real OSV lookup +
+    /// CISA-KEV exploited flag + EPSS probability. ?id=CVE-2021-44228</summary>
+    [HttpGet("cve")]
+    public async Task<ActionResult> Cve([FromQuery] string id, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(id)) return BadRequest(new { error = "id is required" });
+        return Ok(await _catalog.CveDetailAsync(id.Trim(), ct));
     }
 }
 
@@ -337,15 +346,27 @@ public class SourcesController : ControllerBase
     // Built-in source catalogue (the known integration types) — the admin "registry".
     // DefaultEndpoint = the hard-coded upstream URL each source uses out of the box; an admin can
     // override it (e.g. point at an on-prem mirror) via SourceConfig.Endpoint in the signed policy.
-    private static readonly (string Key, string Label, string Scope, string Tier, bool NeedsCredential, string? CredEnv, string? DefaultEndpoint)[] Catalogue =
+    // Egress = the host data leaves to. DataSent = exactly what we transmit (for the data-flow view —
+    // proves we send coordinates, never your source/artifacts, to public feeds).
+    private static readonly (string Key, string Label, string Scope, string Tier, bool NeedsCredential, string? CredEnv, string? DefaultEndpoint, string Egress, string DataSent)[] Catalogue =
     {
-        ("osv", "OSV.dev", "Multi-ecosystem CVE", "Included", false, null, "https://api.osv.dev/v1/query"),
-        ("malware", "OpenSSF Malicious Packages", "Typosquat / malicious-package", "Included", false, null, "https://github.com/ossf/malicious-packages"),
-        ("kev", "CISA KEV", "Known-exploited catalog", "Included", false, null, "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"),
-        ("epss", "EPSS (FIRST.org)", "Exploit probability", "Included", false, null, "https://api.first.org/data/v1/epss"),
-        ("artifactory", "JFrog Artifactory scan API", "Cross-referenced CVE scan", "Included", true, "ARTIFACTORY_TOKEN", null),
-        ("vulncheck", "VulnCheck", "Pre-NVD / zero-day intel", "Licensed", true, "VULNCHECK_API_KEY", "https://api.vulncheck.com/v3"),
-        ("socket", "Socket (behavioural)", "Install-script / runtime behaviour", "Licensed", true, "SOCKET_API_KEY", "https://api.socket.dev/v0"),
+        ("osv", "OSV.dev", "Multi-ecosystem CVE", "Included", false, null, "https://api.osv.dev/v1/query",
+            "api.osv.dev (Google/OpenSSF)", "Package name + version + ecosystem only. No source code, no artifact bytes."),
+        ("malware", "OpenSSF Malicious Packages", "Typosquat / malicious-package", "Included", false, null, "https://api.osv.dev/v1/query",
+            "api.osv.dev (OpenSSF feed via OSV)", "Package name + ecosystem only (queried as MAL-* advisories). No code."),
+        ("kev", "CISA KEV", "Known-exploited catalog", "Included", false, null, "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json",
+            "cisa.gov", "Nothing is sent — the full KEV catalogue is DOWNLOADED and matched locally."),
+        ("epss", "EPSS (FIRST.org)", "Exploit probability", "Included", false, null, "https://api.first.org/data/v1/epss",
+            "api.first.org", "A CVE id only (to fetch its exploit-probability score). No package data."),
+        ("artifactory", "JFrog Artifactory scan API", "Cross-referenced CVE scan", "Included", true, "ARTIFACTORY_TOKEN", null,
+            "your configured Artifactory host", "Package coordinates to your own Artifactory (self-hosted — no third party)."),
+        ("vulncheck", "VulnCheck (exploited intel)", "Exploited-in-the-wild enrichment (vulncheck-kev — superset of CISA KEV)", "Included", true, "VULNCHECK_API_KEY", "https://api.vulncheck.com/v3/index/vulncheck-kev",
+            "api.vulncheck.com", "A CVE id to the free vulncheck-kev index + your API key. No package data, no source code."),
+        ("socket", "Socket (behavioural)", "Install-script / runtime behaviour", "Licensed", true, "SOCKET_API_KEY", "https://api.socket.dev/v0",
+            "api.socket.dev", "Package name + version + your API key. Socket fetches the package itself upstream."),
+        ("vsix-scanner", "Code Exfiltration Scanner (extensions)", "Deep code scan of AI-editor/VS Code extensions: data-exfiltration, RAT, credential-theft, IOC", "Included", false, null, "http://vsix-scanner:8099",
+            "Self-hosted sidecar → marketplace.visualstudio.com / open-vsx.org",
+            "Only an extension id goes to the LOCAL sidecar. The sidecar downloads the .vsix and analyses the code IN YOUR INFRASTRUCTURE (vsix-audit + YARA-X). The scanner vendor receives nothing; only the public Marketplace is contacted to fetch the package."),
     };
 
     [HttpGet]
@@ -365,6 +386,10 @@ public class SourcesController : ControllerBase
             var cfg = p.SourceConfigs.FirstOrDefault(x => x.Key.Equals(c.Key, StringComparison.OrdinalIgnoreCase));
             var hasCred = !c.NeedsCredential || !string.IsNullOrWhiteSpace(cfg?.Credential)
                           || (c.CredEnv is not null && !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(c.CredEnv)));
+            // vsix-scanner is a sidecar, not an IVulnSource — its availability is "is VSIX_SCANNER_URL set".
+            var available = c.Key == "vsix-scanner"
+                ? !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("VSIX_SCANNER_URL"))
+                : live.TryGetValue(c.Key, out var a) && a;
             return new {
                 c.Key, c.Label, c.Scope, c.Tier, c.NeedsCredential,
                 custom = false,
@@ -373,7 +398,9 @@ public class SourcesController : ControllerBase
                 endpoint = cfg?.Endpoint,              // admin override (null = using built-in default)
                 defaultEndpoint = c.DefaultEndpoint,   // the hard-coded upstream URL
                 hasCredential = hasCred,
-                available = live.TryGetValue(c.Key, out var a) && a,
+                available,
+                egress = c.Egress,                     // where data leaves to (data-flow view)
+                dataSent = c.DataSent,                  // exactly what we transmit
             };
         });
         var customs = p.CustomSources.Select(cs => new {
@@ -388,6 +415,43 @@ public class SourcesController : ControllerBase
     [HttpPost("test/{key}")]
     public async Task<ActionResult> TestOne(string key, CancellationToken ct)
     {
+        // vsix-scanner is a sidecar, not an IVulnSource — probe its /health endpoint live.
+        if (key.Equals("vsix-scanner", StringComparison.OrdinalIgnoreCase))
+        {
+            var url = Environment.GetEnvironmentVariable("VSIX_SCANNER_URL");
+            if (string.IsNullOrWhiteSpace(url))
+                return Ok(new { key, ok = false, status = "NotConfigured", detail = "VSIX_SCANNER_URL not set" });
+            var sw2 = System.Diagnostics.Stopwatch.StartNew();
+            try
+            {
+                var client = _http.CreateClient("catalog");
+                client.Timeout = TimeSpan.FromSeconds(10);
+                using var resp = await client.GetAsync($"{url.TrimEnd('/')}/health", ct);
+                using var d = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
+                var healthy = resp.IsSuccessStatusCode && d.RootElement.TryGetProperty("ok", out var okv) && okv.ValueKind == JsonValueKind.True;
+                var ver = d.RootElement.TryGetProperty("version", out var v) ? v.GetString() : null;
+                return Ok(new { key, ok = healthy, status = healthy ? "Ok" : "Errored",
+                    elapsedMs = sw2.ElapsedMilliseconds, detail = healthy ? $"vsix-audit {ver} reachable" : "scanner returned not-ok" });
+            }
+            catch (Exception ex) { return Ok(new { key, ok = false, status = "Errored", detail = $"scanner unreachable: {ex.Message}" }); }
+        }
+        // VulnCheck is queried per-CVE (vulncheck-kev index), not per-package — probe it with a known
+        // exploited CVE so Test reflects real reachability of the free index.
+        if (key.Equals("vulncheck", StringComparison.OrdinalIgnoreCase)
+            && _sources.FirstOrDefault(s => s.Key == "vulncheck") is VulnCheckSource vc)
+        {
+            if (!vc.IsAvailable) return Ok(new { key, ok = false, status = "NotConfigured", detail = "VULNCHECK_API_KEY not set" });
+            var sw3 = System.Diagnostics.Stopwatch.StartNew();
+            try
+            {
+                var hit = await vc.LookupCveAsync("CVE-2021-44228", ct);
+                return hit is not null
+                    ? Ok(new { key, ok = true, status = "Ok", elapsedMs = sw3.ElapsedMilliseconds, detail = $"vulncheck-kev reachable ({hit.ExploitRefCount} exploit refs for the probe CVE)" })
+                    : Ok(new { key, ok = false, status = "Errored", elapsedMs = sw3.ElapsedMilliseconds, detail = "no data — key may lack the vulncheck-kev index or was rate-limited" });
+            }
+            catch (Exception ex) { return Ok(new { key, ok = false, status = "Errored", detail = ex.Message }); }
+        }
+
         var src = _sources.FirstOrDefault(s => s.Key.Equals(key, StringComparison.OrdinalIgnoreCase));
         if (src is null) return NotFound(new { error = $"unknown source '{key}'" });
         if (!src.IsAvailable) return Ok(new { key, ok = false, status = "NotConfigured", detail = "credential/endpoint not set" });
@@ -1370,6 +1434,12 @@ public class EvolutionController : ControllerBase
         var t = tickets.FirstOrDefault(x => x.Number == req.Ticket);
         if (t is null) return NotFound(new { error = $"ticket #{req.Ticket} not found or not labelled '{_svc.Label}'" });
 
+        // ENGINE ROUTING: when the execution agent is an API agent (Groq/OpenAI/OpenRouter), run the
+        // closed loop IN THE CONTAINER via said-orchestrate — no host worker, no WSL. Only a CLI agent
+        // (claude-cli/cursor-cli) needs the local worker, so fall through to the queue for those.
+        if (_groq.ExecutionAgent() is not null)
+            return await GroqCycleRun(req, ct);
+
         // Create the run first so its id can travel in the queue request (the worker reports progress against it).
         var run = _svc.NewRun(t);
         run.Status = "queued"; run.Stage = "waiting for worker"; run.Pct = 0; run.EtaSeconds = Advisory.Api.Evolution.MutateStages.TotalSecs;
@@ -1991,5 +2061,101 @@ public class AdminController : ControllerBase
             execution = Resolve(r.Execution),
             documentation = Resolve(r.Documentation),
         });
+    }
+}
+
+/// <summary>
+/// The firewall's ecosystem control plane (ADR 0001): Nexus is the source of truth, this API drives
+/// it. GET reports the gateable set + each one's live state and gate mechanism; POST idempotently
+/// provisions an ecosystem's quarantine→approved pair; DELETE is the guarded remove. Adding/removing
+/// an ecosystem is a Nexus-side action — the PromotionBridge discovers whatever exists, no rebuild.
+/// </summary>
+[ApiController]
+[Route("api/nexus")]
+[Authorize(Policy = Policies.CanViewer)]
+public class NexusController : ControllerBase
+{
+    private readonly INexusClient _nexus;
+    private readonly ICurrentUser _user;
+    private readonly ILogger<NexusController> _log;
+    private readonly string _qSuffix, _aSuffix;
+    public NexusController(INexusClient nexus, ICurrentUser user, IConfiguration cfg, ILogger<NexusController> log)
+    {
+        _nexus = nexus; _user = user; _log = log;
+        // Same source the client uses, so reported state matches the repos actually created.
+        _qSuffix = cfg["NEXUS_QUARANTINE_SUFFIX"] ?? "quarantine";
+        _aSuffix = cfg["NEXUS_APPROVED_SUFFIX"] ?? "approved";
+    }
+
+    public record ProvisionRequest(string Ecosystem);
+
+    /// <summary>The full gateable set, each annotated with its live Nexus state + gate mechanism.</summary>
+    [HttpGet("ecosystems")]
+    public async Task<ActionResult> Ecosystems(CancellationToken ct)
+    {
+        var existing = _nexus.IsConfigured
+            ? await _nexus.ExistingRepoNamesAsync(ct)
+            : (IReadOnlySet<string>)new HashSet<string>();
+
+        // Report EVERY ecosystem honestly (CONTEXT.md gate-mechanism tiers): the Nexus-gated ones
+        // from the map, plus the specialised-scanner ecosystems (HuggingFace/Docker/extensions) and
+        // research-only ones (Conda) — so the UI shows all 17 and never hides one or mislabels it.
+        object Row(Ecosystem eco)
+        {
+            var nexus = NexusEcosystems.TryGet(eco, out var def);
+            var prefix = nexus ? def.Prefix : null;
+            var provisioned = nexus && existing.Contains($"{prefix}-{_qSuffix}") && existing.Contains($"{prefix}-{_aSuffix}");
+            return new
+            {
+                ecosystem = eco.ToString(),
+                prefix,
+                format = nexus ? def.Format : null,
+                upstream = nexus ? def.Upstream : null,
+                gateMechanism = NexusEcosystems.GateMechanism(eco),
+                provisionable = nexus && def.ProxyReady,
+                provisioned,
+            };
+        }
+        // Nexus-gated first (in map order), then the scanner/research-only ecosystems not in the map.
+        var items = NexusEcosystems.All.Select(d => Row(d.Ecosystem))
+            .Concat(Enum.GetValues<Ecosystem>()
+                .Where(e => !NexusEcosystems.TryGet(e, out _))
+                .Select(Row))
+            .ToList();
+
+        return Ok(new { configured = _nexus.IsConfigured, count = items.Count, ecosystems = items });
+    }
+
+    /// <summary>Idempotently provision an ecosystem's quarantine→approved pair (Admin).</summary>
+    [HttpPost("provision")]
+    [Authorize(Policy = Policies.CanAdmin)]
+    public async Task<ActionResult> Provision([FromBody] ProvisionRequest req, CancellationToken ct)
+    {
+        if (req is null || string.IsNullOrWhiteSpace(req.Ecosystem))
+            return BadRequest(new { error = "ecosystem is required" });
+        if (!Enum.TryParse<Ecosystem>(req.Ecosystem, ignoreCase: true, out var eco))
+            return BadRequest(new { error = $"Unknown ecosystem '{req.Ecosystem}'." });
+        if (!NexusEcosystems.TryGet(eco, out var def))
+            return BadRequest(new { error = $"{eco} is not gated through Nexus (it uses a specialised scanner or is research-only)." });
+        if (!def.ProxyReady)
+            return BadRequest(new { error = $"{eco} provisioning is deferred (needs format-specific config)." });
+
+        var result = await _nexus.ProvisionAsync(eco, ct);
+        if (!result.Ok) return StatusCode(502, new { error = result.Error ?? "provision failed" });
+        _log.LogInformation("Provisioned {Eco} (already={Already}) by {User}", eco, result.AlreadyExisted, _user.Name);
+        return Ok(new { provisioned = true, ecosystem = eco.ToString(), already = result.AlreadyExisted });
+    }
+
+    /// <summary>Guarded remove: delete both repos for an ecosystem (Admin). Destroys the proxy and its
+    /// quarantine history — the UI confirms before calling this.</summary>
+    [HttpDelete("ecosystem/{ecosystem}")]
+    [Authorize(Policy = Policies.CanAdmin)]
+    public async Task<ActionResult> Deprovision(string ecosystem, CancellationToken ct)
+    {
+        if (!Enum.TryParse<Ecosystem>(ecosystem, ignoreCase: true, out var eco))
+            return BadRequest(new { error = $"Unknown ecosystem '{ecosystem}'." });
+        var removed = await _nexus.DeprovisionAsync(eco, ct);
+        _log.LogWarning("Deprovisioned {Eco} ({Removed} repos) by {User}", eco, removed, _user.Name);
+        return Ok(new { removed, ecosystem = eco.ToString() });
     }
 }
