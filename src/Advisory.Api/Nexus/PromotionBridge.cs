@@ -40,6 +40,15 @@ public class PromotionBridge : BackgroundService
             try
             {
                 var components = await _nexus.ListQuarantineAsync(ct);
+                // Pull the revocation denylist once per cycle so we can re-evaluate revoked packages
+                // even if we already processed them (revoke must take effect without a restart).
+                using (var revScope = _scopes.CreateScope())
+                {
+                    var revStore = revScope.ServiceProvider.GetRequiredService<Advisory.Api.Scan.ScanStore>();
+                    foreach (var c in components)
+                        if (revStore.IsRevoked(c.Ecosystem, c.Name, c.Version)) _processed.Remove(c.ComponentId);
+                }
+
                 foreach (var c in components)
                 {
                     if (!_processed.Add(c.ComponentId)) continue; // already handled
@@ -61,7 +70,11 @@ public class PromotionBridge : BackgroundService
                     var scans = scope.ServiceProvider.GetRequiredService<Advisory.Api.Scan.ScanStore>();
                     try { await scans.RecordDecisionAsync(repo, pkg, result); } catch { /* best-effort observability */ }
 
-                    if (result.Decision == GateDecision.Allow)
+                    // An operator-revoked package is held regardless of the gate verdict — revoke is an
+                    // explicit "no" that must not be silently re-promoted.
+                    var revoked = scans.IsRevoked(c.Ecosystem, c.Name, c.Version);
+
+                    if (result.Decision == GateDecision.Allow && !revoked)
                     {
                         if (bytes.Length == 0) bytes = await _nexus.DownloadAsync(c.DownloadUrl, ct);
                         await _nexus.PromoteAsync(c, bytes, ct);

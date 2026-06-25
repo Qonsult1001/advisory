@@ -798,9 +798,11 @@ public class QuarantineController : ControllerBase
             var key = $"{h.Name}@{h.Version}";
             var prefix = NexusEcosystems.TryGet(h.Ecosystem, out var d) ? d.Prefix : "";
             var scan = _scans.Get($"{prefix}-quarantine", h.Name, h.Version);
-            // Status: promoted if it reached approved; else the gate's decision if we scanned it; else pending.
+            // Status: revoked (operator blocked) wins; else promoted if in approved; else the gate's
+            // decision if we scanned it; else pending.
             string status, reason;
-            if (approvedNames.Contains(key)) { status = "promoted"; reason = "Allowed — promoted to approved."; }
+            if (_scans.IsRevoked(h.Ecosystem, h.Name, h.Version)) { status = "revoked"; reason = "Approval revoked by operator — held, will not be re-promoted."; }
+            else if (approvedNames.Contains(key)) { status = "promoted"; reason = "Allowed — promoted to approved."; }
             else if (scan is not null)
             {
                 status = scan.Decision == "Block" ? "blocked" : scan.Decision == "Allow" ? "promoting" : "held";
@@ -848,6 +850,9 @@ public class QuarantineController : ControllerBase
         if (!Enum.TryParse<Ecosystem>(req.Ecosystem, ignoreCase: true, out var eco))
             return BadRequest(new { error = $"Unknown ecosystem '{req.Ecosystem}'." });
         var ok = await _nexus.RevokeApprovedAsync(eco, req.Name, req.Version ?? "", ct);
+        // Denylist it so the bridge does not re-promote it next cycle — revoke is an explicit "no".
+        // It stays held in quarantine until re-approved.
+        if (ok) _scans.MarkRevoked(eco, req.Name, req.Version ?? "");
         return ok ? Ok(new { revoked = true, name = req.Name, version = req.Version })
                   : NotFound(new { error = $"'{req.Name}' not found in {eco} approved repo." });
     }

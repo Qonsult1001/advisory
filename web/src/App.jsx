@@ -2426,7 +2426,7 @@ function Quarantine() {
               {held.length === 0 && <tr><td style={s.td} colSpan={5}>{loading ? "Loading…" : "Pipeline empty — no packages in quarantine."}</td></tr>}
               {held.map((h, i) => {
                 const tone = h.status === "promoted" ? C.accent
-                  : h.status === "blocked" ? "#c0392b"
+                  : h.status === "blocked" || h.status === "revoked" ? "#c0392b"
                   : h.status === "held" ? "#d98a00"
                   : h.status === "promoting" ? C.accent : C.dim;
                 const label = h.status === "promoting" ? "promoting…" : h.status;
@@ -3338,6 +3338,12 @@ function PackageOverview({ pkg, onVersion }) {
   const approved = pkg.verdict === "Clean" || pkg.verdict === "Caution";
   const installCmd = installCommand(pkg.ecosystem, pkg.name, pkg.version);
   const lic = licenseInfo(pkg.license);
+  const [sendState, setSendState] = useState(null); // null | 'sending' | 'sent' | 'error'
+  const sendToPipeline = () => {
+    setSendState("sending");
+    api.enqueue({ ecosystem: pkg.ecosystem, name: pkg.name, version: pkg.version || "latest" })
+      .then(() => setSendState("sent")).catch(() => setSendState("error"));
+  };
   const er = pkg.extensionRisk;
   const tabs = [
     ["vulnerabilities", "Vulnerabilities"],
@@ -3425,6 +3431,19 @@ function PackageOverview({ pkg, onVersion }) {
               <code style={{ fontFamily: C.mono, fontSize: 11.5, color: C.ink, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{installCmd}</code>
               <button onClick={() => navigator.clipboard?.writeText(installCmd)} title="Copy"
                 style={{ background: "none", border: "none", cursor: "pointer", color: C.sub, fontSize: 13 }}>⧉</button>
+            </div>
+            {/* Send this package through the real firewall — enqueues it into the Intake queue so the
+                gate evaluates it and (if clean + not revoked) promotes it to the approved repo. */}
+            <button onClick={sendToPipeline} disabled={sendState === "sending" || sendState === "sent"}
+              style={{ marginTop: 10, width: "100%", padding: "8px 12px", borderRadius: 6, fontSize: 12, fontWeight: 600,
+                border: "none", cursor: sendState === "sent" ? "default" : "pointer",
+                background: sendState === "sent" ? C.surface2 : C.accent, color: sendState === "sent" ? C.accentDim : "#fff",
+                opacity: sendState === "sending" ? 0.6 : 1 }}>
+              {sendState === "sending" ? "Sending…" : sendState === "sent" ? "✓ Sent to Intake queue"
+                : sendState === "error" ? "Retry — send to pipeline" : "⇄ Send to pipeline"}
+            </button>
+            <div style={{ fontSize: 10.5, color: C.dim, marginTop: 6, lineHeight: 1.4 }}>
+              Pushes this package through the firewall gate (Intake queue → quarantine → promote if clean).
             </div>
           </div>
           {/* External links */}

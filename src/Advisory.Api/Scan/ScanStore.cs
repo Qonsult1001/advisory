@@ -37,6 +37,9 @@ public class ScanStore
     private readonly IServiceScopeFactory _scopes;
     private readonly IEnumerable<IDependencyResolver> _resolvers;
     private readonly ConcurrentDictionary<string, StoredScan> _scans = new(StringComparer.OrdinalIgnoreCase);
+    // Operator-revoked packages: an explicit denylist. A revoked package is removed from approved AND
+    // must never be re-promoted by the bridge — it stays held in quarantine until explicitly cleared.
+    private readonly ConcurrentDictionary<string, byte> _revoked = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _io = new();
 
     private static readonly JsonSerializerOptions Json = new()
@@ -54,9 +57,21 @@ public class ScanStore
     }
 
     private static string Key(string repo, string name, string version) => $"{repo}|{name}|{version}";
+    private static string RevKey(Ecosystem eco, string name, string version) => $"{eco}|{name}|{version}";
 
     public StoredScan? Get(string repo, string name, string version)
         => _scans.TryGetValue(Key(repo, name, version), out var s) ? s : null;
+
+    /// <summary>Mark a package as operator-revoked (denylisted) — the bridge will not re-promote it.</summary>
+    public void MarkRevoked(Ecosystem eco, string name, string version)
+    { _revoked[RevKey(eco, name, version)] = 1; Persist(); }
+
+    /// <summary>Clear a revocation so the package can flow through the gate again.</summary>
+    public void ClearRevoked(Ecosystem eco, string name, string version)
+    { _revoked.TryRemove(RevKey(eco, name, version), out _); Persist(); }
+
+    public bool IsRevoked(Ecosystem eco, string name, string version)
+        => _revoked.ContainsKey(RevKey(eco, name, version));
 
     public IReadOnlyList<StoredScan> ForRepository(string repo)
         => _scans.Values.Where(s => string.Equals(s.Repository, repo, StringComparison.OrdinalIgnoreCase))
@@ -149,16 +164,28 @@ public class ScanStore
     public async Task<StoredScan> GetOrScanAsync(string repo, PackageRef pkg, CancellationToken ct)
         => Get(repo, pkg.Name, pkg.Version) ?? await ScanArtifactAsync(repo, pkg, ct);
 
+    private string RevokedPath => _path + ".revoked.json";
+
     private void Load()
     {
         try
         {
-            if (!File.Exists(_path)) return;
-            var list = JsonSerializer.Deserialize<List<StoredScan>>(File.ReadAllText(_path), Json);
-            if (list is null) return;
-            foreach (var s in list) _scans[Key(s.Repository, s.Name, s.Version)] = s;
+            if (File.Exists(_path))
+            {
+                var list = JsonSerializer.Deserialize<List<StoredScan>>(File.ReadAllText(_path), Json);
+                if (list is not null) foreach (var s in list) _scans[Key(s.Repository, s.Name, s.Version)] = s;
+            }
         }
         catch { /* corrupt index → start fresh, never crash */ }
+        try
+        {
+            if (File.Exists(RevokedPath))
+            {
+                var rev = JsonSerializer.Deserialize<List<string>>(File.ReadAllText(RevokedPath), Json);
+                if (rev is not null) foreach (var k in rev) _revoked[k] = 1;
+            }
+        }
+        catch { /* ignore */ }
     }
 
     private void Persist()
@@ -166,6 +193,8 @@ public class ScanStore
         lock (_io)
         {
             try { File.WriteAllText(_path, JsonSerializer.Serialize(_scans.Values.ToList(), Json)); }
+            catch { /* best-effort persistence */ }
+            try { File.WriteAllText(RevokedPath, JsonSerializer.Serialize(_revoked.Keys.ToList(), Json)); }
             catch { /* best-effort persistence */ }
         }
     }
