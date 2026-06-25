@@ -2063,3 +2063,99 @@ public class AdminController : ControllerBase
         });
     }
 }
+
+/// <summary>
+/// The firewall's ecosystem control plane (ADR 0001): Nexus is the source of truth, this API drives
+/// it. GET reports the gateable set + each one's live state and gate mechanism; POST idempotently
+/// provisions an ecosystem's quarantine→approved pair; DELETE is the guarded remove. Adding/removing
+/// an ecosystem is a Nexus-side action — the PromotionBridge discovers whatever exists, no rebuild.
+/// </summary>
+[ApiController]
+[Route("api/nexus")]
+[Authorize(Policy = Policies.CanViewer)]
+public class NexusController : ControllerBase
+{
+    private readonly INexusClient _nexus;
+    private readonly ICurrentUser _user;
+    private readonly ILogger<NexusController> _log;
+    private readonly string _qSuffix, _aSuffix;
+    public NexusController(INexusClient nexus, ICurrentUser user, IConfiguration cfg, ILogger<NexusController> log)
+    {
+        _nexus = nexus; _user = user; _log = log;
+        // Same source the client uses, so reported state matches the repos actually created.
+        _qSuffix = cfg["NEXUS_QUARANTINE_SUFFIX"] ?? "quarantine";
+        _aSuffix = cfg["NEXUS_APPROVED_SUFFIX"] ?? "approved";
+    }
+
+    public record ProvisionRequest(string Ecosystem);
+
+    /// <summary>The full gateable set, each annotated with its live Nexus state + gate mechanism.</summary>
+    [HttpGet("ecosystems")]
+    public async Task<ActionResult> Ecosystems(CancellationToken ct)
+    {
+        var existing = _nexus.IsConfigured
+            ? await _nexus.ExistingRepoNamesAsync(ct)
+            : (IReadOnlySet<string>)new HashSet<string>();
+
+        // Report EVERY ecosystem honestly (CONTEXT.md gate-mechanism tiers): the Nexus-gated ones
+        // from the map, plus the specialised-scanner ecosystems (HuggingFace/Docker/extensions) and
+        // research-only ones (Conda) — so the UI shows all 17 and never hides one or mislabels it.
+        object Row(Ecosystem eco)
+        {
+            var nexus = NexusEcosystems.TryGet(eco, out var def);
+            var prefix = nexus ? def.Prefix : null;
+            var provisioned = nexus && existing.Contains($"{prefix}-{_qSuffix}") && existing.Contains($"{prefix}-{_aSuffix}");
+            return new
+            {
+                ecosystem = eco.ToString(),
+                prefix,
+                format = nexus ? def.Format : null,
+                upstream = nexus ? def.Upstream : null,
+                gateMechanism = NexusEcosystems.GateMechanism(eco),
+                provisionable = nexus && def.ProxyReady,
+                provisioned,
+            };
+        }
+        // Nexus-gated first (in map order), then the scanner/research-only ecosystems not in the map.
+        var items = NexusEcosystems.All.Select(d => Row(d.Ecosystem))
+            .Concat(Enum.GetValues<Ecosystem>()
+                .Where(e => !NexusEcosystems.TryGet(e, out _))
+                .Select(Row))
+            .ToList();
+
+        return Ok(new { configured = _nexus.IsConfigured, count = items.Count, ecosystems = items });
+    }
+
+    /// <summary>Idempotently provision an ecosystem's quarantine→approved pair (Admin).</summary>
+    [HttpPost("provision")]
+    [Authorize(Policy = Policies.CanAdmin)]
+    public async Task<ActionResult> Provision([FromBody] ProvisionRequest req, CancellationToken ct)
+    {
+        if (req is null || string.IsNullOrWhiteSpace(req.Ecosystem))
+            return BadRequest(new { error = "ecosystem is required" });
+        if (!Enum.TryParse<Ecosystem>(req.Ecosystem, ignoreCase: true, out var eco))
+            return BadRequest(new { error = $"Unknown ecosystem '{req.Ecosystem}'." });
+        if (!NexusEcosystems.TryGet(eco, out var def))
+            return BadRequest(new { error = $"{eco} is not gated through Nexus (it uses a specialised scanner or is research-only)." });
+        if (!def.ProxyReady)
+            return BadRequest(new { error = $"{eco} provisioning is deferred (needs format-specific config)." });
+
+        var result = await _nexus.ProvisionAsync(eco, ct);
+        if (!result.Ok) return StatusCode(502, new { error = result.Error ?? "provision failed" });
+        _log.LogInformation("Provisioned {Eco} (already={Already}) by {User}", eco, result.AlreadyExisted, _user.Name);
+        return Ok(new { provisioned = true, ecosystem = eco.ToString(), already = result.AlreadyExisted });
+    }
+
+    /// <summary>Guarded remove: delete both repos for an ecosystem (Admin). Destroys the proxy and its
+    /// quarantine history — the UI confirms before calling this.</summary>
+    [HttpDelete("ecosystem/{ecosystem}")]
+    [Authorize(Policy = Policies.CanAdmin)]
+    public async Task<ActionResult> Deprovision(string ecosystem, CancellationToken ct)
+    {
+        if (!Enum.TryParse<Ecosystem>(ecosystem, ignoreCase: true, out var eco))
+            return BadRequest(new { error = $"Unknown ecosystem '{ecosystem}'." });
+        var removed = await _nexus.DeprovisionAsync(eco, ct);
+        _log.LogWarning("Deprovisioned {Eco} ({Removed} repos) by {User}", eco, removed, _user.Name);
+        return Ok(new { removed, ecosystem = eco.ToString() });
+    }
+}

@@ -37,6 +37,9 @@ public class PromotionBridgeTests
         public Task<byte[]> DownloadAsync(string url, CancellationToken ct) => Task.FromResult(Array.Empty<byte>());
         public Task PromoteAsync(NexusComponent c, byte[] b, CancellationToken ct) { Promoted.Add(c.Name); return Task.CompletedTask; }
         public Task HoldAsync(NexusComponent c, string reason, CancellationToken ct) { Held.Add(c.Name); return Task.CompletedTask; }
+        public Task<ProvisionResult> ProvisionAsync(Ecosystem eco, CancellationToken ct) => Task.FromResult(new ProvisionResult(true, false, null));
+        public Task<int> DeprovisionAsync(Ecosystem eco, CancellationToken ct) => Task.FromResult(0);
+        public Task<IReadOnlySet<string>> ExistingRepoNamesAsync(CancellationToken ct) => Task.FromResult<IReadOnlySet<string>>(new HashSet<string>());
     }
 
     public static ServiceProvider BuildGate()
@@ -55,6 +58,7 @@ public class PromotionBridgeTests
         sc.AddSingleton<IWormSink, FileWormSink>();
         sc.AddSingleton<IAuditLog, AuditLog>();
         sc.AddSingleton<KevSource>(); sc.AddSingleton<EpssSource>();
+        sc.AddSingleton<VulnCheckSource>();
         sc.AddSingleton<PickleScanner>();
         sc.AddSingleton<SecretScanner>();
         sc.AddSingleton<IacScanner>();

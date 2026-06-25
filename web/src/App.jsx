@@ -23,6 +23,9 @@ const api = {
   enqueue: (pkg) => fetch(`${API}/queue/enqueue`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(pkg) }).then((r) => r.json()),
   getQueueDepth: () => fetch(`${API}/queue/depth`).then((r) => r.json()),
   getScans: () => fetch(`${API}/scans/repositories`).then((r) => r.json()),
+  getNexusEcosystems: () => fetch(`${API}/nexus/ecosystems`).then((r) => r.json()),
+  provisionEcosystem: (ecosystem) => fetch(`${API}/nexus/provision`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ecosystem }) }).then((r) => r.json().then((j) => ({ ok: r.ok, ...j }))),
+  deprovisionEcosystem: (ecosystem) => fetch(`${API}/nexus/ecosystem/${encodeURIComponent(ecosystem)}`, { method: "DELETE" }).then((r) => r.json().then((j) => ({ ok: r.ok, ...j }))),
   getGitRepos: () => fetch(`${API}/scans/git-repositories`).then((r) => r.json()),
   linkGitRepo: (body) => fetch(`${API}/scans/git-repositories`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).then((r) => r.json()),
   unlinkGitRepo: (fullName) => fetch(`${API}/scans/git-repositories/${encodeURIComponent(fullName)}`, { method: "DELETE" }).then((r) => r.json()),
@@ -1516,6 +1519,78 @@ function ConfigIcons() {
   );
 }
 
+// The firewall's ecosystem control plane — renders Nexus's LIVE state (/api/nexus/ecosystems).
+// Add provisions an ecosystem's quarantine→approved pair (idempotent); remove is guarded by a
+// confirm modal in the parent. Each row is labeled by its honest gate mechanism.
+function EcosystemFirewall({ ecos, busy, msg, onAdd, onRemoveRequest }) {
+  const mech = {
+    "nexus-osv": { label: "Nexus-gated (OSV)", color: C.accent },
+    "scanner": { label: "Specialised scanner", color: "#5a7fb0" },
+    "research-only": { label: "Research-only", color: C.dim },
+  };
+  const list = ecos?.ecosystems || [];
+  const provisioned = list.filter((e) => e.provisioned).length;
+  const addable = list.filter((e) => e.provisionable && !e.provisioned);
+  return (
+    <div style={{ ...s.card, marginBottom: 18 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "16px 20px", borderBottom: `1px solid ${C.lineSoft}` }}>
+        <div>
+          <div style={{ fontSize: 16, fontWeight: 600 }}>Ecosystem firewall</div>
+          <div style={{ fontSize: 12, color: C.sub, marginTop: 2 }}>
+            {ecos?.configured ? `${provisioned} of ${list.length} ecosystems gated through Nexus` : "Nexus not connected"}
+          </div>
+        </div>
+        {addable.length > 0 && (
+          <select value="" disabled={!ecos?.configured}
+            onChange={(e) => { if (e.target.value) onAdd(e.target.value); }}
+            style={{ ...s.input, width: 200, cursor: "pointer", padding: "8px 10px" }}>
+            <option value="">+ Add ecosystem…</option>
+            {addable.map((e) => <option key={e.ecosystem} value={e.ecosystem}>{e.ecosystem}</option>)}
+          </select>
+        )}
+      </div>
+      {msg && (
+        <div style={{ padding: "8px 20px", fontSize: 12.5, color: msg.tone === "ok" ? C.accentDim : "#c0392b",
+          background: msg.tone === "ok" ? "#f2faf3" : "#fdf2f1", borderBottom: `1px solid ${C.lineSoft}` }}>{msg.text}</div>
+      )}
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 10, padding: 16 }}>
+        {list.map((e) => {
+          const m = mech[e.gateMechanism] || mech["research-only"];
+          const isBusy = !!busy[e.ecosystem];
+          return (
+            <div key={e.ecosystem} style={{ border: `1px solid ${C.line}`, borderRadius: 10, padding: "10px 12px", width: 220, background: C.surface }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span style={{ fontWeight: 600, fontSize: 13 }}>{e.ecosystem}</span>
+                <span style={{ width: 8, height: 8, borderRadius: 8, background: e.provisioned ? C.accent : C.line }}
+                  title={e.provisioned ? "Provisioned" : "Not provisioned"} />
+              </div>
+              <div style={{ fontSize: 10.5, color: m.color, marginTop: 4, fontWeight: 500 }}>{m.label}</div>
+              <div style={{ fontSize: 10, color: C.dim, marginTop: 2, fontFamily: C.mono }}>{e.format}</div>
+              <div style={{ marginTop: 8 }}>
+                {!e.provisionable ? (
+                  <span style={{ fontSize: 10.5, color: C.dim }}>
+                    {e.gateMechanism === "scanner" ? "Gated by its own scanner" : "Provisioning deferred"}
+                  </span>
+                ) : e.provisioned ? (
+                  <button disabled={isBusy} onClick={() => onRemoveRequest(e.ecosystem)}
+                    style={{ ...s.btn, background: "transparent", color: "#c0392b", border: `1px solid ${C.line}`, padding: "4px 10px", fontSize: 11, borderRadius: 6, cursor: isBusy ? "default" : "pointer", opacity: isBusy ? 0.5 : 1 }}>
+                    {isBusy ? "…" : "Remove"}
+                  </button>
+                ) : (
+                  <button disabled={isBusy} onClick={() => onAdd(e.ecosystem)}
+                    style={{ ...s.btn, background: C.accent, color: "#fff", border: "none", padding: "4px 10px", fontSize: 11, borderRadius: 6, cursor: isBusy ? "default" : "pointer", opacity: isBusy ? 0.5 : 1 }}>
+                    {isBusy ? "Adding…" : "Add"}
+                  </button>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function ScansRepos({ onOpen }) {
   const [data, setData] = useState(null);
   const [gitData, setGitData] = useState(null);
@@ -1529,7 +1604,30 @@ function ScansRepos({ onOpen }) {
   const [scanResults, setScanResults] = useState({}); // fullName → scan result
   const [scanning, setScanning] = useState({}); // fullName → bool
   const [scanErrors, setScanErrors] = useState({}); // fullName → error string
-  useEffect(() => { api.getScans().then(setData).catch(() => setData({ configured: false, repositories: [] })).finally(() => setLoading(false)); }, []);
+  const [ecos, setEcos] = useState(null); // /nexus/ecosystems live state
+  const [ecoBusy, setEcoBusy] = useState({}); // ecosystem → bool (provision/remove in flight)
+  const [ecoMsg, setEcoMsg] = useState(null); // {tone, text} transient feedback
+  const [removeEco, setRemoveEco] = useState(null); // ecosystem pending guarded-remove confirm
+  const refreshEcos = () => api.getNexusEcosystems().then(setEcos).catch(() => setEcos({ configured: false, ecosystems: [] }));
+  useEffect(() => { api.getScans().then(setData).catch(() => setData({ configured: false, repositories: [] })).finally(() => setLoading(false)); refreshEcos(); }, []);
+  const provision = (eco) => {
+    setEcoBusy((b) => ({ ...b, [eco]: true })); setEcoMsg(null);
+    api.provisionEcosystem(eco).then((r) => {
+      setEcoMsg(r.ok ? { tone: "ok", text: r.already ? `${eco} already linked.` : `${eco} provisioned — quarantine→approved wired.` }
+                     : { tone: "err", text: r.error || `Could not provision ${eco}.` });
+      return refreshEcos();
+    }).catch(() => setEcoMsg({ tone: "err", text: `Could not provision ${eco}.` }))
+      .finally(() => setEcoBusy((b) => ({ ...b, [eco]: false })));
+  };
+  const deprovision = (eco) => {
+    setRemoveEco(null); setEcoBusy((b) => ({ ...b, [eco]: true })); setEcoMsg(null);
+    api.deprovisionEcosystem(eco).then((r) => {
+      setEcoMsg(r.ok ? { tone: "ok", text: `${eco} removed (${r.removed} repo${r.removed === 1 ? "" : "s"} deleted).` }
+                     : { tone: "err", text: r.error || `Could not remove ${eco}.` });
+      return refreshEcos();
+    }).catch(() => setEcoMsg({ tone: "err", text: `Could not remove ${eco}.` }))
+      .finally(() => setEcoBusy((b) => ({ ...b, [eco]: false })));
+  };
   useEffect(() => {
     if (sub !== "git" || gitData !== null) return;
     setGitLoading(true);
@@ -1592,6 +1690,30 @@ function ScansRepos({ onOpen }) {
         <Card title="Repositories" desc=""><div style={{ padding: 22, color: C.sub, fontSize: 12.5, lineHeight: 1.6 }}>
           Nexus not connected (<code style={s.code}>NEXUS_URL</code> unset). Connect Nexus and run <code style={s.code}>scripts/nexus-setup.sh</code> to index repositories here.
         </div></Card>
+      )}
+      {sub === "repositories" && ecos && (
+        <EcosystemFirewall ecos={ecos} busy={ecoBusy} msg={ecoMsg} onAdd={provision}
+          onRemoveRequest={setRemoveEco} />
+      )}
+      {removeEco && (
+        <div onClick={() => setRemoveEco(null)}
+          style={{ position: "fixed", inset: 0, background: "rgba(20,22,25,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50 }}>
+          <div onClick={(e) => e.stopPropagation()}
+            style={{ background: C.surface, border: `1px solid ${C.line}`, borderRadius: 12, padding: 22, width: "min(460px,94vw)", boxShadow: "0 12px 40px rgba(0,0,0,0.18)" }}>
+            <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 8, color: C.ink }}>Remove {removeEco} from the firewall?</div>
+            <div style={{ fontSize: 13, color: C.sub, lineHeight: 1.6, marginBottom: 18 }}>
+              This deletes the <code style={s.code}>{removeEco.toLowerCase()}-quarantine</code> proxy and the{" "}
+              <code style={s.code}>{removeEco.toLowerCase()}-approved</code> repo, <b>including any quarantine
+              history</b> held there. The gate will stop polling it. This cannot be undone.
+            </div>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+              <button onClick={() => setRemoveEco(null)}
+                style={{ ...s.btn, background: "transparent", color: C.sub, border: `1px solid ${C.line}`, padding: "8px 14px", fontSize: 12.5, borderRadius: 6, cursor: "pointer" }}>Cancel</button>
+              <button onClick={() => deprovision(removeEco)}
+                style={{ ...s.btn, background: "#c0392b", color: "#fff", border: "none", padding: "8px 14px", fontSize: 12.5, borderRadius: 6, cursor: "pointer" }}>Delete proxy + history</button>
+            </div>
+          </div>
+        </div>
       )}
       {!loading && data?.configured && sub === "repositories" && (
         <div style={s.card}>

@@ -133,6 +133,7 @@ builder.Services.AddHostedService<IntakeConsumer>();
 builder.Services.AddSingleton<INexusClient, NexusClient>();
 builder.Services.AddSingleton<Advisory.Api.Integrations.IGitRepoClient, Advisory.Api.Integrations.GitHubRepoClient>();
 builder.Services.AddHostedService<PromotionBridge>();
+builder.Services.AddHostedService<NexusAutoProvisioner>();   // seeds the default ecosystems on first boot
 
 builder.Services.AddCors(o => o.AddDefaultPolicy(p =>
     // 8088 = the console (docker-compose maps host 8080→8088); 5173 = vite dev.

@@ -30,7 +30,20 @@ public interface INexusClient
     Task<byte[]> DownloadAsync(string url, CancellationToken ct);
     Task PromoteAsync(NexusComponent c, byte[] bytes, CancellationToken ct);
     Task HoldAsync(NexusComponent c, string reason, CancellationToken ct);
+
+    /// <summary>Idempotently create the quarantine proxy + approved hosted pair for an ecosystem
+    /// (ADR 0001). "Already exists" is success. Returns whether the repos now exist.</summary>
+    Task<ProvisionResult> ProvisionAsync(Ecosystem eco, CancellationToken ct);
+
+    /// <summary>Delete both repos for an ecosystem (the guarded remove). Returns how many were removed.</summary>
+    Task<int> DeprovisionAsync(Ecosystem eco, CancellationToken ct);
+
+    /// <summary>The repos that currently exist, as a set of names, for live-state reporting.</summary>
+    Task<IReadOnlySet<string>> ExistingRepoNamesAsync(CancellationToken ct);
 }
+
+/// <summary>Outcome of provisioning an ecosystem.</summary>
+public record ProvisionResult(bool Ok, bool AlreadyExisted, string? Error);
 
 public class NexusClient : INexusClient
 {
@@ -41,14 +54,10 @@ public class NexusClient : INexusClient
     private readonly string _approvedSuffix;
     private readonly bool _deleteOnHold;
 
-    // Per-ecosystem repo names follow the convention "<eco>-<suffix>" created by nexus-setup.sh.
-    private static string EcoPrefix(Ecosystem e) => e switch
-    {
-        Ecosystem.PyPI => "pypi", Ecosystem.npm => "npm", Ecosystem.NuGet => "nuget",
-        Ecosystem.Cargo => "cargo", Ecosystem.Go => "go", _ => "pypi"
-    };
-    private string QuarantineRepo(Ecosystem e) => $"{EcoPrefix(e)}-{_quarantineSuffix}";
-    private string ApprovedRepo(Ecosystem e) => $"{EcoPrefix(e)}-{_approvedSuffix}";
+    // Per-ecosystem repo names follow the convention "<eco>-<suffix>". The prefix comes from the
+    // single source of truth (NexusEcosystems, ADR 0001) — no per-ecosystem switch, no PyPI fallback.
+    private string QuarantineRepo(Ecosystem e) => $"{NexusEcosystems.Prefix(e)}-{_quarantineSuffix}";
+    private string ApprovedRepo(Ecosystem e) => $"{NexusEcosystems.Prefix(e)}-{_approvedSuffix}";
 
     public bool IsConfigured => !string.IsNullOrWhiteSpace(_baseUrl);
 
@@ -69,11 +78,10 @@ public class NexusClient : INexusClient
 
     public async Task<IReadOnlyList<NexusComponent>> ListQuarantineAsync(CancellationToken ct)
     {
-        var items = new List<NexusComponent>();
-        if (!IsConfigured) return items;
-        foreach (var eco in new[] { Ecosystem.PyPI, Ecosystem.npm, Ecosystem.NuGet, Ecosystem.Cargo, Ecosystem.Go })
-            await ListRepoAsync(QuarantineRepo(eco), items, ct);
-        return items;
+        // Dynamic discovery (ADR 0001): poll every "*-quarantine" repo that exists in Nexus and maps
+        // to a known ecosystem by prefix — no hardcoded ecosystem list.
+        if (!IsConfigured) return Array.Empty<NexusComponent>();
+        return await NexusDiscovery.DiscoverQuarantineAsync(this, ct);
     }
 
     /// <summary>All Nexus repositories with an indexed-artifact count + latest artifact — the Scans List.</summary>
@@ -127,14 +135,24 @@ public class NexusClient : INexusClient
             {
                 var name = comp.GetProperty("name").GetString() ?? "";
                 var version = comp.TryGetProperty("version", out var v) ? v.GetString() ?? "" : "";
-                var format = comp.TryGetProperty("format", out var fmt) ? fmt.GetString() : "pypi";
+                var format = comp.TryGetProperty("format", out var fmt) ? fmt.GetString() : null;
                 var assets = comp.GetProperty("assets");
                 var first = assets.GetArrayLength() > 0 ? assets[0] : default;
                 var dl = first.ValueKind != JsonValueKind.Undefined && first.TryGetProperty("downloadUrl", out var d) ? d.GetString() : null;
                 var sha = first.ValueKind != JsonValueKind.Undefined && first.TryGetProperty("checksum", out var cs) && cs.TryGetProperty("sha256", out var sh) ? sh.GetString() : null;
                 var fileName = first.ValueKind != JsonValueKind.Undefined && first.TryGetProperty("path", out var p) ? Path.GetFileName(p.GetString()) : null;
+                // Map the component to its ecosystem by the REPO PREFIX (ADR 0001) — never the format,
+                // which collides for apt (Debian/Ubuntu). Skip + warn if the repo isn't a known ecosystem.
+                if (!NexusEcosystems.TryFromRepoName(repo, out var eco))
+                {
+                    if (!NexusEcosystems.TryFromFormat(format, out eco))
+                    {
+                        _log.LogWarning("Nexus repo '{Repo}' (format '{Format}') maps to no known ecosystem — skipping {Pkg}.", repo, format, name);
+                        continue;
+                    }
+                }
                 items.Add(new NexusComponent(comp.GetProperty("id").GetString() ?? "",
-                    MapEco(format), name, version, fileName, sha, dl ?? ""));
+                    eco, name, version, fileName, sha, dl ?? ""));
             }
             token = doc.RootElement.TryGetProperty("continuationToken", out var t) && t.ValueKind == JsonValueKind.String
                 ? t.GetString() : null;
@@ -169,9 +187,81 @@ public class NexusClient : INexusClient
         // Default: leave it in the quarantine repo as the physical holding area.
     }
 
-    private static Ecosystem MapEco(string? f) => f?.ToLowerInvariant() switch
+    public async Task<IReadOnlySet<string>> ExistingRepoNamesAsync(CancellationToken ct)
     {
-        "npm" => Ecosystem.npm, "nuget" => Ecosystem.NuGet, "cargo" => Ecosystem.Cargo,
-        "go" => Ecosystem.Go, _ => Ecosystem.PyPI
-    };
+        var repos = await ListRepositoriesAsync(ct);
+        return repos.Select(r => r.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+    }
+
+    public async Task<ProvisionResult> ProvisionAsync(Ecosystem eco, CancellationToken ct)
+    {
+        if (!IsConfigured) return new ProvisionResult(false, false, "Nexus is not configured (NEXUS_URL unset).");
+        if (!NexusEcosystems.TryGet(eco, out var def))
+            return new ProvisionResult(false, false, $"{eco} is not a Nexus-gateable ecosystem.");
+        if (!def.ProxyReady)
+            return new ProvisionResult(false, false, $"{eco} proxy provisioning is deferred (needs format-specific config).");
+
+        var existing = await ExistingRepoNamesAsync(ct);
+        var qName = $"{def.Prefix}-{_quarantineSuffix}";
+        var aName = $"{def.Prefix}-{_approvedSuffix}";
+        var already = existing.Contains(qName) && existing.Contains(aName);
+
+        // Quarantine = proxy at the upstream; Approved = hosted repo devs pull from.
+        var qOk = existing.Contains(qName) || await CreateProxyAsync(def.Format, qName, def.Upstream, ct);
+        var aOk = existing.Contains(aName) || await CreateHostedAsync(def.Format, aName, ct);
+
+        if (qOk && aOk) return new ProvisionResult(true, already, null);
+        return new ProvisionResult(false, already, $"Failed to create {(qOk ? aName : qName)}.");
+    }
+
+    public async Task<int> DeprovisionAsync(Ecosystem eco, CancellationToken ct)
+    {
+        if (!IsConfigured || !NexusEcosystems.TryGet(eco, out var def)) return 0;
+        var removed = 0;
+        foreach (var name in new[] { $"{def.Prefix}-{_quarantineSuffix}", $"{def.Prefix}-{_approvedSuffix}" })
+        {
+            using var resp = await _http.DeleteAsync($"{_baseUrl}/service/rest/v1/repositories/{name}", ct);
+            if (resp.IsSuccessStatusCode) removed++;
+            else _log.LogWarning("Deprovision {Repo}: {Status}", name, (int)resp.StatusCode);
+        }
+        return removed;
+    }
+
+    private async Task<bool> CreateProxyAsync(string format, string name, string remoteUrl, CancellationToken ct)
+    {
+        var body = new
+        {
+            name,
+            online = true,
+            storage = new { blobStoreName = "default", strictContentTypeValidation = true },
+            proxy = new { remoteUrl, contentMaxAge = 1440, metadataMaxAge = 1440 },
+            negativeCache = new { enabled = true, timeToLive = 1440 },
+            httpClient = new { blocked = false, autoBlock = true },
+        };
+        return await PutRepoAsync($"{format}/proxy", name, body, ct);
+    }
+
+    private async Task<bool> CreateHostedAsync(string format, string name, CancellationToken ct)
+    {
+        var body = new
+        {
+            name,
+            online = true,
+            storage = new { blobStoreName = "default", strictContentTypeValidation = true, writePolicy = "ALLOW" },
+        };
+        return await PutRepoAsync($"{format}/hosted", name, body, ct);
+    }
+
+    private async Task<bool> PutRepoAsync(string recipe, string name, object body, CancellationToken ct)
+    {
+        var url = $"{_baseUrl}/service/rest/v1/repositories/{recipe}";
+        using var content = new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json");
+        using var resp = await _http.PostAsync(url, content, ct);
+        // 201 created; 400 with "already exists" is treated as success by the caller's existence check.
+        if (resp.IsSuccessStatusCode) { _log.LogInformation("Created Nexus repo {Repo} ({Recipe}).", name, recipe); return true; }
+        var msg = await resp.Content.ReadAsStringAsync(ct);
+        if (msg.Contains("already exists", StringComparison.OrdinalIgnoreCase)) return true;
+        _log.LogWarning("Create {Repo} ({Recipe}) failed: {Status} {Msg}", name, recipe, (int)resp.StatusCode, msg);
+        return false;
+    }
 }
