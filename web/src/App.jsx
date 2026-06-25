@@ -1676,7 +1676,11 @@ function ScansRepos({ onOpen }) {
       });
   };
   const subTabs = [["git", "Git Repositories"], ["repositories", "Repositories"], ["builds", "Builds"], ["bundles", "Release Bundles"], ["packages", "Packages"]];
-  let repos = (data?.repositories || []);
+  // Show ONLY the ecosystem-firewall repos this console manages (the <eco>-quarantine / <eco>-approved
+  // pairs). Nexus's own default repos (maven-central, nuget-group, …) and any stray manual repos are
+  // hidden — the table stays aligned with the Ecosystem firewall panel above.
+  let repos = (data?.repositories || []).filter((r) =>
+    r.name.endsWith("-quarantine") || r.name.endsWith("-approved"));
   if (q) repos = repos.filter((r) => r.name.toLowerCase().includes(q.toLowerCase()) || (r.format || "").toLowerCase().includes(q.toLowerCase()));
   repos = [...repos].sort((a, b) => {
     const k = sort.key; let av = a[k], bv = b[k];
@@ -2695,6 +2699,7 @@ function CatalogLoading({ view, eco }) {
 function Catalog() {
   const [eco, setEco] = useState("npm");
   const [ecoOpen, setEcoOpen] = useState(false);
+  const [ecoState, setEcoState] = useState({}); // ecosystem -> {gated, mechanism} from live Nexus state
   const [q, setQ] = useState("");
   const [view, setView] = useState("landing");   // landing | results | package | insights
   const [results, setResults] = useState(null);
@@ -2706,6 +2711,23 @@ function Catalog() {
   const [registry, setRegistry] = useState("marketplace");
   const isExtEco = eco === "AIEditorExtensions";
   const CVE_RE = /^(CVE|GHSA|PYSEC|GO|RUSTSEC)-/i;   // typing one of these searches the CVE/advisory directly
+
+  // Live firewall state per ecosystem, so the dropdown can badge each one (gated / scanner /
+  // research-only) without losing the ability to research any ecosystem.
+  useEffect(() => {
+    api.getNexusEcosystems().then((d) => {
+      const m = {};
+      (d.ecosystems || []).forEach((e) => { m[e.ecosystem] = { gated: e.provisioned, mechanism: e.gateMechanism }; });
+      setEcoState(m);
+    }).catch(() => {});
+  }, []);
+  const ecoBadge = (key) => {
+    const st = ecoState[key];
+    if (st?.gated) return { text: "gated", color: C.accent };
+    if (st?.mechanism === "scanner") return { text: "scanner", color: "#5a7fb0" };
+    if (st?.mechanism === "research-only") return { text: "research", color: C.dim };
+    return { text: "not gated", color: C.dim };   // mapped but no proxy provisioned yet
+  };
 
   // live autocomplete (debounced)
   useEffect(() => {
@@ -2768,16 +2790,19 @@ function Catalog() {
           <span style={{ fontSize: 9, marginLeft: 6 }}>▾</span></button>
         {ecoOpen && (
           <div style={s.ecoMenu}>
-            {CATALOG_ECOS.map((e) => (
-              <button key={e.key} disabled={!e.live}
-                onClick={() => { if (e.live) { setEco(e.key); setEcoOpen(false); } }}
-                style={{ ...s.ecoItem, cursor: e.live ? "pointer" : "default", opacity: e.live ? 1 : 0.55 }}>
-                <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <BrandIcon format={e.key} />{e.label}</span>
-                {e.live ? <span style={{ color: C.allow, fontSize: 10 }}>● live</span>
-                  : <span style={{ color: C.dim, fontSize: 10 }}>coming soon</span>}
-              </button>
-            ))}
+            {CATALOG_ECOS.map((e) => {
+              const b = ecoBadge(e.key);
+              return (
+                <button key={e.key} disabled={!e.live}
+                  onClick={() => { if (e.live) { setEco(e.key); setEcoOpen(false); } }}
+                  style={{ ...s.ecoItem, cursor: e.live ? "pointer" : "default", opacity: e.live ? 1 : 0.55 }}>
+                  <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <BrandIcon format={e.key} />{e.label}</span>
+                  {/* Every ecosystem stays searchable (research); the badge shows what's enforced. */}
+                  <span style={{ color: b.color, fontSize: 10, fontWeight: 600 }}>{b.text}</span>
+                </button>
+              );
+            })}
           </div>
         )}
         {/* AI Editor Extensions: choose which registry to search — Marketplace vs Open VSX (different results). */}
