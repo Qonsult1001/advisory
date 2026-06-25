@@ -31,15 +31,19 @@ public class NexusAutoProvisioner : BackgroundService
             return;
         }
 
-        // Wait for Nexus to be reachable (it boots slower than the API). Bounded retry, then seed.
-        for (var attempt = 0; attempt < 30 && !ct.IsCancellationRequested; attempt++)
+        // Wait for Nexus to actually answer its REST API (it boots much slower than the API). The
+        // status probe does NOT swallow connection failures, so we never seed against a half-booted
+        // Nexus (which previously refused every create with "Connection refused").
+        var ready = false;
+        for (var attempt = 0; attempt < 60 && !ct.IsCancellationRequested; attempt++)
         {
-            try
-            {
-                _ = await _nexus.ExistingRepoNamesAsync(ct);   // a successful list => Nexus is up
-                break;
-            }
-            catch when (attempt < 29) { await Task.Delay(TimeSpan.FromSeconds(10), ct); }
+            if (await _nexus.IsReachableAsync(ct)) { ready = true; break; }
+            await Task.Delay(TimeSpan.FromSeconds(10), ct);
+        }
+        if (!ready)
+        {
+            _log.LogWarning("Nexus did not become reachable in time — skipping auto-provision this boot.");
+            return;
         }
 
         var seeded = 0;

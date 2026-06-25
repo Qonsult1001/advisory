@@ -2104,7 +2104,9 @@ public class NexusController : ControllerBase
         {
             var nexus = NexusEcosystems.TryGet(eco, out var def);
             var prefix = nexus ? def.Prefix : null;
-            var provisioned = nexus && existing.Contains($"{prefix}-{_qSuffix}") && existing.Contains($"{prefix}-{_aSuffix}");
+            // Provisioned = quarantine exists, plus approved unless the format is proxy-only (Composer).
+            var provisioned = nexus && existing.Contains($"{prefix}-{_qSuffix}")
+                && (def.ProxyOnly || existing.Contains($"{prefix}-{_aSuffix}"));
             return new
             {
                 ecosystem = eco.ToString(),

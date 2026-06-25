@@ -9,9 +9,18 @@ namespace Advisory.Api.Nexus;
 /// <param name="Format">The Nexus proxy recipe (format) name.</param>
 /// <param name="Upstream">The public registry the quarantine proxy points at.</param>
 /// <param name="ProxyReady">True when a simple <c>remoteUrl</c> proxy works today. False for formats
-/// that need extra config before provisioning (apt distribution/signing, docker connectors) — these
-/// are still mapped (so the bridge gates them once their repos exist) but provisioning is deferred.</param>
-public record NexusEcosystem(Ecosystem Ecosystem, string Prefix, string Format, string Upstream, bool ProxyReady);
+/// that need extra config before provisioning (apt distribution/signing, alpine signing keypair,
+/// docker connectors) — these are still mapped (so the bridge gates them once their repos exist) but
+/// provisioning is deferred.</param>
+/// <param name="ApiPath">The Nexus REST URL segment for create calls. Usually equals <see cref="Format"/>,
+/// but maven's format is <c>maven2</c> while its REST path is <c>maven</c>. Defaults to Format.</param>
+/// <param name="ProxyOnly">True when Nexus offers no hosted recipe (Composer) — provision the proxy only.</param>
+public record NexusEcosystem(Ecosystem Ecosystem, string Prefix, string Format, string Upstream,
+    bool ProxyReady, string? ApiPath = null, bool ProxyOnly = false)
+{
+    /// <summary>The REST URL segment (ApiPath if set, else Format).</summary>
+    public string Recipe => ApiPath ?? Format;
+}
 
 /// <summary>
 /// THE single source of truth tying an <see cref="Ecosystem"/> to its Nexus repo prefix, format,
@@ -31,14 +40,17 @@ public static class NexusEcosystems
         new NexusEcosystem(Ecosystem.NuGet,    "nuget",    "nuget",    "https://api.nuget.org/v3/index.json",   true),
         new NexusEcosystem(Ecosystem.Cargo,    "cargo",    "cargo",    "https://crates.io",                      true),
         new NexusEcosystem(Ecosystem.Go,       "go",       "go",       "https://proxy.golang.org",              true),
-        new NexusEcosystem(Ecosystem.Maven,    "maven",    "maven2",   "https://repo1.maven.org/maven2/",       true),
+        // Maven: format is "maven2" but the REST create path is "maven".
+        new NexusEcosystem(Ecosystem.Maven,    "maven",    "maven2",   "https://repo1.maven.org/maven2/",       true, ApiPath: "maven"),
         new NexusEcosystem(Ecosystem.RubyGems, "rubygems", "rubygems", "https://rubygems.org",                   true),
-        new NexusEcosystem(Ecosystem.Composer, "composer", "composer", "https://repo.packagist.org",            true),
+        // Composer has no hosted recipe in Nexus — proxy only.
+        new NexusEcosystem(Ecosystem.Composer, "composer", "composer", "https://repo.packagist.org",            true, ProxyOnly: true),
         new NexusEcosystem(Ecosystem.Conan,    "conan",    "conan",    "https://center.conan.io",                true),
         new NexusEcosystem(Ecosystem.CRAN,     "cran",     "r",        "https://cran.r-project.org",            true),
         new NexusEcosystem(Ecosystem.DartPub,  "dartpub",  "pub",      "https://pub.dev",                        true),
-        new NexusEcosystem(Ecosystem.Alpine,   "alpine",   "alpine",   "https://dl-cdn.alpinelinux.org/alpine", true),
-        // Mapped for discovery, but apt provisioning is deferred (needs distribution + signing config).
+        // Mapped for discovery, but provisioning is deferred — these need extra format-specific config:
+        // alpine needs a signing keypair; apt (Debian/Ubuntu) needs distribution + signing.
+        new NexusEcosystem(Ecosystem.Alpine,   "alpine",   "alpine",   "https://dl-cdn.alpinelinux.org/alpine", false),
         new NexusEcosystem(Ecosystem.Debian,   "debian",   "apt",      "http://deb.debian.org/debian",          false),
         new NexusEcosystem(Ecosystem.Ubuntu,   "ubuntu",   "apt",      "http://archive.ubuntu.com/ubuntu",      false),
     };

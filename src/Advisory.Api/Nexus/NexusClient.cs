@@ -40,6 +40,10 @@ public interface INexusClient
 
     /// <summary>The repos that currently exist, as a set of names, for live-state reporting.</summary>
     Task<IReadOnlySet<string>> ExistingRepoNamesAsync(CancellationToken ct);
+
+    /// <summary>True only when Nexus's REST API actually answers (status 200). Unlike the list calls,
+    /// this does NOT swallow connection failures — the seed uses it to wait for Nexus to finish booting.</summary>
+    Task<bool> IsReachableAsync(CancellationToken ct);
 }
 
 /// <summary>Outcome of provisioning an ecosystem.</summary>
@@ -193,6 +197,17 @@ public class NexusClient : INexusClient
         return repos.Select(r => r.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
     }
 
+    public async Task<bool> IsReachableAsync(CancellationToken ct)
+    {
+        if (!IsConfigured) return false;
+        try
+        {
+            using var resp = await _http.GetAsync($"{_baseUrl}/service/rest/v1/status", ct);
+            return resp.IsSuccessStatusCode;
+        }
+        catch { return false; }   // connection refused while Nexus boots — not yet reachable
+    }
+
     public async Task<ProvisionResult> ProvisionAsync(Ecosystem eco, CancellationToken ct)
     {
         if (!IsConfigured) return new ProvisionResult(false, false, "Nexus is not configured (NEXUS_URL unset).");
@@ -207,8 +222,9 @@ public class NexusClient : INexusClient
         var already = existing.Contains(qName) && existing.Contains(aName);
 
         // Quarantine = proxy at the upstream; Approved = hosted repo devs pull from.
-        var qOk = existing.Contains(qName) || await CreateProxyAsync(def.Format, qName, def.Upstream, ct);
-        var aOk = existing.Contains(aName) || await CreateHostedAsync(def.Format, aName, ct);
+        var qOk = existing.Contains(qName) || await CreateProxyAsync(def, qName, ct);
+        // Composer has no hosted recipe — the proxy IS the gate; no separate approved repo.
+        var aOk = def.ProxyOnly || existing.Contains(aName) || await CreateHostedAsync(def, aName, ct);
 
         if (qOk && aOk) return new ProvisionResult(true, already, null);
         return new ProvisionResult(false, already, $"Failed to create {(qOk ? aName : qName)}.");
@@ -227,29 +243,46 @@ public class NexusClient : INexusClient
         return removed;
     }
 
-    private async Task<bool> CreateProxyAsync(string format, string name, string remoteUrl, CancellationToken ct)
+    private async Task<bool> CreateProxyAsync(NexusEcosystem def, string name, CancellationToken ct)
     {
-        var body = new
+        // Base proxy body + format-specific blocks Nexus requires (maven layout, nuget protocol).
+        var body = new Dictionary<string, object?>
         {
-            name,
-            online = true,
-            storage = new { blobStoreName = "default", strictContentTypeValidation = true },
-            proxy = new { remoteUrl, contentMaxAge = 1440, metadataMaxAge = 1440 },
-            negativeCache = new { enabled = true, timeToLive = 1440 },
-            httpClient = new { blocked = false, autoBlock = true },
+            ["name"] = name,
+            ["online"] = true,
+            ["storage"] = new { blobStoreName = "default", strictContentTypeValidation = true },
+            ["proxy"] = new { remoteUrl = def.Upstream, contentMaxAge = 1440, metadataMaxAge = 1440 },
+            ["negativeCache"] = new { enabled = true, timeToLive = 1440 },
+            ["httpClient"] = new { blocked = false, autoBlock = true },
         };
-        return await PutRepoAsync($"{format}/proxy", name, body, ct);
+        AddFormatBlocks(body, def.Format, hosted: false);
+        return await PutRepoAsync($"{def.Recipe}/proxy", name, body, ct);
     }
 
-    private async Task<bool> CreateHostedAsync(string format, string name, CancellationToken ct)
+    private async Task<bool> CreateHostedAsync(NexusEcosystem def, string name, CancellationToken ct)
     {
-        var body = new
+        var body = new Dictionary<string, object?>
         {
-            name,
-            online = true,
-            storage = new { blobStoreName = "default", strictContentTypeValidation = true, writePolicy = "ALLOW" },
+            ["name"] = name,
+            ["online"] = true,
+            ["storage"] = new { blobStoreName = "default", strictContentTypeValidation = true, writePolicy = "ALLOW" },
         };
-        return await PutRepoAsync($"{format}/hosted", name, body, ct);
+        AddFormatBlocks(body, def.Format, hosted: true);
+        return await PutRepoAsync($"{def.Recipe}/hosted", name, body, ct);
+    }
+
+    /// <summary>Some Nexus recipes reject a bare proxy/hosted body — they need a format block.</summary>
+    private static void AddFormatBlocks(Dictionary<string, object?> body, string format, bool hosted)
+    {
+        switch (format)
+        {
+            case "maven2":
+                body["maven"] = new { versionPolicy = hosted ? "MIXED" : "RELEASE", layoutPolicy = "STRICT" };
+                break;
+            case "nuget" when !hosted:
+                body["nugetProxy"] = new { queryCacheItemMaxAge = 3600, nugetVersion = "V3" };
+                break;
+        }
     }
 
     private async Task<bool> PutRepoAsync(string recipe, string name, object body, CancellationToken ct)

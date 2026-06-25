@@ -46,6 +46,7 @@ public class NexusDiscoveryTests
         public Task<ProvisionResult> ProvisionAsync(Ecosystem eco, CancellationToken ct) => Task.FromResult(new ProvisionResult(true, false, null));
         public Task<int> DeprovisionAsync(Ecosystem eco, CancellationToken ct) => Task.FromResult(0);
         public Task<IReadOnlySet<string>> ExistingRepoNamesAsync(CancellationToken ct) => Task.FromResult<IReadOnlySet<string>>(new HashSet<string>());
+        public Task<bool> IsReachableAsync(CancellationToken ct) => Task.FromResult(true);
     }
 
     [Fact]

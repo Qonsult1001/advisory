@@ -41,6 +41,7 @@ public class NexusProvisionTests
         public Task<int> DeprovisionAsync(Ecosystem eco, CancellationToken ct) { Deprovisioned.Add(eco); return Task.FromResult(2); }
         public Task<IReadOnlySet<string>> ExistingRepoNamesAsync(CancellationToken ct)
             => Task.FromResult<IReadOnlySet<string>>(Existing);
+        public Task<bool> IsReachableAsync(CancellationToken ct) => Task.FromResult(true);
 
         public Task<IReadOnlyList<NexusRepo>> ListRepositoriesAsync(CancellationToken ct)
             => Task.FromResult<IReadOnlyList<NexusRepo>>(Array.Empty<NexusRepo>());
