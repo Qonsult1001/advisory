@@ -3270,39 +3270,60 @@ function CatalogLanding({ eco, setQ, search, onSample, onCve }) {
   };
   const samples = SAMPLES[eco] || SAMPLES.npm;
   const run = (term) => (onSample ? onSample(term) : (setQ(term), setTimeout(search, 0)));
+  const cards = [
+    { iconKind: "oss", t: "Centralized OSS Intelligence", d: "A single source of truth for open-source packages and their CVEs — research and vet packages before they enter your org, across every major ecosystem.",
+      foot: <span style={{ display: "flex", gap: 5, alignItems: "center", flexWrap: "wrap", justifyContent: "center" }}>{CATALOG_ECOS.slice(0, 5).map((e) => <BrandIcon key={e.key} format={e.key} />)}<span style={{ fontSize: 10, color: C.dim }}>+{CATALOG_ECOS.length - 5} more</span></span> },
+    { iconKind: "sec", t: "Enriched Security & Remediation", d: "Deep vulnerability analysis with CVSS, KEV exploited-status, and the exact fixed-in version to upgrade to — actionable mitigation, not just a list.",
+      foot: <span style={{ color: C.sub, fontSize: 11.5 }}>CVE example <a onClick={() => run("lodash@4.17.15")} style={{ color: C.accent, cursor: "pointer" }}>GHSA-29mw-wpgm-hmr9 ›</a></span> },
+    { iconKind: "ctrl", t: "Custom Control & Policy", d: "Map packages to watches and policy rules to enforce fine-grained gate decisions, with violations attributed back to the watch that caught them.",
+      foot: <span style={{ display: "flex", gap: 6, justifyContent: "center" }}><Tag tone={C.accent}>PROD-watch</Tag><Tag tone={C.warn}>License-watch</Tag></span> },
+    { iconKind: "cur", t: "Curation Results in Advance", d: "Preview the gate's decision on any package before download — see if it would be allowed or blocked, and why, so teams close gaps proactively.",
+      foot: <span style={{ display: "flex", gap: 12, fontSize: 11.5, justifyContent: "center" }}><span style={{ color: C.allow }}>✓ Allowed</span><span style={{ color: C.block }}>⊘ Blocked</span></span> },
+  ];
   return (
-    <div style={{ maxWidth: 760, margin: "0 auto", textAlign: "center" }}>
+    <>
       {/* Quick-start: a clean entry point. Pick an example to instantly see a real gate verdict. */}
-      <div style={{ fontSize: 13, color: C.sub, margin: "8px 0 14px" }}>
-        Search a package above, or try one of these to see a live verdict:
-      </div>
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "center", marginBottom: 22 }}>
-        {samples.map(([term, kind]) => (
-          <button key={term} onClick={() => run(term)} title={kind === "vuln" ? "Has known vulnerabilities" : "Clean"}
-            style={{ display: "inline-flex", alignItems: "center", gap: 7, padding: "7px 14px", borderRadius: 20, cursor: "pointer",
-              fontSize: 12.5, fontWeight: 500, fontFamily: C.mono,
-              border: `1px solid ${kind === "vuln" ? "#f0c9c4" : C.line}`,
-              background: kind === "vuln" ? "#fdf5f4" : C.surface, color: kind === "vuln" ? "#c0392b" : C.ink }}>
-            <span style={{ width: 7, height: 7, borderRadius: 7, background: kind === "vuln" ? "#c0392b" : C.accent }} />
-            {term}
-          </button>
-        ))}
-      </div>
-
-      {/* Or look up a CVE directly. */}
-      <div style={{ fontSize: 12.5, color: C.sub, marginBottom: 10 }}>…or look up a known-exploited CVE:</div>
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "center", marginBottom: 26 }}>
-        {SAMPLE_CVES.slice(0, 4).map(([id, label]) => (
-          <button key={id} onClick={() => onCve && onCve(id)} title={label}
-            style={{ padding: "6px 13px", borderRadius: 20, cursor: "pointer", fontSize: 12, fontFamily: C.mono,
-              border: `1px solid ${C.line}`, background: C.surface, color: C.sub }}>{id}</button>
-        ))}
+      <div style={{ maxWidth: 760, margin: "0 auto 26px", textAlign: "center" }}>
+        <div style={{ fontSize: 13, color: C.sub, margin: "8px 0 14px" }}>
+          Search a package above, or try one of these to see a live verdict:
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "center", marginBottom: 14 }}>
+          {samples.map(([term, kind]) => (
+            <button key={term} onClick={() => run(term)} title={kind === "vuln" ? "Has known vulnerabilities" : "Clean"}
+              style={{ display: "inline-flex", alignItems: "center", gap: 7, padding: "7px 14px", borderRadius: 20, cursor: "pointer",
+                fontSize: 12.5, fontWeight: 500, fontFamily: C.mono,
+                border: `1px solid ${kind === "vuln" ? "#f0c9c4" : C.line}`,
+                background: kind === "vuln" ? "#fdf5f4" : C.surface, color: kind === "vuln" ? "#c0392b" : C.ink }}>
+              <span style={{ width: 7, height: 7, borderRadius: 7, background: kind === "vuln" ? "#c0392b" : C.accent }} />
+              {term}
+            </button>
+          ))}
+          {SAMPLE_CVES.slice(0, 3).map(([id, label]) => (
+            <button key={id} onClick={() => onCve && onCve(id)} title={label}
+              style={{ padding: "7px 13px", borderRadius: 20, cursor: "pointer", fontSize: 12, fontFamily: C.mono,
+                border: `1px solid ${C.line}`, background: C.surface, color: C.sub }}>{id}</button>
+          ))}
+        </div>
       </div>
 
-      <div style={{ color: C.dim, fontSize: 11.5 }}>
-        17 ecosystems · live from each public registry + OSV.dev, CISA KEV &amp; OpenSSF — all free.
+      {/* Marketing cards — what the Catalog gives you. */}
+      <div style={{ textAlign: "center", color: C.ink, fontSize: 15, fontWeight: 600, margin: "0 0 18px" }}>
+        See how the Catalog helps you ship secure software faster
       </div>
-    </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(250px,1fr))", gap: 16 }}>
+        {cards.map((c, i) => (
+          <div key={i} style={{ ...s.featCard, alignItems: "center", textAlign: "center" }}>
+            <FeatIcon kind={c.iconKind} />
+            <div style={{ fontWeight: 600, fontSize: 15, margin: "14px 0 10px", lineHeight: 1.3 }}>{c.t}</div>
+            <div style={{ color: C.sub, fontSize: 12.5, lineHeight: 1.55, flex: 1 }}>{c.d}</div>
+            <div style={{ marginTop: 16, paddingTop: 14, borderTop: `1px solid ${C.lineSoft}`, width: "100%", display: "flex", justifyContent: "center" }}>{c.foot}</div>
+          </div>
+        ))}
+      </div>
+      <div style={{ textAlign: "center", color: C.dim, fontSize: 11.5, marginTop: 20 }}>
+        Last Public Catalog update just now · 17 ecosystems · sourced live from each public registry + OSV.dev, CISA KEV &amp; OpenSSF — all free.
+      </div>
+    </>
   );
 }
 // Outline line-icons for the feature cards, matching JFrog's centered icon style.
