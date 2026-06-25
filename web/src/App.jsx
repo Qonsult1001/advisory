@@ -3247,14 +3247,20 @@ const ECO_REGISTRIES = {
   Ubuntu: [["Ubuntu Archive", "https://packages.ubuntu.com"], ["Launchpad", "https://launchpad.net/ubuntu"], ["ubuntu.com/security", "https://ubuntu.com/security/cves"]],
   AIEditorExtensions: [["VS Code Marketplace", "https://marketplace.visualstudio.com"], ["Open VSX", "https://open-vsx.org"]],
 };
-function SampleRepoChips({ eco }) {
+function SampleRepoChips({ eco, onSample }) {
   const regs = ECO_REGISTRIES[eco] || [];
   if (regs.length === 0) return <span style={{ fontSize: 11, color: C.dim }}>no public registry mapped for this ecosystem</span>;
-  return <>{regs.map(([label, url]) => (
-    <a key={url} href={url} target="_blank" rel="noreferrer" title={`Public source registry for ${eco}`}
-      style={{ ...s.sampleChip, display: "inline-flex", alignItems: "center", gap: 6, textDecoration: "none", color: C.ink }}>
+  // Reference examples: a repository name shows where this ecosystem's packages come from. Clicking
+  // searches the catalog in-app (a starter query for that registry) — never leaves the app.
+  const starter = { npm: "express", PyPI: "requests", Maven: "guava", NuGet: "Newtonsoft.Json",
+    Go: "gin", Cargo: "serde", Conan: "zlib", RubyGems: "rails", Composer: "laravel", CRAN: "ggplot2",
+    DartPub: "http", Conda: "numpy", HuggingFace: "bert", Alpine: "openssl", Debian: "nginx",
+    Ubuntu: "curl", AIEditorExtensions: "python" }[eco] || "";
+  return <>{regs.map(([label]) => (
+    <button key={label} onClick={() => onSample && onSample(starter)} title={`Browse ${eco} packages from ${label}`}
+      style={{ ...s.sampleChip, display: "inline-flex", alignItems: "center", gap: 6, cursor: "pointer", color: C.ink }}>
       <BrandIcon format={eco} />{label}
-    </a>
+    </button>
   ))}</>;
 }
 
@@ -3319,7 +3325,7 @@ function CatalogLanding({ eco, setQ, search, onSample, onCve }) {
         <div style={{ display: "flex", alignItems: "baseline", gap: 12, marginBottom: 12, flexWrap: "wrap" }}>
           <span style={{ fontSize: 11, fontWeight: 700, color: C.dim, textTransform: "uppercase", letterSpacing: 0.5, width: 92, flexShrink: 0 }}>Repositories</span>
           <span style={{ display: "flex", gap: 8, flexWrap: "wrap", flex: 1 }}>
-            <SampleRepoChips eco={eco} />
+            <SampleRepoChips eco={eco} onSample={run} />
           </span>
         </div>
         {/* CVEs */}
