@@ -3350,7 +3350,7 @@ function CatalogLanding({ eco, setQ, search, onSample, onCve }) {
         ))}
       </div>
       <div style={{ textAlign: "center", color: C.dim, fontSize: 11.5, marginTop: 20 }}>
-        Last Public Catalog update just now · 17 ecosystems · sourced live from each public registry + OSV.dev, CISA KEV &amp; OpenSSF — all free.
+        Last updated just now · 17 ecosystems · sourced live from each registry + OSV.dev, CISA KEV &amp; OpenSSF.
       </div>
     </>
   );
