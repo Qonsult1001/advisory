@@ -49,6 +49,11 @@ public interface INexusClient
     /// themselves stay; only their contents are emptied (the "reset demo data" action).</summary>
     Task<int> EmptyFirewallReposAsync(CancellationToken ct);
 
+    /// <summary>Pull a package through its quarantine proxy so Nexus fetches+caches it — i.e. make it
+    /// physically land in <eco>-quarantine, exactly as a real pip/npm install would. The bridge then
+    /// gates it. Returns true if the fetch reached the upstream.</summary>
+    Task<bool> FetchIntoQuarantineAsync(Ecosystem eco, string name, string version, CancellationToken ct);
+
     /// <summary>True only when Nexus's REST API actually answers (status 200). Unlike the list calls,
     /// this does NOT swallow connection failures — the seed uses it to wait for Nexus to finish booting.</summary>
     Task<bool> IsReachableAsync(CancellationToken ct);
@@ -238,6 +243,47 @@ public class NexusClient : INexusClient
         }
         _log.LogWarning("Reset: emptied firewall repos — {Count} components deleted.", deleted);
         return deleted;
+    }
+
+    public async Task<bool> FetchIntoQuarantineAsync(Ecosystem eco, string name, string version, CancellationToken ct)
+    {
+        if (!IsConfigured || !NexusEcosystems.TryGet(eco, out var def)) return false;
+        var repoBase = $"{_baseUrl}/repository/{def.Prefix}-{_quarantineSuffix}";
+
+        // Each registry caches a component when its artifact path is requested through the proxy. We
+        // request the package metadata/index, which is enough for Nexus to index it into quarantine.
+        // (For wheels/tarballs, fetching the index is what makes the component appear in the repo.)
+        string url = eco switch
+        {
+            Ecosystem.PyPI    => $"{repoBase}/simple/{Uri.EscapeDataString(name.ToLowerInvariant())}/",
+            Ecosystem.npm     => $"{repoBase}/{Uri.EscapeDataString(name)}",
+            Ecosystem.NuGet   => $"{repoBase}/v3/registration/{Uri.EscapeDataString(name.ToLowerInvariant())}/index.json",
+            Ecosystem.Cargo   => $"{repoBase}/api/v1/crates/{Uri.EscapeDataString(name)}",
+            Ecosystem.RubyGems=> $"{repoBase}/api/v1/gems/{Uri.EscapeDataString(name)}.json",
+            Ecosystem.Composer=> $"{repoBase}/p2/{Uri.EscapeDataString(name)}.json",
+            Ecosystem.Maven   => $"{repoBase}/{name.Replace('.', '/').Replace(':', '/')}/",
+            _                 => $"{repoBase}/{Uri.EscapeDataString(name)}",
+        };
+        try
+        {
+            using var resp = await _http.GetAsync(url, ct);
+            _log.LogInformation("Fetch {Pkg} into {Repo}: {Status}", name, $"{def.Prefix}-{_quarantineSuffix}", (int)resp.StatusCode);
+            // For ecosystems where the index alone doesn't cache the artifact, also pull the first asset.
+            if (resp.IsSuccessStatusCode && eco == Ecosystem.PyPI)
+            {
+                var html = await resp.Content.ReadAsStringAsync(ct);
+                var m = System.Text.RegularExpressions.Regex.Match(html, "href=\"([^\"]+\\.(?:whl|tar\\.gz))");
+                if (m.Success)
+                {
+                    var rel = m.Groups[1].Value.Split('#')[0];
+                    var fileUrl = new Uri(new Uri(url.EndsWith('/') ? url : url + "/"), rel).ToString();
+                    using var f = await _http.GetAsync(fileUrl, ct);
+                    _log.LogInformation("Cached {Pkg} artifact: {Status}", name, (int)f.StatusCode);
+                }
+            }
+            return resp.IsSuccessStatusCode;
+        }
+        catch (Exception ex) { _log.LogWarning(ex, "Fetch {Pkg} into quarantine failed.", name); return false; }
     }
 
     public async Task<bool> IsReachableAsync(CancellationToken ct)

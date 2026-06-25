@@ -39,11 +39,16 @@ public class IntakeConsumer : BackgroundService
                 try
                 {
                     using var scope = _scopes.CreateScope();
-                    var gate = scope.ServiceProvider.GetRequiredService<IGateEngine>();
-                    var result = await gate.EvaluateAsync(item.Package, ct);
+                    // Pull the package into its Nexus quarantine proxy so it physically appears in the
+                    // pipeline (Quarantine → the PromotionBridge then gates + promotes/holds it), exactly
+                    // as a real pip/npm install would. This makes "Send to pipeline" land where the
+                    // operator can see it, instead of evaluating-and-forgetting.
+                    var nexus = scope.ServiceProvider.GetRequiredService<Advisory.Api.Nexus.INexusClient>();
+                    var fetched = await nexus.FetchIntoQuarantineAsync(
+                        item.Package.Ecosystem, item.Package.Name, item.Package.Version, ct);
                     await _queue.AckAsync(item.MessageId, ct);
-                    _log.LogInformation("Evaluated {Pkg}@{Ver} -> {Decision}",
-                        item.Package.Name, item.Package.Version, result.Decision);
+                    _log.LogInformation("Intake {Pkg}@{Ver} -> quarantine fetch {Result}",
+                        item.Package.Name, item.Package.Version, fetched ? "ok" : "failed");
                 }
                 catch (Exception ex)
                 {

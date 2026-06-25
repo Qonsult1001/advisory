@@ -49,6 +49,7 @@ public class NexusDiscoveryTests
         public Task<bool> IsReachableAsync(CancellationToken ct) => Task.FromResult(true);
         public Task<bool> RevokeApprovedAsync(Ecosystem eco, string name, string version, CancellationToken ct) => Task.FromResult(true);
         public Task<int> EmptyFirewallReposAsync(CancellationToken ct) => Task.FromResult(0);
+        public Task<bool> FetchIntoQuarantineAsync(Ecosystem eco, string name, string version, CancellationToken ct) => Task.FromResult(true);
     }
 
     [Fact]

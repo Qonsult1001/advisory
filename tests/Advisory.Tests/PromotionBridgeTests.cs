@@ -43,6 +43,7 @@ public class PromotionBridgeTests
         public Task<bool> IsReachableAsync(CancellationToken ct) => Task.FromResult(true);
         public Task<bool> RevokeApprovedAsync(Ecosystem eco, string name, string version, CancellationToken ct) => Task.FromResult(true);
         public Task<int> EmptyFirewallReposAsync(CancellationToken ct) => Task.FromResult(0);
+        public Task<bool> FetchIntoQuarantineAsync(Ecosystem eco, string name, string version, CancellationToken ct) => Task.FromResult(true);
     }
 
     public static ServiceProvider BuildGate()
@@ -78,6 +79,9 @@ public class PromotionBridgeTests
         sc.AddSingleton<IVulnSource>(sp => sp.GetRequiredService<EpssSource>());
         sc.AddSingleton<ICurrentUser, TestSystemUser>();
         sc.AddScoped<IGateEngine, GateEngine>();
+        // Unconfigured Nexus (no NEXUS_URL) → IsConfigured=false, so the IntakeConsumer's quarantine
+        // fetch is a harmless no-op in tests but the dependency resolves.
+        sc.AddSingleton<Advisory.Api.Nexus.INexusClient, Advisory.Api.Nexus.NexusClient>();
         return sc.BuildServiceProvider();
     }
 
