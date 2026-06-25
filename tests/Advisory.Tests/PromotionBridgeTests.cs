@@ -48,6 +48,7 @@ public class PromotionBridgeTests
         var cfg = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string,string?>
         {
             ["PolicyPath"] = Path.GetTempFileName(),
+            ["ScanIndexPath"] = Path.GetTempFileName(),
             ["AuditPath"] = Path.GetTempFileName(),
             ["WormPath"] = Path.GetTempFileName(),
         }).Build();
@@ -63,6 +64,7 @@ public class PromotionBridgeTests
         sc.AddSingleton<PickleScanner>();
         sc.AddSingleton<SecretScanner>();
         sc.AddSingleton<IacScanner>();
+        sc.AddSingleton<Advisory.Api.Scan.ScanStore>();   // bridge records its decision here for the pipeline view
         sc.AddSingleton<ReachabilityAnalyzer>();
         sc.AddSingleton<Advisory.Api.Catalog.OpRiskService>();
         sc.AddSingleton<IGroqClient, GroqClient>();

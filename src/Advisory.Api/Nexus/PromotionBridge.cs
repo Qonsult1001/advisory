@@ -55,6 +55,12 @@ public class PromotionBridge : BackgroundService
                     var gate = scope.ServiceProvider.GetRequiredService<IGateEngine>();
                     var result = await gate.EvaluateAsync(pkg, ct);
 
+                    // Persist the decision into the scan store so the Quarantine view can show, per
+                    // package, what the pipeline did (promoted / blocked / held) and why.
+                    var repo = NexusEcosystems.TryGet(c.Ecosystem, out var def) ? $"{def.Prefix}-quarantine" : "quarantine";
+                    var scans = scope.ServiceProvider.GetRequiredService<Advisory.Api.Scan.ScanStore>();
+                    try { await scans.RecordDecisionAsync(repo, pkg, result); } catch { /* best-effort observability */ }
+
                     if (result.Decision == GateDecision.Allow)
                     {
                         if (bytes.Length == 0) bytes = await _nexus.DownloadAsync(c.DownloadUrl, ct);

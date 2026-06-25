@@ -2408,20 +2408,32 @@ function Quarantine() {
     <div style={{ animation: "fwfade .2s ease" }}>
       <div style={s.crumb}><span style={{ color: C.accent }}>Pipeline</span><span style={{ color: C.dim }}>›</span><span>Quarantine</span></div>
       <div style={{ fontSize: 22, fontWeight: 700, letterSpacing: -0.4, margin: "4px 0 14px" }}>Quarantine</div>
-      <Card title="Physically held packages"
-        desc="Packages sitting in the Nexus quarantine repo that the gate has not promoted. The physical holding area — not just a decision label.">
+      <Card title="Pipeline — packages in the proxy"
+        desc="Every package the firewall is currently handling: what's in the quarantine proxy and what the gate decided. Promoted = cleared to approved; Blocked/Held = stopped; Pending = awaiting the next gate cycle.">
         {!loading && data && !data.configured
           ? <div style={{ padding: 22, color: C.sub, fontSize: 12.5, lineHeight: 1.6 }}>Nexus not connected (<code style={s.code}>NEXUS_URL</code> unset). When connected, packages awaiting promotion appear here.</div>
-          : <Table cols={["Component", "Ecosystem", "Version", "File"]}>
-              {held.length === 0 && <tr><td style={s.td} colSpan={4}>{loading ? "Loading…" : "Nothing held — quarantine is empty."}</td></tr>}
-              {held.map((h, i) => (
-                <tr key={i} style={s.tr}>
-                  <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11.5 }}>{h.name}</td>
-                  <td style={s.td}><Tag tone={C.accent}>{h.ecosystem}</Tag></td>
-                  <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11.5 }}>{h.version}</td>
-                  <td style={{ ...s.td, color: C.sub, fontSize: 11 }}>{h.fileName || "—"}</td>
-                </tr>
-              ))}
+          : <Table cols={["Component", "Ecosystem", "Version", "Status", "Reason"]}>
+              {held.length === 0 && <tr><td style={s.td} colSpan={5}>{loading ? "Loading…" : "Pipeline empty — no packages in quarantine."}</td></tr>}
+              {held.map((h, i) => {
+                const tone = h.status === "promoted" ? C.accent
+                  : h.status === "blocked" ? "#c0392b"
+                  : h.status === "held" ? "#d98a00"
+                  : h.status === "promoting" ? C.accent : C.dim;
+                const label = h.status === "promoting" ? "promoting…" : h.status;
+                return (
+                  <tr key={i} style={s.tr}>
+                    <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11.5 }}>{h.name}</td>
+                    <td style={s.td}><Tag tone={C.accent}>{h.ecosystem}</Tag></td>
+                    <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11.5 }}>{h.version}</td>
+                    <td style={s.td}>
+                      <span style={{ display: "inline-block", padding: "2px 9px", borderRadius: 20, fontSize: 10.5, fontWeight: 600,
+                        color: tone, background: `${tone}1a`, textTransform: "capitalize" }}>{label}</span>
+                      {(h.critical > 0 || h.high > 0) && <span style={{ marginLeft: 6, fontSize: 10, color: "#c0392b" }}>{h.critical}C/{h.high}H</span>}
+                    </td>
+                    <td style={{ ...s.td, color: C.sub, fontSize: 11, maxWidth: 420 }}>{h.reason || "—"}</td>
+                  </tr>
+                );
+              })}
             </Table>}
       </Card>
     </div>

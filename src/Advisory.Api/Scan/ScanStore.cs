@@ -64,6 +64,29 @@ public class ScanStore
 
     public IReadOnlyList<StoredScan> All() => _scans.Values.OrderByDescending(s => s.ScannedAt).ToList();
 
+    /// <summary>Persist a decision the PromotionBridge already computed (no re-scan), so the Quarantine
+    /// view can show, per package, what the pipeline did and why. Cheap + best-effort observability.</summary>
+    public Task RecordDecisionAsync(string repo, PackageRef pkg, GateResult result)
+    {
+        var tree = result.TreeFindings ?? Array.Empty<TreeFinding>();
+        var vulns = tree.Select(tf =>
+        {
+            var f = tf.Finding;
+            return new ScanVuln(f.Id, f.Severity.ToString(), f.CvssScore, f.Summary, f.FixedVersion,
+                f.KnownExploited, tf.Component, new[] { pkg.Name, tf.Component.Split('@')[0] }, f.Aliases, f.Cwes, f.References);
+        }).ToList();
+        int Sev(string s) => vulns.Count(v => v.Severity == s);
+        var verdict = result.Decision == GateDecision.Allow
+            ? (vulns.Count == 0 ? "Clean" : "Caution") : "Vulnerable";
+        var scan = new StoredScan(repo, pkg.Ecosystem, pkg.Name, pkg.Version, pkg.FileName,
+            result.Decision.ToString(), verdict, result.ComponentsEvaluated,
+            Sev("Critical"), Sev("High"), Sev("Medium"), Sev("Low"),
+            vulns, Array.Empty<ScanComponent>(), DateTimeOffset.UtcNow);
+        _scans[Key(repo, pkg.Name, pkg.Version)] = scan;
+        Persist();
+        return Task.CompletedTask;
+    }
+
     /// <summary>
     /// Run the FULL gate (resolves the transitive tree, queries OSV per node), build a stored scan
     /// with per-vuln impact paths, persist it, and return it. This is the indexing step.

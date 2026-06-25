@@ -773,14 +773,50 @@ public class ScansController : ControllerBase
 public class QuarantineController : ControllerBase
 {
     private readonly INexusClient _nexus;
-    public QuarantineController(INexusClient nexus) => _nexus = nexus;
+    private readonly Advisory.Api.Scan.ScanStore _scans;
+    public QuarantineController(INexusClient nexus, Advisory.Api.Scan.ScanStore scans)
+    { _nexus = nexus; _scans = scans; }
 
     [HttpGet]
     public async Task<ActionResult> Held(CancellationToken ct)
     {
         if (!_nexus.IsConfigured) return Ok(new { configured = false, held = Array.Empty<object>() });
-        var items = await _nexus.ListQuarantineAsync(ct);
-        return Ok(new { configured = true, count = items.Count, held = items });
+
+        // Everything currently sitting in the quarantine proxies, plus what's already been promoted to
+        // approved — so each row can show where it is in the pipeline (pending / promoted / held / blocked).
+        var inQuarantine = await _nexus.ListQuarantineAsync(ct);
+        var approvedNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var eco in NexusEcosystems.Gateable)
+        {
+            if (!NexusEcosystems.TryGet(eco, out var def)) continue;
+            var approved = await _nexus.ListComponentsAsync($"{def.Prefix}-approved", ct);
+            foreach (var a in approved) approvedNames.Add($"{a.Name}@{a.Version}");
+        }
+
+        var rows = inQuarantine.Select(h =>
+        {
+            var key = $"{h.Name}@{h.Version}";
+            var prefix = NexusEcosystems.TryGet(h.Ecosystem, out var d) ? d.Prefix : "";
+            var scan = _scans.Get($"{prefix}-quarantine", h.Name, h.Version);
+            // Status: promoted if it reached approved; else the gate's decision if we scanned it; else pending.
+            string status, reason;
+            if (approvedNames.Contains(key)) { status = "promoted"; reason = "Allowed — promoted to approved."; }
+            else if (scan is not null)
+            {
+                status = scan.Decision == "Block" ? "blocked" : scan.Decision == "Allow" ? "promoting" : "held";
+                reason = scan.Verdict ?? scan.Decision;
+            }
+            else { status = "pending"; reason = "Awaiting the next gate cycle."; }
+            return new
+            {
+                h.Name, ecosystem = h.Ecosystem.ToString(), h.Version, h.FileName,
+                status, reason,
+                decision = scan?.Decision,
+                critical = scan?.Critical ?? 0, high = scan?.High ?? 0,
+            };
+        }).ToList();
+
+        return Ok(new { configured = true, count = rows.Count, held = rows });
     }
 }
 
