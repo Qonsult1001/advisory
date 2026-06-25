@@ -391,7 +391,7 @@ export default function App() {
 
           {tab === "queue" && <IntakeQueue />}
 
-          {tab === "scans" && <ScansList />}
+          {tab === "scans" && <ScansList setTab={setTab} />}
           {tab === "xrayoverview" && <XrayOverview setTab={setTab} />}
 
           {tab === "quarantine" && <Quarantine />}
@@ -1395,7 +1395,7 @@ function AddCustomSource({ onCancel, onAdd, edit }) {
 }
 
 // Xray Scans List — full drill-down: repositories → artifacts → artifact overview.
-function ScansList() {
+function ScansList({ setTab }) {
   const [view, setView] = useState({ level: "repos" }); // repos | artifacts{repo} | artifact{repo,art}
   const crumb = (
     <div style={s.crumb}>
@@ -1413,7 +1413,7 @@ function ScansList() {
   return (
     <div style={{ animation: "fwfade .2s ease" }}>
       {crumb}
-      {view.level === "repos" && <ScansRepos onOpen={(repo) => setView({ level: "artifacts", repo })} />}
+      {view.level === "repos" && <ScansRepos onOpen={(repo) => setView({ level: "artifacts", repo })} setTab={setTab} />}
       {view.level === "artifacts" && <RepoArtifacts repo={view.repo} onOpen={(art) => setView({ level: "artifact", repo: view.repo, art })} />}
       {view.level === "artifact" && <ArtifactOverview repo={view.repo} art={view.art} />}
     </div>
@@ -1489,35 +1489,53 @@ function PkgType({ format }) {
     </span>
   );
 }
-function ConfigIcons() {
-  // Per-repo scanner configuration icons — matches JFrog's Configurations column.
-  // CLICKABLE: opens a popover with the scanner name + configured state + description.
-  const [open, setOpen] = useState(null); // which scanner's popover is open
+function ConfigIcons({ policy, onGoSettings }) {
+  // Per-repo scanner configuration icons — matches JFrog's Configurations column. Clean inline-SVG
+  // icons; CLICKABLE: a click toggles a sticky popover showing the scanner's REAL configured state
+  // (read from the live policy) with a shortcut to Policy controls. No hover-flicker.
+  const [open, setOpen] = useState(null);
+  const p = policy || {};
   const scanners = [
-    { ch: "◆", key: "sca", label: "SCA", full: "Software Composition Analysis", on: true, desc: "Resolves the full dependency tree and matches every component against CVE feeds (OSV, KEV, EPSS)." },
-    { ch: "⊙", key: "ctx", label: "Contextual Analysis", full: "Contextual Analysis (reachability)", on: false, desc: "Determines whether a vulnerable symbol is actually reachable from your code. Enable rule SEC-REACH-01." },
-    { ch: "🔑", key: "secrets", label: "Secrets", full: "Secrets detection", on: false, desc: "Scans artifact bytes for embedded credentials/tokens. Enable rule SEC-SECRET-01 (content scan)." },
-    { ch: "◎", key: "exp", label: "Exposures", full: "Exposures — IaC + malicious packages", on: true, desc: "Flags IaC misconfigurations and malicious/typosquat packages (OpenSSF Malicious Packages)." },
+    { icon: "layers", key: "sca", label: "SCA", on: true,
+      desc: "Software Composition Analysis — resolves the full dependency tree and matches every component against CVE feeds (OSV, KEV, EPSS). Core gate; always on." },
+    { icon: "search", key: "ctx", label: "Contextual Analysis", on: !!p.downgradeUnreachable,
+      desc: "Reachability — determines whether a vulnerable symbol is actually reachable from your code, downgrading unreachable findings. Toggle in Policy controls (SEC-REACH)." },
+    { icon: "key", key: "secrets", label: "Secrets", on: p.scanSecrets !== false,
+      desc: "Secrets detection — scans artifact bytes for embedded credentials/tokens. Toggle in Policy controls (SEC-SECRET)." },
+    { icon: "alert", key: "exp", label: "Exposures", on: true,
+      desc: "Exposures — flags IaC misconfigurations and malicious/typosquat packages (OpenSSF Malicious Packages). Core gate; always on." },
   ];
   return (
-    <span style={{ display: "inline-flex", gap: 3, position: "relative" }} onMouseLeave={() => setOpen(null)}>
+    <span style={{ display: "inline-flex", gap: 4, position: "relative" }}>
       {scanners.map((sc) => (
         <span key={sc.key} style={{ position: "relative" }}>
-          <span onClick={(e) => { e.stopPropagation(); setOpen(open === sc.key ? null : sc.key); }}
-            onMouseEnter={() => setOpen(sc.key)}
-            style={{ width: 26, height: 26, borderRadius: 4, display: "grid", placeItems: "center", cursor: "pointer",
-              fontSize: 12.5, color: sc.on ? C.accentDim : C.dim, border: `1px solid ${open === sc.key ? C.accent : sc.on ? C.line : "transparent"}`,
-              background: sc.on ? C.surface2 : "transparent" }}>{sc.ch}</span>
+          <button onClick={(e) => { e.stopPropagation(); setOpen(open === sc.key ? null : sc.key); }}
+            title={sc.label}
+            style={{ width: 28, height: 28, borderRadius: 6, display: "grid", placeItems: "center", cursor: "pointer",
+              padding: 0, border: `1px solid ${open === sc.key ? C.accent : C.line}`,
+              background: sc.on ? "#eef8ef" : C.surface, color: sc.on ? C.accentDim : C.dim }}>
+            <Icon name={sc.icon} size={15} color={sc.on ? C.accentDim : C.dim} />
+          </button>
           {open === sc.key && (
-            <div onClick={(e) => e.stopPropagation()} style={{ position: "absolute", top: 30, right: 0, width: 240, background: C.surface, border: `1px solid ${C.line}`, borderRadius: 10, boxShadow: "0 8px 26px rgba(0,0,0,.16)", padding: 12, zIndex: 30, textAlign: "left" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-                <span style={{ fontSize: 14 }}>{sc.ch}</span>
-                <span style={{ fontSize: 13, fontWeight: 700, color: C.ink, flex: 1 }}>{sc.label}</span>
-                <Tag tone={sc.on ? C.allow : C.sub}>{sc.on ? "✓ Configured" : "Off"}</Tag>
+            <>
+              {/* click-away catcher */}
+              <div onClick={(e) => { e.stopPropagation(); setOpen(null); }}
+                style={{ position: "fixed", inset: 0, zIndex: 29 }} />
+              <div onClick={(e) => e.stopPropagation()} style={{ position: "absolute", top: 32, right: 0, width: 250, background: C.surface, border: `1px solid ${C.line}`, borderRadius: 10, boxShadow: "0 8px 26px rgba(0,0,0,.16)", padding: 12, zIndex: 30, textAlign: "left" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                  <Icon name={sc.icon} size={15} color={sc.on ? C.accentDim : C.dim} />
+                  <span style={{ fontSize: 13, fontWeight: 700, color: C.ink, flex: 1 }}>{sc.label}</span>
+                  <Tag tone={sc.on ? C.allow : C.sub}>{sc.on ? "✓ Configured" : "Off"}</Tag>
+                </div>
+                <div style={{ fontSize: 11.5, color: C.sub, lineHeight: 1.5 }}>{sc.desc}</div>
+                {onGoSettings && (
+                  <button onClick={(e) => { e.stopPropagation(); setOpen(null); onGoSettings(); }}
+                    style={{ marginTop: 10, width: "100%", padding: "6px 10px", borderRadius: 6, fontSize: 11.5, fontWeight: 600, cursor: "pointer", border: `1px solid ${C.line}`, background: C.surface2, color: C.accentDim }}>
+                    Configure in Policy controls →
+                  </button>
+                )}
               </div>
-              <div style={{ fontSize: 11.5, color: C.sub, lineHeight: 1.5 }}>{sc.full}</div>
-              <div style={{ fontSize: 11, color: C.dim, marginTop: 6, lineHeight: 1.5 }}>{sc.desc}</div>
-            </div>
+            </>
           )}
         </span>
       ))}
@@ -1597,8 +1615,10 @@ function EcosystemFirewall({ ecos, busy, msg, onAdd, onRemoveRequest }) {
   );
 }
 
-function ScansRepos({ onOpen }) {
+function ScansRepos({ onOpen, setTab }) {
   const [data, setData] = useState(null);
+  const [scanPolicy, setScanPolicy] = useState(null);  // live policy for the Configurations icons
+  useEffect(() => { api.getPolicy().then((r) => setScanPolicy(r.policy)).catch(() => {}); }, []);
   const [gitData, setGitData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [gitLoading, setGitLoading] = useState(false);
@@ -1760,7 +1780,7 @@ function ScansRepos({ onOpen }) {
                   <td style={{ ...s.td, fontWeight: 600 }}>{r.indexedArtifacts}</td>
                   <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11.5, color: C.sub, maxWidth: 300, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.latestArtifact || "—"}</td>
                   <td style={{ ...s.td, color: C.sub, fontSize: 11.5, whiteSpace: "nowrap" }}>{r.indexedOn || "—"}</td>
-                  <td style={s.td} onClick={(e) => e.stopPropagation()}><ConfigIcons /></td>
+                  <td style={s.td} onClick={(e) => e.stopPropagation()}><ConfigIcons policy={scanPolicy} onGoSettings={setTab ? () => setTab("controls") : undefined} /></td>
                 </tr>
               );
             })}
