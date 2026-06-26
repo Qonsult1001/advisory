@@ -932,8 +932,9 @@ public class ExceptionsController : ControllerBase
     private readonly IPolicyStore _store;
     private readonly IAuditLog _audit;
     private readonly ICurrentUser _user;
-    public ExceptionsController(IPolicyStore store, IAuditLog audit, ICurrentUser user)
-    { _store = store; _audit = audit; _user = user; }
+    private readonly Advisory.Api.Scan.ScanStore _scans;
+    public ExceptionsController(IPolicyStore store, IAuditLog audit, ICurrentUser user, Advisory.Api.Scan.ScanStore scans)
+    { _store = store; _audit = audit; _user = user; _scans = scans; }
 
     public record GrantRequest(string Package, string Reason, string Ticket, DateTimeOffset Expires);
 
@@ -950,11 +951,21 @@ public class ExceptionsController : ControllerBase
         var updated = ClonePolicy(p);
         updated.Exceptions.Add(ex);
         await _store.UpdateAsync(updated, _user.Name);
+
+        // An exception is an explicit operator approval — it OVERRIDES a prior revoke. Clear the
+        // revocation denylist for this package so the bridge can re-promote it (revoke -> exception ->
+        // approved again). Package is "name==version" (version optional).
+        var spec = (req.Package ?? "").Split("==", 2);
+        var exName = spec[0].Trim();
+        var exVer = spec.Length > 1 ? spec[1].Trim() : "";
+        foreach (var eco in Enum.GetValues<Ecosystem>())
+            _scans.ClearRevoked(eco, exName, exVer);
+
         await _audit.AppendAsync(new AuditEntry(Guid.NewGuid(),
             new PackageRef(Ecosystem.PyPI, req.Package, "*"), GateDecision.Allow,
             Array.Empty<Finding>(), new[] { $"SEC-EXC-GRANT:{req.Ticket}" }, req.Ticket,
             _store.Current.Version, 0, DateTimeOffset.UtcNow, null,
-            $"Exception granted for {req.Package} by {_user.Name}, ticket {req.Ticket}, expires {req.Expires:o}.",
+            $"Exception granted for {req.Package} by {_user.Name}, ticket {req.Ticket}, expires {req.Expires:o}. Revocation cleared.",
             _user.Name));
         return Ok(ex);
     }

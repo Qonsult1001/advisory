@@ -53,19 +53,20 @@ public class PromotionBridge : BackgroundService
 
                 foreach (var c in components)
                 {
-                    // Skip a component once it has been PROMOTED. For a held package, re-evaluate ONLY
-                    // when the policy/exceptions changed since we last gated it (else we'd re-audit the
-                    // same Block every cycle). New components (never seen) are always evaluated.
-                    if (_processed.Contains(c.ComponentId)) continue;
-                    var revokedNow = false;
-                    if (_evaluatedUnderPolicy.TryGetValue(c.ComponentId, out var lastSig) && lastSig == policySig)
-                    {
-                        // Already gated under this exact policy — but a fresh revoke must still take hold.
-                        using var rs = _scopes.CreateScope();
+                    // Decide whether to (re)handle this component. We re-handle when:
+                    //  - it's new (never gated), OR
+                    //  - it's currently revoked (needs to be re-held / cleared by an exception), OR
+                    //  - the policy/exceptions changed since we last gated it (a new exception may now
+                    //    apply, or a rule change flips the verdict).
+                    // Otherwise skip — avoids re-auditing the same unchanged decision every cycle.
+                    bool revokedNow;
+                    using (var rs = _scopes.CreateScope())
                         revokedNow = rs.ServiceProvider.GetRequiredService<Advisory.Api.Scan.ScanStore>()
                             .IsRevoked(c.Ecosystem, c.Name, c.Version);
-                        if (!revokedNow) continue;
-                    }
+                    var seenBefore = _evaluatedUnderPolicy.TryGetValue(c.ComponentId, out var lastSig);
+                    var policyChanged = !seenBefore || lastSig != policySig;
+                    if (_processed.Contains(c.ComponentId) && !revokedNow && !policyChanged) continue; // promoted + unchanged
+                    if (seenBefore && !_processed.Contains(c.ComponentId) && !revokedNow && !policyChanged) continue; // held + unchanged
 
                     byte[] bytes = Array.Empty<byte>();
                     if (c.Ecosystem == Ecosystem.HuggingFace || (c.FileName?.EndsWith(".bin") ?? false))
@@ -85,9 +86,16 @@ public class PromotionBridge : BackgroundService
                     var scans = scope.ServiceProvider.GetRequiredService<Advisory.Api.Scan.ScanStore>();
                     try { await scans.RecordDecisionAsync(repo, pkg, result); } catch { /* best-effort observability */ }
 
-                    // An operator-revoked package is held regardless of the gate verdict — revoke is an
-                    // explicit "no" that must not be silently re-promoted.
+                    // An operator-revoked package is normally held regardless of the gate verdict.
+                    // BUT a granted EXCEPTION (ExceptionRef set) is a later, explicit operator approval
+                    // that OVERRIDES the prior revoke — clear the revocation and let it promote.
                     var revoked = scans.IsRevoked(c.Ecosystem, c.Name, c.Version);
+                    if (revoked && result.Decision == GateDecision.Allow && !string.IsNullOrEmpty(result.ExceptionRef))
+                    {
+                        scans.ClearRevoked(c.Ecosystem, c.Name, c.Version);
+                        revoked = false;
+                        _log.LogInformation("Revocation cleared by exception {Ref} for {Pkg}@{Ver}", result.ExceptionRef, c.Name, c.Version);
+                    }
 
                     if (result.Decision == GateDecision.Allow && !revoked)
                     {
@@ -98,10 +106,11 @@ public class PromotionBridge : BackgroundService
                     }
                     else
                     {
-                        // Held/blocked — NOT added to _processed, so it's re-checked next cycle and
-                        // promotes automatically once an exception/policy change flips it to Allow.
+                        // Held/blocked/revoked — remove from the promoted set (a revoked package was
+                        // pulled out of approved) so the next exception/policy change re-promotes it.
+                        _processed.Remove(c.ComponentId);
                         await _nexus.HoldAsync(c, string.Join("; ", result.TriggeredRules), ct);
-                        _log.LogWarning("HELD {Pkg}@{Ver}: {Decision}", c.Name, c.Version, result.Decision);
+                        _log.LogWarning("HELD {Pkg}@{Ver}: {Decision}{Rev}", c.Name, c.Version, result.Decision, revoked ? " (revoked)" : "");
                     }
                 }
             }

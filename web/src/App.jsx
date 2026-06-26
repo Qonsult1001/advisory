@@ -1721,7 +1721,9 @@ function ScansRepos({ onOpen, setTab }) {
         }, 3000);
       });
   };
-  const subTabs = [["git", "Git Repositories"], ["repositories", "Repositories"], ["builds", "Builds"], ["bundles", "Release Bundles"], ["packages", "Packages"]];
+  // Git Repositories, Builds and Release Bundles are hidden — they were JFrog-parity placeholders
+  // with no engine behind them (Nexus exposes no builds/bundles API; no source-scan engine).
+  const subTabs = [["repositories", "Repositories"], ["packages", "Packages"]];
   // Show ONLY the ecosystem-firewall repos this console manages (the <eco>-quarantine / <eco>-approved
   // pairs). Nexus's own default repos (maven-central, nuget-group, …) and any stray manual repos are
   // hidden — the table stays aligned with the Ecosystem firewall panel above.
@@ -4801,8 +4803,10 @@ function OnDemandScanning() {
   return (
     <div style={{ animation: "fwfade .2s ease" }}>
       <Crumb trail={[{ label: "All Projects" }, { label: "Xray" }, { label: "On-Demand Scanning" }]} />
+      {/* "Source code scans" hidden — no SAST engine in Advisory (it's a dependency/supply-chain
+          firewall). Only the working "Binary scans" (package scanning) remains. */}
       <div style={{ display: "flex", gap: 22, borderBottom: `1px solid ${C.line}`, marginBottom: 16 }}>
-        {[["source", "Source code scans"], ["binary", "Binary scans"]].map(([k, l]) => (
+        {[["binary", "Package scans"]].map(([k, l]) => (
           <button key={k} onClick={() => setTab(k)} style={{ ...s.jfTab, ...(tab === k ? s.jfTabOn : {}) }}>{l}</button>
         ))}
       </div>
