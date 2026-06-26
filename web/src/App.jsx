@@ -3491,13 +3491,15 @@ function PackageOverview({ pkg, onVersion }) {
     const version = pkg.version || pkg.latestVersion || "";
     const doEnqueue = () => fetch(`${API}/queue/enqueue`, { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ecosystem: pkg.ecosystem, name: pkg.name, version }) })
-      .then((r) => r.json().then((j) => ({ status: r.status, ...j })).catch(() => ({ status: r.status })));
-    const run = () => doEnqueue().then((r) => {
-      if (r.status === 422 && r.error === "ecosystem-not-provisioned") {
-        setSendState("notprov"); setSendMsg(r.message);
-      } else if (r.status >= 200 && r.status < 300) {
+      // Keep the HTTP status under its own key — the response body also has a "status" field
+      // ("queued") that would otherwise overwrite it via the spread.
+      .then((r) => r.json().then((j) => ({ httpStatus: r.status, body: j })).catch(() => ({ httpStatus: r.status, body: {} })));
+    const run = () => doEnqueue().then(({ httpStatus, body }) => {
+      if (httpStatus === 422 && body.error === "ecosystem-not-provisioned") {
+        setSendState("notprov"); setSendMsg(body.message);
+      } else if (httpStatus >= 200 && httpStatus < 300) {
         setSendState("sent"); setSendMsg(null);
-      } else { setSendState("error"); setSendMsg(r.message || r.error || "Could not send — try again."); }
+      } else { setSendState("error"); setSendMsg(body.message || body.error || "Could not send — try again."); }
     }).catch(() => { setSendState("error"); setSendMsg("Network error — try again."); });
     if (autoProvision) {
       api.provisionEcosystem(pkg.ecosystem).then(run).catch(() => { setSendState("error"); setSendMsg("Could not enable the ecosystem."); });
