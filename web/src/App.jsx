@@ -25,6 +25,8 @@ const api = {
   getScans: () => fetch(`${API}/scans/repositories`).then((r) => r.json()),
   getNexusEcosystems: () => fetch(`${API}/nexus/ecosystems`).then((r) => r.json()),
   getApproved: () => fetch(`${API}/quarantine/approved`).then((r) => r.json()),
+  grantException: (body) => fetch(`${API}/exceptions`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).then((r) => r.json()),
+  revokeException: (ticket) => fetch(`${API}/exceptions/${encodeURIComponent(ticket)}`, { method: "DELETE" }).then((r) => r.json()),
   promoteHeld: (ecosystem, name, version) => fetch(`${API}/quarantine/promote`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ecosystem, name, version }) }).then((r) => r.json().then((j) => ({ ok: r.ok, ...j }))),
   resetDemoData: () => fetch(`${API}/maintenance/reset`, { method: "POST" }).then((r) => r.json().then((j) => ({ ok: r.ok, ...j }))),
   revokeApproved: (ecosystem, name, version) => fetch(`${API}/quarantine/revoke`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ecosystem, name, version }) }).then((r) => r.json().then((j) => ({ ok: r.ok, ...j }))),
@@ -1056,6 +1058,8 @@ function Exceptions({ policy, setPolicy }) {
   const options = held
     .map((h) => ({ key: `${h.name}==${h.version}`, label: `${h.name}==${h.version}`, eco: h.ecosystem, status: h.status }))
     .filter((o) => !excepted.has(o.key.toLowerCase()));
+  const [adding, setAdding] = useState(false);
+  const [addMsg, setAddMsg] = useState(null);
   const add = () => {
     if (!d.package || !d.ticket) return;
     // An exception with no expiry is treated as EXPIRED by the gate (defaults to year 0001), so it
@@ -1063,8 +1067,19 @@ function Exceptions({ policy, setPolicy }) {
     const expires = d.expires && d.expires.trim()
       ? d.expires.trim()
       : new Date(Date.now() + 90 * 864e5).toISOString().slice(0, 10);
-    setPolicy((p) => ({ ...p, exceptions: [...p.exceptions, { ...d, expires, ecosystem: null }] }));
-    setD({ package: "", reason: "", approvedBy: "", ticket: "", expires: "" });
+    setAdding(true); setAddMsg(null);
+    // PERSIST via the real endpoint — this saves it to the signed policy, clears any revoke, and
+    // audits the grant, so the gate actually honours it and the bridge promotes the package.
+    api.grantException({ package: d.package.trim(), reason: d.reason || "", ticket: d.ticket.trim(), expires })
+      .then((r) => {
+        if (r && r.package) {
+          setPolicy((p) => ({ ...p, exceptions: [...p.exceptions, { ...d, expires, ecosystem: null }] }));
+          setD({ package: "", reason: "", approvedBy: "", ticket: "", expires: "" });
+          setAddMsg({ tone: "ok", text: `Exception added for ${r.package}. It will promote within ~30s.` });
+        } else setAddMsg({ tone: "err", text: r?.error || "Could not add exception." });
+      })
+      .catch(() => setAddMsg({ tone: "err", text: "Could not add exception (is the API reachable?)." }))
+      .finally(() => setAdding(false));
   };
   return (
     <Card title="Approved exceptions" desc="Time-boxed, attributed overrides. This register replaces the per-package approval ticket. Pick a held/blocked package below, or type one manually.">
@@ -1077,11 +1092,15 @@ function Exceptions({ policy, setPolicy }) {
             <td style={s.td}>{e.approvedBy || "—"}</td>
             <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11 }}>{e.expires || "—"}</td>
             <td style={{ ...s.td, textAlign: "right" }}>
-              <button onClick={() => setPolicy((p) =>
-                ({ ...p, exceptions: p.exceptions.filter((_, j) => j !== i) }))} style={s.remove}>Revoke</button></td>
+              <button onClick={() => {
+                // Persist the removal via the API (un-grants + audits), then update local state.
+                api.revokeException(e.ticket).catch(() => {});
+                setPolicy((p) => ({ ...p, exceptions: p.exceptions.filter((_, j) => j !== i) }));
+              }} style={s.remove}>Revoke</button></td>
           </tr>
         ))}
       </Table>
+      {addMsg && <div style={{ padding: "10px 16px 0", fontSize: 12.5, color: addMsg.tone === "ok" ? C.accentDim : "#c0392b" }}>{addMsg.text}</div>}
 
       {/* Quick-pick: the packages the firewall is currently holding/blocking. */}
       <div style={{ padding: "12px 16px 0", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
@@ -1102,7 +1121,7 @@ function Exceptions({ policy, setPolicy }) {
           <input key={k} placeholder={ph} value={d[k]}
             onChange={(e) => setD({ ...d, [k]: e.target.value })} style={s.formInput} />
         ))}
-        <button onClick={add} style={s.add}>Add exception</button>
+        <button onClick={add} disabled={adding} style={{ ...s.add, opacity: adding ? 0.6 : 1 }}>{adding ? "Adding…" : "Add exception"}</button>
       </div>
     </Card>
   );
