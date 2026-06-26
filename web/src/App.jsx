@@ -3449,11 +3449,24 @@ function PackageOverview({ pkg, onVersion }) {
   const approved = pkg.verdict === "Clean" || pkg.verdict === "Caution";
   const installCmd = installCommand(pkg.ecosystem, pkg.name, pkg.version);
   const lic = licenseInfo(pkg.license);
-  const [sendState, setSendState] = useState(null); // null | 'sending' | 'sent' | 'error'
-  const sendToPipeline = () => {
-    setSendState("sending");
-    api.enqueue({ ecosystem: pkg.ecosystem, name: pkg.name, version: pkg.version || "latest" })
-      .then(() => setSendState("sent")).catch(() => setSendState("error"));
+  const [sendState, setSendState] = useState(null); // null | 'sending' | 'sent' | 'error' | 'notprov'
+  const [sendMsg, setSendMsg] = useState(null);
+  const sendToPipeline = (autoProvision) => {
+    setSendState("sending"); setSendMsg(null);
+    const doEnqueue = () => fetch(`${API}/queue/enqueue`, { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ecosystem: pkg.ecosystem, name: pkg.name, version: pkg.version || "latest" }) })
+      .then((r) => r.json().then((j) => ({ status: r.status, ...j })));
+    const run = () => doEnqueue().then((r) => {
+      if (r.status === 422 && r.error === "ecosystem-not-provisioned") {
+        setSendState("notprov"); setSendMsg(r.message);
+      } else if (r.status >= 200 && r.status < 300) {
+        setSendState("sent"); setSendMsg(null);
+      } else { setSendState("error"); setSendMsg(r.message || r.error || "Could not send."); }
+    }).catch(() => setSendState("error"));
+    if (autoProvision) {
+      // Provision the ecosystem first, then enqueue.
+      api.provisionEcosystem(pkg.ecosystem).then(run).catch(() => { setSendState("error"); setSendMsg("Could not enable the ecosystem."); });
+    } else run();
   };
   const er = pkg.extensionRisk;
   const tabs = [
@@ -3545,7 +3558,7 @@ function PackageOverview({ pkg, onVersion }) {
             </div>
             {/* Send this package through the real firewall — enqueues it into the Intake queue so the
                 gate evaluates it and (if clean + not revoked) promotes it to the approved repo. */}
-            <button onClick={sendToPipeline} disabled={sendState === "sending" || sendState === "sent"}
+            <button onClick={() => sendToPipeline(false)} disabled={sendState === "sending" || sendState === "sent"}
               style={{ marginTop: 10, width: "100%", padding: "8px 12px", borderRadius: 6, fontSize: 12, fontWeight: 600,
                 border: "none", cursor: sendState === "sent" ? "default" : "pointer",
                 background: sendState === "sent" ? C.surface2 : C.accent, color: sendState === "sent" ? C.accentDim : "#fff",
@@ -3553,9 +3566,23 @@ function PackageOverview({ pkg, onVersion }) {
               {sendState === "sending" ? "Sending…" : sendState === "sent" ? "✓ Sent to Intake queue"
                 : sendState === "error" ? "Retry — send to pipeline" : "⇄ Send to pipeline"}
             </button>
-            <div style={{ fontSize: 10.5, color: C.dim, marginTop: 6, lineHeight: 1.4 }}>
-              Pushes this package through the firewall gate (Intake queue → quarantine → promote if clean).
-            </div>
+            {sendState === "notprov" ? (
+              <div style={{ marginTop: 8, fontSize: 11, color: "#c0392b", lineHeight: 1.5 }}>
+                {pkg.ecosystem} isn’t gated through the firewall yet, so it can’t be sent.
+                <button onClick={() => sendToPipeline(true)}
+                  style={{ marginTop: 8, width: "100%", padding: "7px 12px", borderRadius: 6, fontSize: 11.5, fontWeight: 600, border: "none", cursor: "pointer", background: C.accent, color: "#fff" }}>
+                  Enable {pkg.ecosystem} & send →
+                </button>
+              </div>
+            ) : sendState === "sent" ? (
+              <div style={{ fontSize: 10.5, color: C.accentDim, marginTop: 6, lineHeight: 1.4 }}>
+                Queued. Watch it under <b>Pipeline → Quarantine</b> as the gate evaluates it.
+              </div>
+            ) : (
+              <div style={{ fontSize: 10.5, color: C.dim, marginTop: 6, lineHeight: 1.4 }}>
+                {sendMsg || "Pushes this package through the firewall gate (Intake queue → quarantine → promote if clean)."}
+              </div>
+            )}
           </div>
           {/* External links */}
           {(pkg.homepage || pkg.repository) && (
@@ -4396,6 +4423,24 @@ function PolicyWizard({ watch, onCancel, onSave, onViewKev, saving }) {
             </div>
           </div>
         ))}
+        {/* Guided help: when there are no rules yet, recommend a sensible starter set in one click. */}
+        {w.rules.length === 0 && (
+          <div style={{ marginTop: 6, padding: 14, borderRadius: 10, background: "#f2faf3", border: `1px solid #cce9d0` }}>
+            <div style={{ fontSize: 12.5, fontWeight: 600, color: C.accentDim, marginBottom: 4 }}>Not sure where to start?</div>
+            <div style={{ fontSize: 11.5, color: C.sub, lineHeight: 1.5, marginBottom: 10 }}>
+              A typical production watch blocks the things that actually hurt you: critical CVEs, known-exploited
+              vulnerabilities, and malicious (typosquat) packages. Add that set with one click, then tweak.
+            </div>
+            <button onClick={() => set({ rules: [
+              { ...RULE_PRESETS[1].rule, name: RULE_PRESETS[1].name },   // Block High+ CVEs
+              { ...RULE_PRESETS[2].rule, name: RULE_PRESETS[2].name },   // Block KEV
+              { ...RULE_PRESETS[3].rule, name: RULE_PRESETS[3].name },   // Block malicious
+            ] })}
+              style={{ padding: "8px 14px", borderRadius: 8, fontSize: 12, fontWeight: 600, border: "none", cursor: "pointer", background: C.accent, color: "#fff" }}>
+              ✦ Add recommended rules (3)
+            </button>
+          </div>
+        )}
         {/* One-click presets — add a ready-made rule in plain English. */}
         <div style={{ marginTop: 14, paddingTop: 12, borderTop: `1px solid ${C.lineSoft}` }}>
           <div style={{ fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 }}>Quick add</div>

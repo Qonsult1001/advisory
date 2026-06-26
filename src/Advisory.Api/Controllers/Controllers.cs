@@ -894,12 +894,22 @@ public class QuarantineController : ControllerBase
 public class QueueController : ControllerBase
 {
     private readonly IIntakeQueue _queue;
-    public QueueController(IIntakeQueue queue) => _queue = queue;
+    private readonly INexusClient _nexus;
+    public QueueController(IIntakeQueue queue, INexusClient nexus) { _queue = queue; _nexus = nexus; }
 
-    /// <summary>Enqueue a package for async evaluation. Returns immediately — caller never waits.</summary>
+    /// <summary>Enqueue a package for async evaluation. Returns immediately — caller never waits.
+    /// Rejects up front if the package's ecosystem isn't provisioned in the firewall (otherwise the
+    /// consumer's quarantine fetch would silently 404), so the UI can prompt the operator to enable it.</summary>
     [HttpPost("enqueue")]
     public async Task<ActionResult> Enqueue([FromBody] PackageRef pkg, CancellationToken ct)
     {
+        if (_nexus.IsConfigured && NexusEcosystems.TryGet(pkg.Ecosystem, out var def))
+        {
+            var existing = await _nexus.ExistingRepoNamesAsync(ct);
+            if (!existing.Contains($"{def.Prefix}-quarantine"))
+                return UnprocessableEntity(new { error = "ecosystem-not-provisioned", ecosystem = pkg.Ecosystem.ToString(),
+                    message = $"{pkg.Ecosystem} is not gated through the firewall yet. Enable it under Scans List → Repositories (Ecosystem firewall) first." });
+        }
         var id = await _queue.EnqueueAsync(pkg, ct);
         return Accepted(new { messageId = id, status = "queued" });
     }
