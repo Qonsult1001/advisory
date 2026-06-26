@@ -101,10 +101,19 @@ public class ScanStore
         int Sev(string s) => vulns.Count(v => v.Severity == s);
         var verdict = result.Decision == GateDecision.Allow
             ? (vulns.Count == 0 ? "Clean" : "Caution") : "Vulnerable";
+        // Always record at least the root package as a component, plus any components that carried a
+        // finding — so the artifact view never shows "0 components" for something we actually scanned.
+        var sbom = new List<ScanComponent> { new(pkg.Name, pkg.Version, 0, null, "root") };
+        foreach (var tf in tree)
+        {
+            var name = tf.Component.Split('@')[0];
+            if (!sbom.Any(c => c.Name.Equals(name, StringComparison.OrdinalIgnoreCase)))
+                sbom.Add(new ScanComponent(name, tf.Component.Contains('@') ? tf.Component.Split('@')[1] : "", tf.Depth, pkg.Name, tf.Depth == 1 ? "Direct" : "Transitive"));
+        }
         var scan = new StoredScan(repo, pkg.Ecosystem, pkg.Name, pkg.Version, pkg.FileName,
-            result.Decision.ToString(), verdict, result.ComponentsEvaluated,
+            result.Decision.ToString(), verdict, Math.Max(result.ComponentsEvaluated, sbom.Count),
             Sev("Critical"), Sev("High"), Sev("Medium"), Sev("Low"),
-            vulns, Array.Empty<ScanComponent>(), DateTimeOffset.UtcNow);
+            vulns, sbom, DateTimeOffset.UtcNow);
         _scans[Key(repo, pkg.Name, pkg.Version)] = scan;
         Persist();
         return Task.CompletedTask;
