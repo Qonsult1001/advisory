@@ -2931,10 +2931,35 @@ function Catalog() {
 }
 
 // Search-results list (image 4): "N Results Found", sub-tabs, package table.
+// Levenshtein edit distance — for typosquat detection (no library).
+function editDistance(a, b) {
+  a = a.toLowerCase(); b = b.toLowerCase();
+  const m = a.length, n = b.length;
+  if (Math.abs(m - n) > 2) return 99;          // too different to bother
+  const dp = Array.from({ length: m + 1 }, (_, i) => [i, ...Array(n).fill(0)]);
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++)
+    for (let j = 1; j <= n; j++)
+      dp[i][j] = Math.min(dp[i - 1][j] + 1, dp[i][j - 1] + 1, dp[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+  return dp[m][n];
+}
+
 function SearchResults({ data, eco, onOpen, onCve }) {
   const [sub, setSub] = useState("packages");
   const [pkgView, setPkgView] = useState("catalog");   // catalog (public) | mine (our repositories)
   const rows = data?.results || [];
+  const query = (data?.query || "").trim().toLowerCase();
+  // The "canonical" package the user most likely meant: an exact-name match if present, else the
+  // shortest result name. Other results that are 1-2 edits away from it are flagged as possible
+  // typosquats — the supply-chain risk this firewall exists to catch.
+  const exact = rows.find((r) => r.name.toLowerCase() === query);
+  const canonical = (exact || rows.slice().sort((a, b) => a.name.length - b.name.length)[0])?.name?.toLowerCase() || query;
+  const isTyposquat = (name) => {
+    const n = name.toLowerCase();
+    if (n === canonical || n === query) return false;
+    const d = editDistance(n, canonical);
+    return d >= 1 && d <= 2;   // very close but not the real one
+  };
   const subTabs = [["packages", `Packages (${rows.length})`], ["ondemand", "On Demand Packages"], ["cves", "CVEs"]];
   return (
     <div style={{ animation: "fwfade .15s ease" }}>
@@ -2967,14 +2992,20 @@ function SearchResults({ data, eco, onOpen, onCve }) {
             {["Package name", "Type", "Description", "Latest version"].map((c) => <th key={c} style={s.th}>{c}</th>)}
           </tr></thead><tbody>
             {rows.length === 0 && <tr><td style={s.td} colSpan={4}>No packages matched.</td></tr>}
-            {rows.map((r, i) => (
-              <tr key={i} style={{ ...s.tr, cursor: "pointer" }} onClick={() => onOpen(r.name, r.latestVersion)}>
-                <td style={{ ...s.td, fontWeight: 600, color: C.accentDim }}>{r.name}</td>
+            {rows.map((r, i) => {
+              const squat = isTyposquat(r.name);
+              return (
+              <tr key={i} style={{ ...s.tr, cursor: "pointer", ...(squat ? { background: "#fdf6f4" } : {}) }} onClick={() => onOpen(r.name, r.latestVersion)}>
+                <td style={{ ...s.td, fontWeight: 600, color: squat ? "#c0392b" : C.accentDim }}>
+                  {r.name}
+                  {squat && <span title={`Possible typosquat of "${canonical}" — names this similar are a common supply-chain attack. Verify before using.`}
+                    style={{ marginLeft: 8, fontSize: 9.5, fontWeight: 700, color: "#c0392b", background: "#f7d9d4", padding: "2px 6px", borderRadius: 4, verticalAlign: "middle" }}>⚠ POSSIBLE TYPOSQUAT</span>}
+                </td>
                 <td style={s.td}><BrandIcon format={r.ecosystem} /></td>
                 <td style={{ ...s.td, color: C.sub, fontSize: 12.5, maxWidth: 520 }}>{r.description || "—"}</td>
                 <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11.5 }}>{r.latestVersion || "—"}</td>
               </tr>
-            ))}
+            ); })}
           </tbody></table>
         </div>
         )}
