@@ -4136,6 +4136,21 @@ const POLICY_NAME_FALLBACK = {
 };
 const polName = (w) => w.policyName || POLICY_NAME_FALLBACK[w.name] || `${w.name}-policy`;
 const polType = (w) => w.policyType || (w.rules?.some((r) => r.type === "License") && !w.rules?.some((r) => r.type === "CVEs") ? "License" : "Security");
+// Plain-English summary of what a watch enforces, derived from its rules.
+function watchSummary(w) {
+  const rules = w.rules || [];
+  if (rules.length === 0) return w.description || "No rules — does nothing yet.";
+  const parts = rules.map((r) => {
+    const cond = r.type === "CVEs" ? (r.knownExploitedOnly ? "known-exploited (KEV) vulns" : `${r.minSeverity}+ severity CVEs`)
+      : r.type === "License" ? "prohibited licenses"
+      : r.type === "Malicious" ? "malicious packages" : r.type;
+    return `${r.block ? "blocks" : "flags"} ${cond}`;
+  });
+  // De-dup + join naturally.
+  const uniq = [...new Set(parts)];
+  return uniq.length === 1 ? `${uniq[0][0].toUpperCase()}${uniq[0].slice(1)}.`
+    : uniq.slice(0, -1).join(", ") + " and " + uniq[uniq.length - 1] + ".";
+}
 
 // JFrog-style green "Enabled" check.
 function EnabledCheck({ on }) {
@@ -4228,7 +4243,7 @@ function WatchesPolicies({ policy, setPolicy, onViewKev, save, saving }) {
           ))}
         </div>
         <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-          {sub === "policies" && <button style={s.add} onClick={() => setWizard({ wi: null })}>+ New Policy</button>}
+          {(sub === "policies" || sub === "watches") && <button style={s.add} onClick={() => setWizard({ wi: null })}>+ New {sub === "watches" ? "Watch" : "Policy"}</button>}
           <button onClick={save} disabled={saving} style={s.btnGhost}>{saving ? "Signing…" : "Commit & sign policy"}</button>
         </div>
       </div>
@@ -4236,12 +4251,13 @@ function WatchesPolicies({ policy, setPolicy, onViewKev, save, saving }) {
       {sub === "watches" && (
         <div style={s.card}>
           <table style={s.table}><thead><tr>
-            {["Name", "Description", "Resources", "Assigned Policies", "Enabled"].map((c) => <th key={c} style={s.th}>{c}</th>)}
+            {["Name", "What it does", "Resources", "Assigned Policies", "Enabled"].map((c) => <th key={c} style={s.th}>{c}</th>)}
           </tr></thead><tbody>
+            {watches.length === 0 && <tr><td style={s.td} colSpan={5}>No watches yet — click “+ New Watch” to create one.</td></tr>}
             {watches.map((w, wi) => (
               <tr key={wi} style={s.tr}>
                 <td style={s.td}><a style={s.linkDark} onClick={() => setWizard({ wi })}>{w.name}</a></td>
-                <td style={{ ...s.td, color: C.sub, maxWidth: 320 }}>{w.description}</td>
+                <td style={{ ...s.td, color: C.sub, maxWidth: 360, fontSize: 12.5, lineHeight: 1.5 }}>{watchSummary(w)}</td>
                 <td style={s.td}><ViewResources items={(w.ecosystems?.length) ? w.ecosystems : ["All ecosystems (repositories + builds)"]} label={`View Resources (${w.ecosystems?.length || 1})`} /></td>
                 <td style={s.td}><a style={s.linkGreen} onClick={() => setWizard({ wi })}>1 | {polName(w)}</a></td>
                 <td style={s.td}><Switch on={w.enabled} onChange={(v) => setWatch(wi, { enabled: v })} /></td>
@@ -4277,6 +4293,22 @@ function WatchesPolicies({ policy, setPolicy, onViewKev, save, saving }) {
 // ── Step-by-step policy editor (carbon of JFrog's policy wizard) ─────────────
 // 1 Policy Details → 2 Policy Rules List → 3 Apply on Scope, with the numbered
 // circle/dashed-line stepper down the left and Cancel / Save Policy at bottom right.
+// Ready-made rules in plain English — one click adds them to a policy.
+const RULE_PRESETS = [
+  { name: "block-critical-cves", label: "Block Critical CVEs", desc: "Block any package with a Critical-severity vulnerability",
+    rule: { type: "CVEs", minSeverity: "Critical", knownExploitedOnly: false, block: true, notify: true } },
+  { name: "block-high-cves", label: "Block High+ CVEs", desc: "Block any package with a High or Critical vulnerability",
+    rule: { type: "CVEs", minSeverity: "High", knownExploitedOnly: false, block: true, notify: true } },
+  { name: "block-known-exploited", label: "Block Known-Exploited (KEV)", desc: "Block packages with a CISA-KEV exploited-in-the-wild vulnerability",
+    rule: { type: "CVEs", minSeverity: "Low", knownExploitedOnly: true, block: true, notify: true } },
+  { name: "block-malicious", label: "Block Malicious Packages", desc: "Block packages flagged by the OpenSSF Malicious Packages feed (typosquats, etc.)",
+    rule: { type: "Malicious", minSeverity: "High", knownExploitedOnly: false, block: true, notify: true } },
+  { name: "block-prohibited-licenses", label: "Block Prohibited Licenses", desc: "Block packages under a license on the blocklist (e.g. GPL-3.0)",
+    rule: { type: "License", minSeverity: "High", knownExploitedOnly: false, block: true, notify: true } },
+  { name: "notify-medium-cves", label: "Notify on Medium CVEs", desc: "Don't block, but record a violation for Medium+ vulnerabilities",
+    rule: { type: "CVEs", minSeverity: "Medium", knownExploitedOnly: false, block: false, notify: true } },
+];
+
 function PolicyWizard({ watch, onCancel, onSave, onViewKev, saving }) {
   const fresh = watch == null;
   const [w, setW] = useState(() => watch ? JSON.parse(JSON.stringify(watch)) : {
@@ -4364,7 +4396,20 @@ function PolicyWizard({ watch, onCancel, onSave, onViewKev, saving }) {
             </div>
           </div>
         ))}
-        <button style={{ ...s.addRuleBtn, marginTop: 10 }} onClick={() => setRuleEd({ ri: null, rule: newRule() })}>+ New Rule</button>
+        {/* One-click presets — add a ready-made rule in plain English. */}
+        <div style={{ marginTop: 14, paddingTop: 12, borderTop: `1px solid ${C.lineSoft}` }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 }}>Quick add</div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {RULE_PRESETS.map((p) => (
+              <button key={p.name} title={p.desc} onClick={() => saveRule(null, { ...p.rule, name: p.name })}
+                style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "7px 13px", borderRadius: 8, cursor: "pointer",
+                  fontSize: 12, border: `1px solid ${C.line}`, background: C.surface2, color: C.ink }}>
+                + {p.label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <button style={{ ...s.addRuleBtn, marginTop: 12 }} onClick={() => setRuleEd({ ri: null, rule: newRule() })}>+ Custom rule…</button>
         <div><button style={{ ...s.add, marginTop: 16 }} disabled={w.rules.length === 0} onClick={() => setStep(3)}>Next ›</button></div>
       </>)}
 
