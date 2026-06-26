@@ -956,8 +956,9 @@ public class ExceptionsController : ControllerBase
     private readonly IAuditLog _audit;
     private readonly ICurrentUser _user;
     private readonly Advisory.Api.Scan.ScanStore _scans;
-    public ExceptionsController(IPolicyStore store, IAuditLog audit, ICurrentUser user, Advisory.Api.Scan.ScanStore scans)
-    { _store = store; _audit = audit; _user = user; _scans = scans; }
+    private readonly INexusClient _nexus;
+    public ExceptionsController(IPolicyStore store, IAuditLog audit, ICurrentUser user, Advisory.Api.Scan.ScanStore scans, INexusClient nexus)
+    { _store = store; _audit = audit; _user = user; _scans = scans; _nexus = nexus; }
 
     public record GrantRequest(string Package, string Reason, string Ticket, DateTimeOffset Expires);
 
@@ -997,15 +998,36 @@ public class ExceptionsController : ControllerBase
     public async Task<ActionResult> Revoke(string ticket, CancellationToken ct)
     {
         var p = _store.Current;
+        // Capture the package(s) this exception covered BEFORE removing it, so we can pull them out of
+        // approved too — revoking an exception should behave like a package revoke (full undo), not just
+        // delete the override.
+        var affected = p.Exceptions.Where(e => e.Ticket == ticket).Select(e => e.Package).ToList();
         var updated = ClonePolicy(p);
         var removed = updated.Exceptions.RemoveAll(e => e.Ticket == ticket);
         await _store.UpdateAsync(updated, _user.Name);
+
+        // Pull each affected package out of the approved repos + denylist it (across all firewall
+        // ecosystems, since exceptions don't store one). This makes the exceptions-page Revoke do the
+        // same as the Approved-packages Revoke.
+        var pulled = 0;
+        foreach (var pkgSpec in affected)
+        {
+            var spec = (pkgSpec ?? "").Split("==", 2);
+            var name = spec[0].Trim();
+            var ver = spec.Length > 1 ? spec[1].Trim() : "";
+            if (string.IsNullOrEmpty(name)) continue;
+            foreach (var eco in NexusEcosystems.Gateable)
+            {
+                if (await _nexus.RevokeApprovedAsync(eco, name, ver, ct)) { _scans.MarkRevoked(eco, name, ver); pulled++; }
+            }
+        }
+
         await _audit.AppendAsync(new AuditEntry(Guid.NewGuid(),
             new PackageRef(Ecosystem.PyPI, ticket, "*"), GateDecision.Block,
             Array.Empty<Finding>(), new[] { $"SEC-EXC-REVOKE:{ticket}" }, ticket,
             _store.Current.Version, 0, DateTimeOffset.UtcNow, null,
-            $"Exception {ticket} revoked by {_user.Name} ({removed} removed).", _user.Name));
-        return Ok(new { revoked = removed });
+            $"Exception {ticket} revoked by {_user.Name} ({removed} removed, {pulled} pulled from approved).", _user.Name));
+        return Ok(new { revoked = removed, pulledFromApproved = pulled });
     }
 
     // Full JSON round-trip clone: a field-by-field copy here silently dropped Watches /
