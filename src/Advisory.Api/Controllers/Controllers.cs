@@ -1830,6 +1830,46 @@ public class AiController : ControllerBase
         return Ok(new { ok, reply = ok ? text : text, model = _groq.Model });
     }
 
+    public record PolicyRulesRequest(string Description);
+
+    /// <summary>AI policy builder: turn a plain-English description into firewall rules. Uses the same
+    /// Groq assistant as Ask AI. Returns a strict JSON array of rules the wizard can drop straight in.</summary>
+    [HttpPost("policy-rules")]
+    public async Task<ActionResult> PolicyRules([FromBody] PolicyRulesRequest req, CancellationToken ct)
+    {
+        if (!_policy.Current.Ai.AssistantEnabled)
+            return Ok(new { ok = false, error = "The AI assistant is disabled (enable it under Administration → AI assistant)." });
+        if (string.IsNullOrWhiteSpace(req?.Description))
+            return Ok(new { ok = false, error = "Describe what the policy should enforce." });
+
+        var (ok, text) = await _groq.ChatAsync(PolicyBuilderSystem, req.Description, 700, 0.1, ct);
+        if (!ok) return Ok(new { ok = false, error = text });
+
+        // Extract the JSON array from the model output (it may wrap it in prose / code fences).
+        var start = text.IndexOf('[');
+        var end = text.LastIndexOf(']');
+        if (start < 0 || end <= start) return Ok(new { ok = false, error = "The assistant did not return rules. Try rephrasing.", raw = text });
+        var json = text.Substring(start, end - start + 1);
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            return Ok(new { ok = true, rules = doc.RootElement.Clone(), model = _groq.Model });
+        }
+        catch { return Ok(new { ok = false, error = "Could not parse the suggested rules. Try rephrasing.", raw = text }); }
+    }
+
+    private const string PolicyBuilderSystem =
+        "You convert a plain-English firewall-policy description into a JSON array of rules. " +
+        "Output ONLY a JSON array — no prose, no code fences. Each rule object has exactly these fields: " +
+        "\"name\" (kebab-case string), \"type\" (one of \"CVEs\",\"Malicious\",\"License\"), " +
+        "\"minSeverity\" (one of \"Low\",\"Medium\",\"High\",\"Critical\" — for CVEs; use \"High\" otherwise), " +
+        "\"knownExploitedOnly\" (boolean — true only when the user asks specifically for known-exploited/KEV), " +
+        "\"block\" (boolean — true to block, false to only notify), \"notify\" (boolean — usually true). " +
+        "Map intent: 'critical vulnerabilities'->CVEs+Critical+block; 'known exploited'/'KEV'->CVEs+knownExploitedOnly+block; " +
+        "'malicious'/'typosquat'->Malicious+block; 'prohibited/forbidden license'->License+block; 'warn/notify only'->block:false. " +
+        "Keep it to the few rules the description implies. Example output: " +
+        "[{\"name\":\"block-critical\",\"type\":\"CVEs\",\"minSeverity\":\"Critical\",\"knownExploitedOnly\":false,\"block\":true,\"notify\":true}]";
+
     private const string AssistantSystem =
         "You are the Package Firewall AI assistant for a bank's software supply-chain security gate. " +
         "Answer questions about the user's packages, the firewall policy, and recent gate decisions " +

@@ -87,6 +87,7 @@ const api = {
   saveAiSettings: (body) => fetch(`${API}/ai/settings`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).then((r) => r.json()),
   testAi: (body) => fetch(`${API}/ai/test`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) }).then((r) => r.json()),
   aiChat: (message, history) => fetch(`${API}/ai/chat`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message, history }) }).then((r) => r.json()),
+  aiPolicyRules: (description) => fetch(`${API}/ai/policy-rules`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ description }) }).then((r) => r.json()),
 };
 
 // JFrog Platform palette: white header + sidebar, neutral light tables, GREEN active-nav/accent,
@@ -4346,7 +4347,28 @@ function PolicyWizard({ watch, onCancel, onSave, onViewKev, saving }) {
   });
   const [step, setStep] = useState(1);          // current open section
   const [ruleEd, setRuleEd] = useState(null);   // { ri, rule } | null
+  const [aiText, setAiText] = useState("");      // AI policy-builder prompt
+  const [aiState, setAiState] = useState(null);  // null | 'thinking' | {error}
   const set = (patch) => setW((x) => ({ ...x, ...patch }));
+  const aiBuild = () => {
+    if (!aiText.trim()) return;
+    setAiState("thinking");
+    api.aiPolicyRules(aiText.trim()).then((r) => {
+      if (r.ok && Array.isArray(r.rules) && r.rules.length) {
+        // Normalise + append the AI-suggested rules.
+        const added = r.rules.map((rl, i) => ({
+          name: rl.name || `ai-rule-${w.rules.length + i + 1}`,
+          type: ["CVEs", "Malicious", "License"].includes(rl.type) ? rl.type : "CVEs",
+          minSeverity: ["Low", "Medium", "High", "Critical"].includes(rl.minSeverity) ? rl.minSeverity : "High",
+          knownExploitedOnly: !!rl.knownExploitedOnly, block: rl.block !== false, notify: rl.notify !== false,
+        }));
+        set({ rules: [...w.rules, ...added] });
+        setAiText(""); setAiState(null);
+      } else {
+        setAiState({ error: r.error || "The assistant couldn't turn that into rules. Try rephrasing." });
+      }
+    }).catch(() => setAiState({ error: "AI request failed. Is the assistant configured under Administration?" }));
+  };
   const name = w.policyName || (watch ? polName(watch) : "");
   const type = w.policyType || (watch ? polType(watch) : "Security");
   const done1 = !!(name || "").trim();
@@ -4425,9 +4447,27 @@ function PolicyWizard({ watch, onCancel, onSave, onViewKev, saving }) {
             </div>
           </div>
         ))}
+        {/* AI policy builder — describe the policy in plain English, AI turns it into rules (Groq). */}
+        <div style={{ marginTop: 10, padding: 14, borderRadius: 10, background: "linear-gradient(180deg,#f6fbf6,#eef7ef)", border: `1px solid #cce9d0` }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 8 }}>
+            <span style={{ fontSize: 13, fontWeight: 700, color: C.accentDim }}>✦ Build rules with AI</span>
+            <span style={{ fontSize: 11, color: C.sub }}>describe what to enforce, in plain English</span>
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <input value={aiText} onChange={(e) => setAiText(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter" && aiState !== "thinking") aiBuild(); }}
+              placeholder="e.g. block anything with a critical CVE or a known-exploited vuln, and warn on medium"
+              style={{ ...s.formInput, flex: 1 }} />
+            <button onClick={aiBuild} disabled={aiState === "thinking" || !aiText.trim()}
+              style={{ ...s.add, opacity: aiState === "thinking" || !aiText.trim() ? 0.6 : 1, whiteSpace: "nowrap" }}>
+              {aiState === "thinking" ? "Thinking…" : "✦ Generate rules"}
+            </button>
+          </div>
+          {aiState?.error && <div style={{ fontSize: 11.5, color: "#c0392b", marginTop: 8 }}>{aiState.error}</div>}
+        </div>
         {/* Guided help: when there are no rules yet, recommend a sensible starter set in one click. */}
         {w.rules.length === 0 && (
-          <div style={{ marginTop: 6, padding: 14, borderRadius: 10, background: "#f2faf3", border: `1px solid #cce9d0` }}>
+          <div style={{ marginTop: 10, padding: 14, borderRadius: 10, background: "#f2faf3", border: `1px solid #cce9d0` }}>
             <div style={{ fontSize: 12.5, fontWeight: 600, color: C.accentDim, marginBottom: 4 }}>Not sure where to start?</div>
             <div style={{ fontSize: 11.5, color: C.sub, lineHeight: 1.5, marginBottom: 10 }}>
               A typical production watch blocks the things that actually hurt you: critical CVEs, known-exploited
@@ -7251,8 +7291,8 @@ const s = {
   chip: { background: C.lineSoft, border: `1px solid ${C.line}`, borderRadius: 5, padding: "2px 4px 2px 7px",
     fontFamily: C.mono, fontSize: 11, display: "inline-flex", alignItems: "center", gap: 3 },
   chipX: { background: "none", border: "none", cursor: "pointer", color: C.sub, fontSize: 13, padding: 0 },
-  callout: { margin: 22, padding: "13px 15px", background: "rgba(245,183,64,.08)", border: `1px solid rgba(245,183,64,.3)`,
-    borderRadius: 9, fontSize: 12, color: "#e2c49a", lineHeight: 1.55 },
+  callout: { margin: 22, padding: "13px 15px", background: "rgba(245,183,64,.10)", border: `1px solid rgba(245,183,64,.4)`,
+    borderRadius: 9, fontSize: 12.5, color: "#7a5a1e", lineHeight: 1.55 },
   code: { fontFamily: C.mono, background: C.lineSoft, padding: "1px 5px", borderRadius: 4, color: C.accent },
   form: { display: "flex", gap: 8, flexWrap: "wrap", padding: 22, borderTop: `1px solid ${C.lineSoft}` },
   formInput: { border: `1px solid ${C.line}`, borderRadius: 7, padding: "9px 11px",
