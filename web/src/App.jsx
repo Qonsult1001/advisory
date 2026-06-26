@@ -1061,12 +1061,18 @@ function Exceptions({ policy, setPolicy }) {
   const [adding, setAdding] = useState(false);
   const [addMsg, setAddMsg] = useState(null);
   const add = () => {
-    if (!d.package || !d.ticket) return;
-    // An exception with no expiry is treated as EXPIRED by the gate (defaults to year 0001), so it
-    // would silently do nothing. Default to 90 days out when the operator leaves it blank.
-    const expires = d.expires && d.expires.trim()
-      ? d.expires.trim()
-      : new Date(Date.now() + 90 * 864e5).toISOString().slice(0, 10);
+    if (!d.package || !d.ticket) { setAddMsg({ tone: "err", text: "Package and ticket are required." }); return; }
+    // An exception with no expiry is treated as EXPIRED by the gate, so default a blank to +90 days.
+    // A NON-blank value must be a real date — otherwise the server rejects it with a cryptic 400.
+    let expires;
+    if (d.expires && d.expires.trim()) {
+      const parsed = new Date(d.expires.trim());
+      if (isNaN(parsed.getTime())) { setAddMsg({ tone: "err", text: `“${d.expires.trim()}” isn’t a valid date. Use YYYY-MM-DD (or leave blank for +90 days).` }); return; }
+      if (parsed.getTime() < Date.now()) { setAddMsg({ tone: "err", text: "Expiry is in the past — the exception would have no effect. Pick a future date." }); return; }
+      expires = parsed.toISOString().slice(0, 10);
+    } else {
+      expires = new Date(Date.now() + 90 * 864e5).toISOString().slice(0, 10);
+    }
     setAdding(true); setAddMsg(null);
     // PERSIST via the real endpoint — this saves it to the signed policy, clears any revoke, and
     // audits the grant, so the gate actually honours it and the bridge promotes the package.
@@ -1116,11 +1122,14 @@ function Exceptions({ policy, setPolicy }) {
       </div>
 
       <div style={s.form}>
-        {[["package", "package==version"], ["ticket", "Ref e.g. SEC-1234"], ["approvedBy", "Approver"],
-          ["expires", "YYYY-MM-DD"]].map(([k, ph]) => (
+        {[["package", "package==version"], ["ticket", "Ref e.g. SEC-1234"], ["approvedBy", "Approver"]].map(([k, ph]) => (
           <input key={k} placeholder={ph} value={d[k]}
             onChange={(e) => setD({ ...d, [k]: e.target.value })} style={s.formInput} />
         ))}
+        {/* Real date picker so an invalid date can't be typed. Blank => +90 days. */}
+        <input type="date" value={d.expires} title="Expiry (blank = +90 days)"
+          min={new Date().toISOString().slice(0, 10)}
+          onChange={(e) => setD({ ...d, expires: e.target.value })} style={s.formInput} />
         <button onClick={add} disabled={adding} style={{ ...s.add, opacity: adding ? 0.6 : 1 }}>{adding ? "Adding…" : "Add exception"}</button>
       </div>
     </Card>
