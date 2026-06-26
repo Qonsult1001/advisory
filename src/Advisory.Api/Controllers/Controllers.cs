@@ -786,8 +786,10 @@ public class QuarantineController : ControllerBase
 {
     private readonly INexusClient _nexus;
     private readonly Advisory.Api.Scan.ScanStore _scans;
-    public QuarantineController(INexusClient nexus, Advisory.Api.Scan.ScanStore scans)
-    { _nexus = nexus; _scans = scans; }
+    private readonly IPolicyStore _policy;
+    private readonly ICurrentUser _user;
+    public QuarantineController(INexusClient nexus, Advisory.Api.Scan.ScanStore scans, IPolicyStore policy, ICurrentUser user)
+    { _nexus = nexus; _scans = scans; _policy = policy; _user = user; }
 
     [HttpGet]
     public async Task<ActionResult> Held(CancellationToken ct)
@@ -878,11 +880,32 @@ public class QuarantineController : ControllerBase
         if (!Enum.TryParse<Ecosystem>(req.Ecosystem, ignoreCase: true, out var eco))
             return BadRequest(new { error = $"Unknown ecosystem '{req.Ecosystem}'." });
         var ok = await _nexus.RevokeApprovedAsync(eco, req.Name, req.Version ?? "", ct);
-        // Denylist it so the bridge does not re-promote it next cycle — revoke is an explicit "no".
-        // It stays held in quarantine until re-approved.
-        if (ok) _scans.MarkRevoked(eco, req.Name, req.Version ?? "");
-        return ok ? Ok(new { revoked = true, name = req.Name, version = req.Version })
-                  : NotFound(new { error = $"'{req.Name}' not found in {eco} approved repo." });
+        if (ok)
+        {
+            // Denylist it so the bridge does not re-promote it next cycle — revoke is an explicit "no".
+            _scans.MarkRevoked(eco, req.Name, req.Version ?? "");
+            // Revoke WINS over any existing exception: remove a matching exception so it can't bounce
+            // back to approved. To allow it again, grant a NEW exception after the revoke.
+            var removed = await RemoveMatchingExceptionsAsync(req.Name, req.Version ?? "");
+            return Ok(new { revoked = true, name = req.Name, version = req.Version, exceptionsRemoved = removed });
+        }
+        return NotFound(new { error = $"'{req.Name}' not found in {eco} approved repo." });
+    }
+
+    /// <summary>Delete policy exceptions matching this package (name, optionally name==version), so a
+    /// revoke can't be silently overridden by a stale exception.</summary>
+    private async Task<int> RemoveMatchingExceptionsAsync(string name, string version)
+    {
+        var next = System.Text.Json.JsonSerializer.Deserialize<Advisory.Api.Policy.FirewallPolicy>(
+            System.Text.Json.JsonSerializer.Serialize(_policy.Current))!;
+        var removed = next.Exceptions.RemoveAll(e =>
+        {
+            var spec = (e.Package ?? "").Split("==", 2);
+            if (!spec[0].Trim().Equals(name, StringComparison.OrdinalIgnoreCase)) return false;
+            return spec.Length == 1 || string.IsNullOrEmpty(version) || spec[1].Trim() == version;
+        });
+        if (removed > 0) await _policy.UpdateAsync(next, _user.Name);
+        return removed;
     }
 }
 
