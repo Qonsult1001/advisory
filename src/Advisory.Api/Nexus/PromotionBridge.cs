@@ -1,5 +1,6 @@
 using Advisory.Api.Gate;
 using Advisory.Api.Models;
+using Advisory.Api.Policy;
 
 namespace Advisory.Api.Nexus;
 
@@ -18,6 +19,10 @@ public class PromotionBridge : BackgroundService
     private readonly ILogger<PromotionBridge> _log;
     private readonly TimeSpan _interval;
     private readonly HashSet<string> _processed = new();
+    // Per held component: the policy signature under which we last evaluated it. We only re-gate a
+    // held package when the policy/exceptions have actually CHANGED — otherwise the same Block would
+    // be re-audited every cycle, flooding Violations with duplicates.
+    private readonly Dictionary<string, string> _evaluatedUnderPolicy = new();
 
     public PromotionBridge(INexusClient nexus, IServiceScopeFactory scopes,
                            IConfiguration cfg, ILogger<PromotionBridge> log)
@@ -41,13 +46,26 @@ public class PromotionBridge : BackgroundService
             {
                 var components = await _nexus.ListQuarantineAsync(ct);
 
+                // The current policy signature — changes whenever the policy or its exceptions change.
+                string policySig;
+                using (var ps = _scopes.CreateScope())
+                    policySig = ps.ServiceProvider.GetRequiredService<IPolicyStore>().CurrentSignature ?? "";
+
                 foreach (var c in components)
                 {
-                    // A package still SITTING in quarantine has not been promoted yet, so we re-evaluate
-                    // it every cycle. This makes exceptions, policy changes, and revocations take effect
-                    // automatically — the moment the gate verdict flips to Allow, it promotes. We only
-                    // skip a component once it has been PROMOTED (recorded in _processed after promote).
+                    // Skip a component once it has been PROMOTED. For a held package, re-evaluate ONLY
+                    // when the policy/exceptions changed since we last gated it (else we'd re-audit the
+                    // same Block every cycle). New components (never seen) are always evaluated.
                     if (_processed.Contains(c.ComponentId)) continue;
+                    var revokedNow = false;
+                    if (_evaluatedUnderPolicy.TryGetValue(c.ComponentId, out var lastSig) && lastSig == policySig)
+                    {
+                        // Already gated under this exact policy — but a fresh revoke must still take hold.
+                        using var rs = _scopes.CreateScope();
+                        revokedNow = rs.ServiceProvider.GetRequiredService<Advisory.Api.Scan.ScanStore>()
+                            .IsRevoked(c.Ecosystem, c.Name, c.Version);
+                        if (!revokedNow) continue;
+                    }
 
                     byte[] bytes = Array.Empty<byte>();
                     if (c.Ecosystem == Ecosystem.HuggingFace || (c.FileName?.EndsWith(".bin") ?? false))
@@ -59,6 +77,7 @@ public class PromotionBridge : BackgroundService
                     using var scope = _scopes.CreateScope();
                     var gate = scope.ServiceProvider.GetRequiredService<IGateEngine>();
                     var result = await gate.EvaluateAsync(pkg, ct);
+                    _evaluatedUnderPolicy[c.ComponentId] = policySig;
 
                     // Persist the decision into the scan store so the Quarantine view can show, per
                     // package, what the pipeline did (promoted / blocked / held) and why.

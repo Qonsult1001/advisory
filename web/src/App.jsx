@@ -4569,11 +4569,19 @@ function WatchViolations({ policy, setPolicy, rows }) {
   );
 }
 
-// Per-watch violations drill-down — one row per finding, JFrog columns.
+// Per-watch violations drill-down — one row per finding, JFrog columns. Clicking a row opens the
+// full CVE/advisory detail in a drawer (real OSV/KEV/EPSS data) so a violation is actionable.
 function WatchViolationsDetail({ watch, onBack }) {
   const [data, setData] = useState(null);
   const [filters, setFilters] = useState(false);
   const [sevs, setSevs] = useState([]); // active severity filters
+  const [cve, setCve] = useState(null);       // open advisory drawer
+  const [cveLoading, setCveLoading] = useState(false);
+  const openCve = (id) => {
+    if (!id || !/^(CVE|GHSA|PYSEC|GO|RUSTSEC)-/i.test(id)) return;
+    setCve({ id }); setCveLoading(true);
+    api.getCve(id).then((d) => setCve(d)).catch(() => setCve({ id, found: false })).finally(() => setCveLoading(false));
+  };
   useEffect(() => {
     api.getViolationsDetailed(watch.name).then(setData).catch(() => setData({ count: 0, rows: [] }));
   }, [watch.name]);
@@ -4610,10 +4618,13 @@ function WatchViolationsDetail({ watch, onBack }) {
               {["ID", "Severity", "Type", "Violated Resources", "Component", "Impacted Artifact", "Updated", "Policies"].map((c) => <th key={c} style={s.th}>{c}</th>)}
             </tr></thead><tbody>
               {rows.length === 0 && <tr><td style={s.td} colSpan={8}>No violations recorded for this watch yet — they appear when the gate blocks or quarantines a matching package.</td></tr>}
-              {rows.map((v, i) => (
-                <tr key={i} style={s.tr}>
+              {rows.map((v, i) => {
+                const isCve = /^(CVE|GHSA|PYSEC|GO|RUSTSEC)-/i.test(String(v.id));
+                return (
+                <tr key={i} style={{ ...s.tr, cursor: isCve ? "pointer" : "default" }}
+                  onClick={() => isCve && openCve(v.id)} title={isCve ? "Open advisory detail" : undefined}>
                   <td style={{ ...s.td, whiteSpace: "nowrap" }}>
-                    <span style={{ fontFamily: C.mono, fontSize: 11.5 }}>{String(v.id).length > 18 ? String(v.id).slice(0, 16) + "…" : v.id}</span>
+                    <span style={{ fontFamily: C.mono, fontSize: 11.5, color: isCve ? C.accentDim : C.ink }}>{String(v.id).length > 18 ? String(v.id).slice(0, 16) + "…" : v.id}</span>
                     {v.knownExploited && <span title="Known exploited (CISA KEV)" style={s.kevBadge}>KEV</span>}</td>
                   <td style={{ ...s.td, whiteSpace: "nowrap" }}>
                     <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}>
@@ -4628,10 +4639,49 @@ function WatchViolationsDetail({ watch, onBack }) {
                   <td style={{ ...s.td, fontSize: 11.5, maxWidth: 140, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
                     title={v.policy || ""}>{v.policy ? `1 | ${v.policy}` : "—"}</td>
                 </tr>
-              ))}
+              ); })}
             </tbody></table>
           </div>
         </>
+      )}
+
+      {/* Advisory drawer — full CVE detail (OSV summary, CVSS, KEV, EPSS, fixed-in, references). */}
+      {cve && (
+        <div onClick={() => setCve(null)}
+          style={{ position: "fixed", inset: 0, background: "rgba(20,22,25,0.45)", zIndex: 60, display: "flex", justifyContent: "flex-end" }}>
+          <div onClick={(e) => e.stopPropagation()}
+            style={{ width: "min(560px,96vw)", height: "100%", background: C.surface, boxShadow: "-8px 0 30px rgba(0,0,0,0.18)", overflowY: "auto", padding: 24 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+              <span style={{ fontFamily: C.mono, fontSize: 15, fontWeight: 700 }}>{cve.id}</span>
+              <button onClick={() => setCve(null)} style={{ ...s.btnGhost, padding: "4px 10px" }}>✕ Close</button>
+            </div>
+            {cveLoading ? <div style={s.kevEmpty}>Loading advisory…</div>
+              : cve.found === false ? <div style={{ color: C.sub, fontSize: 13 }}>No advisory data found for {cve.id}.</div>
+              : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    {cve.severity && <Tag tone={cve.severity === "Critical" || cve.severity === "High" ? C.block : C.warn}>{cve.severity}</Tag>}
+                    {cve.cvss != null && <Tag tone={C.sub}>CVSS {cve.cvss}</Tag>}
+                    {cve.knownExploited && <Tag tone={C.block}>KEV — exploited in the wild</Tag>}
+                    {cve.epss != null && <Tag tone={C.sub}>EPSS {(cve.epss * 100).toFixed(1)}%</Tag>}
+                  </div>
+                  {cve.summary && <div style={{ fontSize: 13, lineHeight: 1.6, color: C.ink }}>{cve.summary}</div>}
+                  {cve.fixedVersion && <div style={{ fontSize: 12.5 }}><b>Fixed in:</b> <span style={{ fontFamily: C.mono }}>{cve.fixedVersion}</span></div>}
+                  {(cve.aliases?.length > 0) && <div style={{ fontSize: 12, color: C.sub }}><b>Aliases:</b> {cve.aliases.join(", ")}</div>}
+                  {(cve.references?.length > 0) && (
+                    <div>
+                      <div style={{ fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>References</div>
+                      {cve.references.slice(0, 8).map((r, i) => (
+                        <a key={i} href={typeof r === "string" ? r : r.url} target="_blank" rel="noreferrer"
+                          style={{ display: "block", fontSize: 11.5, color: C.accent, marginBottom: 4, wordBreak: "break-all" }}>
+                          {typeof r === "string" ? r : (r.url || r.type)}</a>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+          </div>
+        </div>
       )}
     </div>
   );
