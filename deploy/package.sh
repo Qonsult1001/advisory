@@ -37,12 +37,11 @@ echo "→ Copying build sources…"
 # bin/obj never get in. This is required: shipping node_modules would break the image build.
 if command -v git >/dev/null 2>&1 && git rev-parse --git-dir >/dev/null 2>&1; then
   git archive --format=tar HEAD \
-    Dockerfile web src tools/privacy-filter tools/vsix-scanner \
+    Dockerfile web src tools/privacy-filter tools/vsix-scanner tools/reachability \
     | ( cd "$ROOT" && tar -xf - )
 else
-  # No git — fall back to a copy that EXCLUDES the heavy/build-only dirs.
   echo "  (no git — copying with excludes)"
-  for src in Dockerfile web src tools/privacy-filter tools/vsix-scanner; do
+  for src in Dockerfile web src tools/privacy-filter tools/vsix-scanner tools/reachability; do
     [ -e "$src" ] || continue
     mkdir -p "$ROOT/$(dirname "$src")"
     rsync -a --exclude 'node_modules' --exclude 'dist' --exclude '.env' --exclude 'bin' \
@@ -50,6 +49,17 @@ else
       || cp -r "$src" "$ROOT/$(dirname "$src")/"
   done
 fi
+# GITIGNORED build deps the API Dockerfile COPYs (so they're missed by git archive): the said binaries,
+# the brain file, and RESEARCH.md. Copy them in explicitly, or the API image build fails on COPY.
+echo "→ Adding gitignored build deps (said binaries, Advisory.said, RESEARCH.md)…"
+for extra in tools/said/said-linux tools/said/said-orchestrate-linux Advisory.said RESEARCH.md; do
+  if [ -e "$extra" ]; then
+    mkdir -p "$ROOT/$(dirname "$extra")"
+    cp "$extra" "$ROOT/$extra"
+  else
+    echo "  ! WARNING: $extra not found — the API image build will fail without it."
+  fi
+done
 
 # Top-level quick-start so whoever extracts it knows what to do.
 cat > "$ROOT/INSTALL.txt" <<'TXT'
