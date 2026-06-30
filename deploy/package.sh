@@ -79,10 +79,12 @@ cat > "$HANDOFF/INSTALL.md" <<TXT
 You have one file: \`$OUT\`. It contains the full Advisory firewall, pre-configured and ready to run.
 
 ## Requirements
-- Linux with **Podman** (incl. the Compose plugin). Verify: \`podman compose version\`.
-  If \`podman compose\` is missing, install \`podman-compose\` (\`pip install podman-compose\`) - the
-  installer detects that too. (Docker also works; the installer auto-detects whichever you have.)
+- Linux with **Podman 4.x or newer** plus a compose tool (\`podman compose\` or \`podman-compose\`).
+  Docker also works; the installer auto-detects whichever you have. Check: \`podman --version\`.
 - ~6 GB free disk, ~4 GB RAM. Outbound HTTPS on first run (see deploy/README.md section 1a).
+
+> Use a current Podman - 3.4.x (old Ubuntu 22.04 default) has incomplete Compose support. Upgrade
+> with the Kubic repo if needed; see deploy/README.md for the exact commands.
 
 ## Install
 \`\`\`

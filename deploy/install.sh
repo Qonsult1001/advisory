@@ -27,17 +27,17 @@ if [ ! -f .env ]; then
   exit 1
 fi
 
-# 3. Build ALL images (including the optional scanners) so they exist on this host for future use,
-#    then start only the core stack. Pass --scanners to also START the scanners now.
+# 3. Build + start. The optional scanners are a SEPARATE overlay file (works on any compose version,
+#    unlike profiles). With --scanners we include it (build + start the scanners too); without it, the
+#    scanner images are still built so they exist on the host for later, but left stopped.
+SCAN_FILES="-f docker-compose.yml -f docker-compose.scanners.yml"
 echo "→ Building all images from source, incl. scanners (first run takes a few minutes)…"
-# Build everything (scanners included) so the images exist for future use. If the engine's compose
-# doesn't accept --profile on build (some older podman-compose), fall back to a core-only build.
-$DC --profile scanners build || { echo "  (engine didn't accept --profile on build — building core only)"; $DC build; }
-echo "→ Starting the core stack (scanners built but left stopped — enable later with --profile scanners)…"
+$DC $SCAN_FILES build || { echo "  (scanner build skipped — building core only)"; $DC build; }
 if [ "${1:-}" = "--scanners" ]; then
-  echo "→ Also starting the optional scanners now."
-  $DC --profile scanners up -d
+  echo "→ Starting the full stack incl. the optional scanners…"
+  $DC $SCAN_FILES up -d
 else
+  echo "→ Starting the core stack (scanner images built but left stopped — start later with --scanners)…"
   $DC up -d
 fi
 

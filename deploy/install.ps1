@@ -24,10 +24,11 @@ if (-not (Test-Path ".env")) {
 }
 
 # 3. Build + start. Pass -Scanners to also bring up the optional PII + extension scanners.
-$profileArgs = @()
-if ($args -contains "-Scanners") { $profileArgs = @("--profile","scanners"); Write-Host "-> Including optional scanners." }
+# Optional scanners live in a separate overlay file (works on any compose version, unlike profiles).
+$scanFiles = @()
+if ($args -contains "-Scanners") { $scanFiles = @("-f","docker-compose.yml","-f","docker-compose.scanners.yml"); Write-Host "-> Including optional scanners." }
 Write-Host "-> Building images from source (first run takes a few minutes)..."
-& $DC compose @profileArgs up --build -d
+& $DC compose @scanFiles up --build -d
 
 # Read ports from .env (default if absent).
 function Get-EnvVal($key, $default) {

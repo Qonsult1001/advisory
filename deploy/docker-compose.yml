@@ -76,26 +76,10 @@ services:
       # ":z" relabels for SELinux (Podman / RHEL / Fedora); harmless on Docker / non-SELinux hosts.
       - "./data:/data:z"
 
-  # --- On-prem PII redaction sidecar (model cached after first download).
-  # OPTIONAL scanners — behind the "scanners" profile, so a default rollout stays lean. The gate works
-  # fully without them (it falls back). Enable with:  docker compose --profile scanners up --build -d
-  # (or podman compose --profile scanners up --build -d). privacy-filter downloads a ~1GB model on first
-  # run; vsix-scanner powers the AI-editor extension gate.
-  privacy-filter:
-    profiles: ["scanners"]
-    build: { context: ../tools/privacy-filter, dockerfile: Dockerfile }
-    restart: unless-stopped
-    environment:
-      - PF_REPO=${PF_REPO:-openai/privacy-filter}
-      - PF_ONNX_VARIANT=${PF_ONNX_VARIANT:-model_fp16.onnx}
-      - PF_CACHE=/cache
-    volumes: ["pf-cache:/cache"]
-
-  # --- VS Code / AI-editor extension code scanner sidecar (optional; "scanners" profile).
-  vsix-scanner:
-    profiles: ["scanners"]
-    build: { context: ../tools/vsix-scanner, dockerfile: Dockerfile }
-    restart: unless-stopped
+  # NOTE: the optional on-prem scanners (privacy-filter, vsix-scanner) live in a SEPARATE overlay file
+  # (docker-compose.scanners.yml) instead of a Compose "profile" — profiles are unreliable on older
+  # Podman/podman-compose. The installer adds them only when you pass --scanners. The gate works fully
+  # without them (it falls back).
 
   # --- Web console: the UI the curation team uses (served on the console port).
   console:
@@ -112,4 +96,3 @@ services:
 volumes:
   nexus-data:
   mssql-data:
-  pf-cache:

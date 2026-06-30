@@ -133,7 +133,7 @@ default is Groq.** Without an AI key, these features fall back to deterministic 
 > (vsix-scanner) are **off by default** to keep the rollout lean - the gate works fully without them.
 > To include them, run the installer with the scanners flag:
 > `./install.sh --scanners` (Linux/Mac) or `.\install.ps1 -Scanners` (Windows), or by hand
-> `docker compose --profile scanners up --build -d` (substitute `podman` if that's your engine).
+> `docker compose -f docker-compose.yml -f docker-compose.scanners.yml up -d` (substitute `podman` if that's your engine).
 > Note: privacy-filter downloads a ~1 GB model on first run.
 
 ---

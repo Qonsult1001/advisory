@@ -1,0 +1,21 @@
+# Optional on-prem scanners overlay. Included ONLY when you install with --scanners (the installer adds
+# this file with -f). Kept separate from a Compose "profile" so it works on any Podman/Docker version.
+#   By hand:  <engine> compose -f docker-compose.yml -f docker-compose.scanners.yml up -d
+# privacy-filter downloads a ~1 GB PII model on first run; vsix-scanner powers the AI-editor extension gate.
+
+services:
+  privacy-filter:
+    build: { context: ../tools/privacy-filter, dockerfile: Dockerfile }
+    restart: unless-stopped
+    environment:
+      - PF_REPO=${PF_REPO:-openai/privacy-filter}
+      - PF_ONNX_VARIANT=${PF_ONNX_VARIANT:-model_fp16.onnx}
+      - PF_CACHE=/cache
+    volumes: ["pf-cache:/cache"]
+
+  vsix-scanner:
+    build: { context: ../tools/vsix-scanner, dockerfile: Dockerfile }
+    restart: unless-stopped
+
+volumes:
+  pf-cache:
