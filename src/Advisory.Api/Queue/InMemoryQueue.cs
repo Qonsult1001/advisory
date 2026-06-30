@@ -30,4 +30,9 @@ public class InMemoryQueue : IIntakeQueue
     public Task DeadLetterAsync(QueuedItem item, string reason, CancellationToken ct) { _dead.Enqueue((item, reason)); return Task.CompletedTask; }
     public Task<QueueDepth> DepthAsync(CancellationToken ct)
         => Task.FromResult(new QueueDepth(_q.Count, _dead.Count, Interlocked.Read(ref _processed)));
+    public Task PurgeAsync(CancellationToken ct)
+    {
+        _q.Clear(); _dead.Clear(); Interlocked.Exchange(ref _processed, 0);
+        return Task.CompletedTask;
+    }
 }

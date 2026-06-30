@@ -1864,7 +1864,12 @@ public class AiController : ControllerBase
         if (string.IsNullOrWhiteSpace(req?.Description))
             return Ok(new { ok = false, error = "Describe what the policy should enforce." });
 
-        var (ok, text) = await _groq.ChatAsync(PolicyBuilderSystem, req.Description, 700, 0.1, ct);
+        // Hard timeout so the UI never hangs on "Thinking…" if the model is slow/unreachable.
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(TimeSpan.FromSeconds(20));
+        bool ok; string text;
+        try { (ok, text) = await _groq.ChatAsync(PolicyBuilderSystem, req.Description, 700, 0.1, cts.Token); }
+        catch (OperationCanceledException) { return Ok(new { ok = false, error = "The AI assistant timed out. Try again, or add rules with the quick-add presets." }); }
         if (!ok) return Ok(new { ok = false, error = text });
 
         // Extract the JSON array from the model output (it may wrap it in prose / code fences).
@@ -2381,9 +2386,12 @@ public class MaintenanceController : ControllerBase
     private readonly INexusClient _nexus;
     private readonly ICurrentUser _user;
     private readonly ILogger<MaintenanceController> _log;
+    private readonly Advisory.Api.Nexus.BridgeResetSignal _bridgeReset;
+    private readonly Advisory.Api.Queue.IIntakeQueue _queue;
     public MaintenanceController(IAuditLog audit, Advisory.Api.Scan.ScanStore scans, INexusClient nexus,
-                                 ICurrentUser user, ILogger<MaintenanceController> log)
-    { _audit = audit; _scans = scans; _nexus = nexus; _user = user; _log = log; }
+                                 ICurrentUser user, ILogger<MaintenanceController> log,
+                                 Advisory.Api.Nexus.BridgeResetSignal bridgeReset, Advisory.Api.Queue.IIntakeQueue queue)
+    { _audit = audit; _scans = scans; _nexus = nexus; _user = user; _log = log; _bridgeReset = bridgeReset; _queue = queue; }
 
     /// <summary>Factory-fresh reset (Admin): wipe the decision ledger + scan index + revocations, and
     /// empty all firewall repos. Policy, AI keys, and provisioned ecosystems are untouched (repos stay
@@ -2392,6 +2400,8 @@ public class MaintenanceController : ControllerBase
     [Authorize(Policy = Policies.CanAdmin)]
     public async Task<ActionResult> Reset(CancellationToken ct)
     {
+        _bridgeReset.Request();                                     // flush the bridge's in-memory tracking next cycle
+        await _queue.PurgeAsync(ct);                                // drop in-flight intake messages (else they re-fetch packages)
         var packages = await _nexus.EmptyFirewallReposAsync(ct);   // Pipeline Quarantine/Approved
         _scans.ClearAll();                                          // Scans List + artifacts + revocations
         _audit.ClearAll();                                          // Dashboard + Xray Overview + Decision ledger

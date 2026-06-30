@@ -129,6 +129,18 @@ WHERE q.Status='pending'
         return new QueueDepth(0, 0, 0);
     }
 
+    public async Task PurgeAsync(CancellationToken ct)
+    {
+        if (!IsConfigured) return;
+        // Drop pending + in-flight + dead messages so a maintenance reset can't leave a message that
+        // re-materialises a package on the next consume. Completed ('done') rows are history — keep them.
+        await using var con = new SqlConnection(_cs); await con.OpenAsync(ct);
+        await using var cmd = con.CreateCommand();
+        cmd.CommandText = "DELETE FROM dbo.IntakeQueue WHERE Status IN ('pending','processing','dead');";
+        var n = await cmd.ExecuteNonQueryAsync(ct);
+        _log.LogWarning("Intake queue purged: {Count} pending/processing/dead messages removed (maintenance reset).", n);
+    }
+
     public int MaxDeliveryThreshold => MaxRetries;
 
     private async Task Exec(string sql, string id, string? err, CancellationToken ct)

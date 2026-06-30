@@ -131,6 +131,7 @@ else
     builder.Services.AddSingleton<IIntakeQueue, InMemoryQueue>();
 builder.Services.AddHostedService<IntakeConsumer>();
 builder.Services.AddSingleton<INexusClient, NexusClient>();
+builder.Services.AddSingleton<Advisory.Api.Nexus.BridgeResetSignal>();
 builder.Services.AddSingleton<Advisory.Api.Integrations.IGitRepoClient, Advisory.Api.Integrations.GitHubRepoClient>();
 builder.Services.AddHostedService<PromotionBridge>();
 builder.Services.AddHostedService<NexusAutoProvisioner>();   // seeds the default ecosystems on first boot

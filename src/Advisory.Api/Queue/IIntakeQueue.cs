@@ -18,6 +18,9 @@ public interface IIntakeQueue
     Task AckAsync(string messageId, CancellationToken ct);
     Task DeadLetterAsync(QueuedItem item, string reason, CancellationToken ct);
     Task<QueueDepth> DepthAsync(CancellationToken ct);
+    /// <summary>Drop every pending + dead-lettered message (and reset counters). Used by the maintenance
+    /// reset so leftover in-flight messages don't re-materialise packages after a clean wipe.</summary>
+    Task PurgeAsync(CancellationToken ct);
     bool IsConfigured { get; }
 }
 

@@ -17,6 +17,7 @@ public class PromotionBridge : BackgroundService
     private readonly INexusClient _nexus;
     private readonly IServiceScopeFactory _scopes;
     private readonly ILogger<PromotionBridge> _log;
+    private readonly BridgeResetSignal _reset;
     private readonly TimeSpan _interval;
     private readonly HashSet<string> _processed = new();
     // Per held component: the policy signature under which we last evaluated it. We only re-gate a
@@ -29,9 +30,9 @@ public class PromotionBridge : BackgroundService
     private readonly Dictionary<string, string> _lastOutcomeKey = new();
 
     public PromotionBridge(INexusClient nexus, IServiceScopeFactory scopes,
-                           IConfiguration cfg, ILogger<PromotionBridge> log)
+                           IConfiguration cfg, ILogger<PromotionBridge> log, BridgeResetSignal reset)
     {
-        _nexus = nexus; _scopes = scopes; _log = log;
+        _nexus = nexus; _scopes = scopes; _log = log; _reset = reset;
         _interval = TimeSpan.FromSeconds(cfg.GetValue("NEXUS_POLL_SECONDS", 30));
     }
 
@@ -48,6 +49,13 @@ public class PromotionBridge : BackgroundService
         {
             try
             {
+                // A maintenance reset emptied the repos + cleared the stores — flush our in-memory
+                // tracking too, so nothing is re-promoted from stale state and the repos stay empty.
+                if (_reset.Consume())
+                {
+                    _processed.Clear(); _evaluatedUnderPolicy.Clear(); _lastOutcomeKey.Clear();
+                    _log.LogInformation("PromotionBridge tracking flushed (maintenance reset).");
+                }
                 var components = await _nexus.ListQuarantineAsync(ct);
 
                 // The current policy signature — changes whenever the policy or its exceptions change.
