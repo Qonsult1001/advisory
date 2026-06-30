@@ -7074,6 +7074,111 @@ function ReportSummary({ type, rows }) {
     </div>
   );
 }
+// A report table row that expands to a full-detail panel (every field, nicely laid out, with live
+// links for CVE/GHSA ids). The table cells stay truncated for scanning; the panel is the "more info".
+function ReportRow({ r, cols, fmt, tone }) {
+  const [open, setOpen] = useState(false);
+  // Pull a CVE/GHSA id out of a value so we can deep-link to the live CVE detail page.
+  const idOf = (v) => { const m = String(v ?? "").match(/(CVE-\d{4}-\d+|GHSA-[\w-]+|PYSEC-\d+-\d+)/); return m ? m[1] : null; };
+  return (
+    <>
+      <tr style={{ ...s.tr, cursor: "pointer" }} onClick={() => setOpen(!open)}>
+        {cols.map((c) => (
+          <td key={c} style={{ ...s.td, fontSize: 11.5, color: tone(c, r[c]),
+            fontFamily: /package|version|vulnerability|resource|cves|controls/i.test(c) ? C.mono : C.sans,
+            maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+            title={r[c] != null ? String(r[c]) : ""}>{fmt(r[c])}</td>
+        ))}
+        <td style={{ ...s.td, color: C.sub, fontSize: 11, textAlign: "right", whiteSpace: "nowrap" }}>{open ? "▾ hide" : "▸ details"}</td>
+      </tr>
+      {open && (
+        <tr>
+          <td colSpan={cols.length + 1} style={{ padding: 0, background: C.bg2, borderBottom: `1px solid ${C.line}` }}>
+            <div style={{ padding: "14px 22px 18px", display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: "10px 24px" }}>
+              {cols.map((c) => {
+                const id = idOf(r[c]);
+                return (
+                  <div key={c}>
+                    <div style={{ fontSize: 10, color: C.sub, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 2 }}>{c}</div>
+                    <div style={{ fontSize: 12.5, color: tone(c, r[c]), fontFamily: /package|version|vulnerability|cves|controls|resource/i.test(c) ? C.mono : C.sans, wordBreak: "break-word" }}>
+                      {id
+                        ? <a href={`https://osv.dev/vulnerability/${id}`} target="_blank" rel="noreferrer" style={{ color: C.accent }}>{fmt(r[c])} ↗</a>
+                        : fmt(r[c])}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </td>
+        </tr>
+      )}
+    </>
+  );
+}
+// Export menu: CSV (server), PDF (browser print view), Word (.doc HTML blob). All client-side except
+// CSV — no server libraries. PDF/Word include the report title, generated-at, and the full table.
+function ReportExport({ type, label, rows, cols, fmt, generatedAt, csvUrl }) {
+  const [open, setOpen] = useState(false);
+  const title = `${label} report`;
+  const stamp = generatedAt ? new Date(generatedAt).toLocaleString() : new Date().toLocaleString();
+  // Build a clean printable HTML document (used by both PDF-via-print and the Word .doc blob).
+  const buildHtml = () => {
+    const esc = (v) => String(v ?? "—").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const head = cols.map((c) => `<th style="text-align:left;border-bottom:2px solid #333;padding:6px 8px;font-size:11px;text-transform:uppercase;">${esc(c)}</th>`).join("");
+    const body = rows.map((r) => `<tr>${cols.map((c) => `<td style="border-bottom:1px solid #ddd;padding:6px 8px;font-size:11px;">${esc(fmt(r[c]))}</td>`).join("")}</tr>`).join("");
+    return `<html><head><meta charset="utf-8"><title>${esc(title)}</title></head>
+      <body style="font-family:Arial,Helvetica,sans-serif;color:#1a2b3c;padding:24px;">
+        <div style="border-bottom:3px solid #40be46;padding-bottom:10px;margin-bottom:14px;">
+          <div style="font-size:20px;font-weight:800;">Advisory — ${esc(label)} Report</div>
+          <div style="font-size:12px;color:#667;">Software supply-chain firewall · ${rows.length} rows · generated ${esc(stamp)}</div>
+        </div>
+        <table style="border-collapse:collapse;width:100%;"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>
+        <div style="margin-top:16px;font-size:10px;color:#889;">Generated from the signed decision ledger. Confidential.</div>
+      </body></html>`;
+  };
+  const exportPdf = () => {
+    const w = window.open("", "_blank");
+    if (!w) { window.alert("Allow pop-ups to export PDF."); return; }
+    w.document.write(buildHtml());
+    w.document.close();
+    w.focus();
+    setTimeout(() => w.print(), 300); // user picks "Save as PDF" in the print dialog
+    setOpen(false);
+  };
+  const exportWord = () => {
+    // A .doc that Word opens natively: HTML body with the Word XML namespace preamble.
+    const html = "﻿<html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'>" + buildHtml().replace(/^<html>/, "").replace(/<\/html>$/, "") + "</html>";
+    const blob = new Blob([html], { type: "application/msword" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob); a.download = `${type}-report.doc`; a.click();
+    URL.revokeObjectURL(a.href); setOpen(false);
+  };
+  const item = (label, onClick) => (
+    <button onClick={onClick} style={{ display: "block", width: "100%", textAlign: "left", padding: "9px 14px", fontSize: 12.5,
+      background: "none", border: "none", cursor: "pointer", color: C.ink, whiteSpace: "nowrap" }}
+      onMouseEnter={(e) => e.currentTarget.style.background = C.bg2} onMouseLeave={(e) => e.currentTarget.style.background = "none"}>{label}</button>
+  );
+  return (
+    <div style={{ position: "relative" }}>
+      <button onClick={() => setOpen(!open)}
+        style={{ color: "#fff", background: C.accent, borderRadius: 6, padding: "6px 14px", fontSize: 12, fontWeight: 600, border: "none", cursor: "pointer" }}>
+        ↓ Export ▾</button>
+      {open && (
+        <>
+          <div onClick={() => setOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 90 }} />
+          <div style={{ position: "absolute", right: 0, top: "calc(100% + 6px)", zIndex: 91, background: C.surface,
+            border: `1px solid ${C.line}`, borderRadius: 8, boxShadow: "0 10px 28px rgba(15,39,72,.18)", overflow: "hidden", minWidth: 170 }}>
+            {item("📄  PDF (print view)", exportPdf)}
+            {item("📝  Word (.doc)", exportWord)}
+            <a href={csvUrl} download onClick={() => setOpen(false)}
+              style={{ display: "block", padding: "9px 14px", fontSize: 12.5, color: C.ink, textDecoration: "none" }}
+              onMouseEnter={(e) => e.currentTarget.style.background = C.bg2} onMouseLeave={(e) => e.currentTarget.style.background = "none"}>📊  CSV (data)</a>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
 function Reports() {
   const [type, setType] = useState(null);
   const [data, setData] = useState(null);
@@ -7108,30 +7213,21 @@ function Reports() {
       {loading && <div style={{ padding: 30, textAlign: "center", color: C.sub, fontSize: 13 }}>Generating report…</div>}
       {type && !loading && data && (
         <div style={s.card}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 18px", borderBottom: `1px solid ${C.lineSoft}` }}>
+          <div id="report-export-root" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 18px", borderBottom: `1px solid ${C.lineSoft}` }}>
             <span style={{ fontWeight: 600, fontSize: 13 }}>
               {REPORT_TYPES.find((r) => r.key === type)?.label} · {rows.length} rows
               {data.generatedAt && <span style={{ color: C.sub, fontWeight: 400, fontSize: 11.5 }}> — generated {new Date(data.generatedAt).toLocaleString()}</span>}
             </span>
-            <a href={api.reportCsvUrl(type)} download
-              style={{ color: "#fff", background: C.accent, borderRadius: 6, padding: "6px 14px", fontSize: 12, fontWeight: 600, textDecoration: "none" }}>↓ Download CSV</a>
+            <ReportExport type={type} label={REPORT_TYPES.find((r) => r.key === type)?.label} rows={rows} cols={cols}
+              fmt={fmt} generatedAt={data.generatedAt} csvUrl={api.reportCsvUrl(type)} />
           </div>
           {rows.length === 0
             ? <EmptyState title="No rows" sub="Run some evaluations through the gate first — reports are derived from the decision ledger." />
             : <>
               <ReportSummary type={type} rows={rows} />
-              <div style={{ overflowX: "auto" }}>
-                <Table cols={cols}>
-                  {rows.slice(0, 300).map((r, i) => (
-                    <tr key={i} style={s.tr}>
-                      {cols.map((c) => (
-                        <td key={c} style={{ ...s.td, fontSize: 11.5, color: tone(c, r[c]),
-                          fontFamily: /package|version|vulnerability|resource|cves|controls/i.test(c) ? C.mono : C.sans,
-                          maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
-                          title={r[c] != null ? String(r[c]) : ""}>{fmt(r[c])}</td>
-                      ))}
-                    </tr>
-                  ))}
+              <div style={{ overflowX: "auto" }} id="report-table">
+                <Table cols={[...cols, ""]}>
+                  {rows.slice(0, 300).map((r, i) => <ReportRow key={i} r={r} cols={cols} fmt={fmt} tone={tone} />)}
                 </Table>
               </div>
             </>}
