@@ -1,0 +1,3 @@
+# Local rollout config + runtime data — never commit
+.env
+data/

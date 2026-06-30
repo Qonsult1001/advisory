@@ -1,0 +1,108 @@
+# Advisory — IT rollout bundle.
+# Self-contained stack: Nexus proxy + API gate + web console + SQL queue + on-prem scanners.
+# Builds from the repo source one directory up (context: ..). Isolated from any dev stack via its own
+# project name (advisory-rollout), its own named volumes, and its own ./data bind mount in THIS folder.
+#
+#   Start:   docker compose up --build -d        (or run install.sh / install.ps1)
+#   Stop:    docker compose down
+#   Wipe:    docker compose down -v               (also deletes Nexus/SQL data)
+#
+# All tunables (ports, passwords, optional API keys, SSO) come from .env — copy .env.example to .env first.
+
+name: advisory-rollout
+
+services:
+  # --- Nexus repository: the proxy/store. Quarantine (proxy) + Approved (hosted) repos live here.
+  #     Developers pull approved packages from this service. Pinned for reproducibility.
+  nexus:
+    image: sonatype/nexus3:3.93.1
+    restart: unless-stopped
+    ports: ["${NEXUS_PORT:-8081}:8081"]
+    volumes: ["nexus-data:/nexus-data"]
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8081/service/rest/v1/status"]
+      interval: 20s
+      timeout: 5s
+      retries: 30
+      start_period: 120s
+
+  # --- SQL Server: durable intake queue backend (table auto-created on first run).
+  mssql:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    restart: unless-stopped
+    environment:
+      - ACCEPT_EULA=Y
+      - MSSQL_SA_PASSWORD=${SQL_SA_PASSWORD:?set SQL_SA_PASSWORD in .env}
+    ports: ["${SQL_PORT:-1434}:1433"]
+    volumes: ["mssql-data:/var/opt/mssql"]
+
+  # --- API: the gate engine + promotion bridge + REST API the console talks to.
+  api:
+    build: { context: .., dockerfile: Dockerfile }
+    restart: unless-stopped
+    ports: ["${API_PORT:-5000}:5000"]
+    depends_on: [nexus, mssql]
+    environment:
+      - PolicyPath=/data/policy.json
+      - AuditPath=/data/audit.jsonl
+      - WormPath=/data/audit.worm.jsonl
+      - ScanIndexPath=/data/scans.json
+      # Durable intake queue (SQL Server, in-network port 1433).
+      - SQL_CONNECTION_STRING=Server=mssql,1433;Database=master;User Id=sa;Password=${SQL_SA_PASSWORD};TrustServerCertificate=True
+      - INTAKE_BATCH=10
+      # Nexus promotion bridge (the interception piece).
+      - NEXUS_URL=http://nexus:8081
+      - NEXUS_QUARANTINE_SUFFIX=quarantine
+      - NEXUS_APPROVED_SUFFIX=approved
+      - NEXUS_AUTOPROVISION=${NEXUS_AUTOPROVISION:-false}
+      - NEXUS_USER=${NEXUS_USER:-admin}
+      - NEXUS_PASS=${NEXUS_PASS:-admin123}
+      - NEXUS_POLL_SECONDS=${NEXUS_POLL_SECONDS:-30}
+      - NEXUS_DELETE_ON_HOLD=false
+      # On-prem scanner sidecars.
+      - PRIVACY_FILTER_URL=http://privacy-filter:8071
+      - VSIX_SCANNER_URL=http://vsix-scanner:8099
+      # Optional intelligence + AI (all blank-safe; the free OSV/KEV/EPSS path works with none).
+      - VULNCHECK_API_KEY=${VULNCHECK_API_KEY:-}
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+      - GROQ_MODEL=${GROQ_MODEL:-openai/gpt-oss-120b}
+      # SSO / RBAC (Entra ID / OIDC). Leave unset for the dev fallback (all roles, local). See README.
+      - AzureAd__Instance=${AZURE_AD_INSTANCE:-}
+      - AzureAd__TenantId=${AZURE_AD_TENANT_ID:-}
+      - AzureAd__ClientId=${AZURE_AD_CLIENT_ID:-}
+      - AzureAd__Audience=${AZURE_AD_AUDIENCE:-}
+    volumes:
+      # All runtime data lives in THIS bundle's ./data — isolated from the dev stack's data dir.
+      - "./data:/data"
+
+  # --- On-prem PII redaction sidecar (model cached after first download).
+  privacy-filter:
+    build: { context: ../tools/privacy-filter, dockerfile: Dockerfile }
+    restart: unless-stopped
+    environment:
+      - PF_REPO=${PF_REPO:-openai/privacy-filter}
+      - PF_ONNX_VARIANT=${PF_ONNX_VARIANT:-model_fp16.onnx}
+      - PF_CACHE=/cache
+    volumes: ["pf-cache:/cache"]
+
+  # --- VS Code / AI-editor extension code scanner sidecar.
+  vsix-scanner:
+    build: { context: ../tools/vsix-scanner, dockerfile: Dockerfile }
+    restart: unless-stopped
+
+  # --- Web console: the UI the curation team uses (served on the console port).
+  console:
+    build:
+      context: ..
+      dockerfile: web/Dockerfile
+      args:
+        # Splash SSO default: false ships the testing "Continue" button; set true to require SSO sign-in.
+        - SSO_ENABLED=${SSO_ENABLED:-false}
+    restart: unless-stopped
+    ports: ["${CONSOLE_PORT:-8088}:80"]
+    depends_on: [api]
+
+volumes:
+  nexus-data:
+  mssql-data:
+  pf-cache:
