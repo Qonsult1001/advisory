@@ -66,3 +66,6 @@ tools/said/*
 vulncheck_known_exploited_vulnerabilities.json
 .tmp-pip-test/
 advisory-rollout-*.tar.gz
+
+# IT handoff bundle (contains live keys — never commit)
+handoff/

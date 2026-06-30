@@ -66,9 +66,37 @@ TXT
 
 chmod +x "$ROOT/deploy/install.sh" 2>/dev/null || true
 
-echo "→ Creating $OUT…"
-( cd "$STAGE" && tar -czf - advisory-rollout ) > "$REPO_ROOT/$OUT"
+# Output into a dedicated handoff/ folder (kept out of git), with a tiny INSTALL.md beside the archive.
+HANDOFF="$REPO_ROOT/handoff"
+mkdir -p "$HANDOFF"
+echo "→ Creating handoff/$OUT…"
+( cd "$STAGE" && tar -czf - advisory-rollout ) > "$HANDOFF/$OUT"
 rm -rf "$STAGE"
 
-echo "✓ Done: $REPO_ROOT/$OUT"
-echo "  Hand this file to IT. They run:  tar -xzf $OUT && cd advisory-rollout/deploy && ./install.sh"
+cat > "$HANDOFF/INSTALL.md" <<TXT
+# Advisory - install
+
+You have one file: \`$OUT\`. It contains the full Advisory firewall, pre-configured and ready to run.
+
+## Requirements
+- Linux/macOS with **Docker OR Podman** (incl. the Compose plugin).
+- ~6 GB free disk, ~4 GB RAM. Outbound HTTPS on first run (see deploy/README.md section 1a).
+
+## Install
+\`\`\`
+tar -xzf $OUT
+cd advisory-rollout/deploy
+./install.sh            # add --scanners to also start the PII + extension scanners
+\`\`\`
+It is already configured. The installer builds the images, starts the stack, and prints the URLs.
+
+## After it starts
+- Console (curation team):  http://<this-host>:8088
+- Nexus repo (developers):  http://<this-host>:8081
+
+Open the console, click **Continue**, then follow the in-app **? Guide** (top bar) or
+deploy/docs/TUTORIAL-gate-your-first-package.md. Full ops/SSO/troubleshooting: deploy/README.md.
+TXT
+
+echo "✓ Done: $HANDOFF/$OUT  (+ INSTALL.md)"
+echo "  Hand the whole handoff/ folder to IT. They run:  tar -xzf $OUT && cd advisory-rollout/deploy && ./install.sh"
