@@ -161,6 +161,41 @@ requirement is the Docker or Podman engine itself.
 
 ---
 
+## 3a. On-prem scanners — capability & value
+
+The bundle ships two self-hosted security scanners. They are **built during install and ready to use**,
+included now so the capability is in place for upcoming deployments. Both run **entirely on-premise on
+ordinary CPU** (no GPU), responding in a fraction of a second once warm.
+
+### privacy-filter — PII redaction
+Runs OpenAI's `openai/privacy-filter` model locally to detect and redact personal data — names, emails,
+phone numbers, national IDs, payment-card numbers, IP addresses, account numbers — directly inside your
+environment.
+
+- **What it's for:** scanning artifact and text content for personal/sensitive data before it is stored,
+  shared, or pulled — your own on-prem data-loss-prevention layer.
+- **Value it adds:** enterprise-grade PII detection with **no cloud DLP service and no data leaving your
+  network** — privacy-preserving by design, and free to run.
+- **Requirements:** ~1.7 GB image, ~4 GB RAM while active, one-time model download (~1 GB, then fully
+  offline), CPU only.
+
+### vsix-scanner — AI-editor extension code scanning
+Runs Trail of Bits' `vsix-audit` engine with the YARA-X rule engine to inspect the actual code of
+VS Code / AI-editor extensions for malicious behaviour: data-exfiltration webhooks, credential/SSH/cookie
+theft, code injection, obfuscation, and RAT / command-and-control patterns.
+
+- **What it's for:** the enforcement behind the **AI-editor extension gate** — deciding whether an
+  extension is safe to allow.
+- **Value it adds:** real code-level malware detection on extensions (not reputation guesswork), so risky
+  editor extensions are caught before they reach developers.
+- **Requirements:** ~430 MB image, ~90 MB RAM while active, self-contained after build, CPU only.
+
+> Both idle at **0 % CPU** until something is scanned, and are built into this bundle ready to enable
+> (see §1a.G / the scanners flag). Together: ~2.2 GB on disk, ~4 GB RAM when in use — fully on-prem,
+> no GPU, no per-scan cloud cost.
+
+---
+
 ## 4. First steps after install
 
 1. **Set the Nexus admin password.** On first boot Nexus generates an initial password inside the
