@@ -160,33 +160,41 @@ function SplashLogin({ onContinue }) {
     window.location.assign(url);
   };
   const NAVY = "#16243a", GREEN = "#40be46", GREEN_DIM = "#2f9e36";
+  // Strong, demonstrable capabilities (the "✓ this build" column) scattered across the hero like art.
+  // top/left in %, rotation in deg, size scale — hand-placed for a funky, non-grid collage feel.
+  const CHIPS = [
+    { t: "✓ Multi-ecosystem CVE matching · OSV.dev", x: 8,  y: 14, r: -7,  s: 1.0 },
+    { t: "✓ Known-exploited gating · CISA KEV",       x: 46, y: 9,  r: 5,   s: 1.08 },
+    { t: "✓ Exploit-probability · EPSS",              x: 60, y: 26, r: -4,  s: 0.95 },
+    { t: "✓ Transitive tree · cycle-safe",            x: 14, y: 34, r: 6,   s: 0.92 },
+    { t: "✓ License policy",                          x: 50, y: 44, r: -8,  s: 0.9 },
+    { t: "✓ Pickle / model-weight opcode scan",       x: 6,  y: 54, r: 4,   s: 1.0 },
+    { t: "✓ Secret scanning in artifacts",            x: 44, y: 62, r: 7,   s: 0.94 },
+    { t: "✓ SBOM · CycloneDX",                        x: 16, y: 74, r: -5,  s: 0.9 },
+    { t: "✓ Policy-as-gate · SHA-256 signed",         x: 52, y: 80, r: 4,   s: 1.02 },
+    { t: "✓ Append-only audit ledger",                x: 8,  y: 88, r: 6,   s: 0.92 },
+    { t: "✓ Non-bypassable Nexus pre-download hook",  x: 38, y: 92, r: -6,  s: 0.96 },
+  ];
   return (
     <div style={{ position: "fixed", inset: 0, background: "#fff", color: C.ink, fontFamily: C.sans,
-      display: "flex", flexDirection: "column", overflow: "hidden" }}>
-      <style>{FONTS}</style>
+      display: "flex", overflow: "hidden" }}>
+      <style>{FONTS}{`@media(max-width:860px){.splash-hero{display:none!important}}`}</style>
 
-      {/* HERO PANEL — dark navy with a green brand glow, fills the top half */}
-      <div style={{ position: "relative", flex: "1 1 46%", minHeight: 240, overflow: "hidden",
-        background: `radial-gradient(120% 90% at 50% 10%, #20344f 0%, ${NAVY} 55%, #0f1929 100%)` }}>
-        <div style={{ position: "absolute", top: "-25%", left: "50%", transform: "translateX(-50%)", width: 620, height: 620,
-          background: `radial-gradient(circle, ${GREEN}33 0%, transparent 62%)`, filter: "blur(12px)", pointerEvents: "none" }} />
-        {/* wordmark only — no icon */}
-        <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 10 }}>
-          <span style={{ fontWeight: 800, fontSize: 54, letterSpacing: -1.5 }}>
-            <span style={{ color: "#fff" }}>Advi</span><span style={{ color: GREEN }}>sory</span>
-          </span>
-          <span style={{ fontSize: 13, color: "rgba(255,255,255,.5)", letterSpacing: 0.3 }}>Software supply-chain firewall</span>
-        </div>
-        {/* green base line, echoing the active-nav accent */}
-        <div style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: 3, background: GREEN }} />
-      </div>
+      {/* LEFT — white sign-in panel */}
+      <div style={{ flex: "1 1 42%", minWidth: 0, display: "flex", flexDirection: "column", justifyContent: "center",
+        padding: "40px clamp(28px, 5vw, 72px)", background: "#fff" }}>
+        <div style={{ width: "100%", maxWidth: 380, margin: "0 auto" }}>
+          {/* brand mark — green tile + wordmark (no emoji) */}
+          <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 40 }}>
+            <div style={{ width: 42, height: 42, borderRadius: 11, background: GREEN, display: "grid", placeItems: "center",
+              color: "#fff", fontWeight: 900, fontSize: 21, boxShadow: `0 6px 16px ${GREEN}40` }}>A</div>
+            <span style={{ fontWeight: 800, fontSize: 19, letterSpacing: -0.3 }}>
+              <span style={{ color: C.ink }}>Advi</span><span style={{ color: GREEN }}>sory</span>
+            </span>
+          </div>
 
-      {/* SIGN-IN PANEL — clean white */}
-      <div style={{ flex: "1 1 54%", display: "flex", flexDirection: "column", alignItems: "center",
-        padding: "38px 24px 28px", background: "#fff" }}>
-        <div style={{ width: "100%", maxWidth: 380 }}>
-          <div style={{ fontSize: 28, fontWeight: 800, letterSpacing: -0.5, marginBottom: 6, color: C.ink }}>Welcome</div>
-          <div style={{ fontSize: 13.5, color: C.sub, marginBottom: 28 }}>
+          <div style={{ fontSize: 29, fontWeight: 800, letterSpacing: -0.6, marginBottom: 6, color: C.ink }}>Welcome back</div>
+          <div style={{ fontSize: 14, color: C.sub, marginBottom: 30 }}>
             Sign in to the supply-chain firewall console.
           </div>
 
@@ -199,18 +207,43 @@ function SplashLogin({ onContinue }) {
             {sso ? "Sign in with SSO" : "Continue"}
           </button>
 
-          <div style={{ fontSize: 12, color: sso ? C.sub : "#c0392b", marginTop: 14, textAlign: "center", lineHeight: 1.5 }}>
+          <div style={{ fontSize: 12.5, color: sso ? C.sub : "#c0392b", marginTop: 14, textAlign: "center", lineHeight: 1.5 }}>
             {sso ? "You'll be redirected to your organisation's identity provider."
                  : "Testing mode — SSO is off, anyone can continue without signing in."}
           </div>
 
           {/* SSO on/off switch */}
-          <div style={{ marginTop: 30, paddingTop: 18, borderTop: `1px solid ${C.line}`,
+          <div style={{ marginTop: 32, paddingTop: 18, borderTop: `1px solid ${C.line}`,
             display: "flex", alignItems: "center", justifyContent: "space-between" }}>
             <span style={{ fontSize: 13, color: C.sub }}>Require SSO sign-in</span>
             <Switch on={sso} onChange={setSsoPersist} />
           </div>
         </div>
+      </div>
+
+      {/* RIGHT — green branded hero with scattered capability chips */}
+      <div className="splash-hero" style={{ flex: "1 1 58%", minWidth: 0, position: "relative", overflow: "hidden",
+        background: `radial-gradient(130% 120% at 22% 12%, #2f9e36 0%, ${GREEN_DIM} 26%, ${NAVY} 74%, #0f1929 100%)` }}>
+        {/* soft light streaks */}
+        <div style={{ position: "absolute", top: "-15%", left: "5%", width: 520, height: 760, transform: "rotate(20deg)",
+          background: "linear-gradient(90deg, rgba(255,255,255,.14) 0%, transparent 60%)", filter: "blur(40px)", pointerEvents: "none" }} />
+        <div style={{ position: "absolute", bottom: "-12%", right: "-6%", width: 560, height: 560,
+          background: `radial-gradient(circle, ${GREEN}50 0%, transparent 60%)`, filter: "blur(30px)", pointerEvents: "none" }} />
+
+        {/* headline */}
+        <div style={{ position: "absolute", top: "9%", left: "clamp(40px,5vw,72px)", right: "8%", zIndex: 2 }}>
+          <div style={{ fontSize: "clamp(34px,4vw,56px)", fontWeight: 800, lineHeight: 1.05, letterSpacing: -1.4, color: "#fff" }}>
+            <span style={{ fontStyle: "italic", fontWeight: 700, color: "#cdeccd" }}>Secure</span> every package,<br />before it ships.
+          </div>
+        </div>
+
+        {/* scattered capability chips — funky collage */}
+        {CHIPS.map((c, i) => (
+          <div key={i} style={{ position: "absolute", left: `${c.x}%`, top: `${c.y}%`, transform: `rotate(${c.r}deg) scale(${c.s})`,
+            background: "rgba(255,255,255,.10)", border: "1px solid rgba(255,255,255,.22)", backdropFilter: "blur(6px)",
+            color: "#eafaea", fontSize: 12.5, fontWeight: 600, padding: "8px 13px", borderRadius: 999, whiteSpace: "nowrap",
+            boxShadow: "0 6px 18px rgba(0,0,0,.18)", pointerEvents: "none" }}>{c.t}</div>
+        ))}
       </div>
     </div>
   );
