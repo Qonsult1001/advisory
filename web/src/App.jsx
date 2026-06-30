@@ -153,6 +153,17 @@ export default function App() {
   const [saving, setSaving] = useState(false);
   const [decisionFilter, setDecisionFilter] = useState(null); // null = all; else "Block"|"Allow"|"Quarantine"
   const [showAdvancedControls, setShowAdvancedControls] = useState(false); // raw SEC-* table collapsed by default
+  const [highlightedCtl, setHighlightedCtl] = useState(null); // SEC-* id to flash when "see it" is clicked
+  // Open Advanced settings, scroll to the named control, and flash it — used by the AI builder's "see it" links.
+  const revealControl = (ctlId) => {
+    setShowAdvancedControls(true);
+    setHighlightedCtl(ctlId);
+    setTimeout(() => {
+      const el = document.getElementById(`ctl-${ctlId}`);
+      if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 60);
+    setTimeout(() => setHighlightedCtl(null), 2400);
+  };
   const [askAiOpen, setAskAiOpen] = useState(false);
   const [askAiSeed, setAskAiSeed] = useState(null);
   // Any screen can open the assistant pre-seeded: window.dispatchEvent(new CustomEvent("pkgfw-askai", { detail: question }))
@@ -264,7 +275,7 @@ export default function App() {
             </div>
             <Card title="Policy controls" desc="Set what the firewall allows or blocks. Start with a profile or describe it in plain English — then fine-tune the individual controls under Advanced settings if you want. Nothing takes effect until you Commit & sign.">
               <PolicyPresets policy={policy} setPolicy={setPolicy} />
-              <ControlsAiBuilder policy={policy} set={set} />
+              <ControlsAiBuilder policy={policy} set={set} revealControl={revealControl} />
               <button onClick={() => setShowAdvancedControls((x) => !x)}
                 style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", textAlign: "left", cursor: "pointer",
                   background: "none", border: "none", borderTop: `1px solid ${C.line}`, padding: "14px 0 4px", marginTop: 4 }}>
@@ -274,11 +285,11 @@ export default function App() {
               {showAdvancedControls && (<>
               <SubHead>SEC-VULN — Known vulnerabilities</SubHead>
               <Table cols={["Control", "Rule", "Setting"]}>
-                <Ctl id="SEC-VULN-01" rule="Block when CVSS base score at or above"
+                <Ctl id="SEC-VULN-01" rule="Block when CVSS base score at or above" highlighted={highlightedCtl === "SEC-VULN-01"}
                   help="Every known security flaw (CVE) has a severity score from 0 to 10 (CVSS). A package is blocked if its worst CVE scores at or above this number. 8 catches high + critical flaws; lower it to be stricter, raise it to allow more through.">
                   <Stepper value={policy.cvssBlockThreshold} step={0.5} min={0} max={10}
                     onChange={(v) => set("cvssBlockThreshold", v)} unit="/ 10" /></Ctl>
-                <Ctl id="SEC-VULN-02" rule="Block components on the known-exploited catalogue"
+                <Ctl id="SEC-VULN-02" rule="Block components on the known-exploited catalogue" highlighted={highlightedCtl === "SEC-VULN-02"}
                   help="CISA publishes a list of vulnerabilities that attackers are actively exploiting in the wild right now (the KEV catalogue). When on, any package with a flaw on that list is blocked outright, regardless of its CVSS score.">
                   <Switch on={policy.blockKnownExploited} onChange={(v) => set("blockKnownExploited", v)} /></Ctl>
                 <Ctl id="SEC-VULN-03" rule="Block when exploit probability (EPSS) at or above"
@@ -303,7 +314,7 @@ export default function App() {
               </Table>
               <SubHead>LEG-LIC / SEC-OPR — Licensing & project health</SubHead>
               <Table cols={["Control", "Rule", "Setting"]}>
-                <Ctl id="LEG-LIC-01" rule="Prohibited licences"
+                <Ctl id="LEG-LIC-01" rule="Prohibited licences" highlighted={highlightedCtl === "LEG-LIC-01"}
                   help="Some open-source licences (e.g. GPL-3.0) carry legal obligations a company may not want in its codebase. Any package published under a licence listed here is blocked. Add the SPDX licence IDs you can't accept.">
                   <Chips tags={policy.licenseBlocklist} onChange={(v) => set("licenseBlocklist", v)} /></Ctl>
                 <Ctl id="SEC-OPR-01" rule="On High operational risk (EOL / stale / unhealthy project)"
@@ -1044,9 +1055,9 @@ function PolicyPresets({ policy, setPolicy }) {
 // "Build rules with AI" for the Policy controls page. Same Groq endpoint as the Watches builder,
 // but instead of appending watch rules it MAPS the AI's suggestions onto the live policy controls
 // (CVSS threshold, KEV toggle, EPSS, licence blocklist). Always tells the user exactly what changed.
-function ControlsAiBuilder({ policy, set }) {
+function ControlsAiBuilder({ policy, set, revealControl }) {
   const [text, setText] = useState("");
-  const [state, setState] = useState(null); // null | 'thinking' | {error} | {changes,already}
+  const [state, setState] = useState(null); // null | 'thinking' | {error} | {changes,already}  (entries: {label, ctl})
   // CVSS threshold a severity word implies (lower = stricter / blocks more).
   const sevToCvss = { Critical: 9, High: 7, Medium: 4, Low: 0.1 };
   const build = () => {
@@ -1059,6 +1070,7 @@ function ControlsAiBuilder({ policy, set }) {
         setState({ error: r.error || "The assistant couldn't turn that into controls. Try rephrasing." });
         return;
       }
+      // Each entry carries the control id (SEC-*) so the result can link straight to that row.
       const changes = [];   // controls this actually changed
       const already = [];    // controls whose intent the policy already enforces (stricter or equal)
       const licences = [...(policy.licenseBlocklist || [])];
@@ -1068,17 +1080,17 @@ function ControlsAiBuilder({ policy, set }) {
           const m = (rl.name || "").toUpperCase().match(/(AGPL|LGPL|GPL|MPL|EPL|CDDL|MIT|APACHE|BSD)[-\d.]*/);
           const lic = m ? m[0].replace(/-$/, "") : null;
           if (lic) {
-            if (!licences.some((x) => x.toUpperCase().startsWith(lic))) { licences.push(lic); changes.push(`Prohibited licence + ${lic}`); }
-            else already.push(`${lic} licence already blocked`);
+            if (!licences.some((x) => x.toUpperCase().startsWith(lic))) { licences.push(lic); changes.push({ label: `Prohibited licence + ${lic}`, ctl: "LEG-LIC-01" }); }
+            else already.push({ label: `${lic} licence already blocked`, ctl: "LEG-LIC-01" });
           }
         } else if (rl.knownExploitedOnly && rl.block !== false) {
-          if (!policy.blockKnownExploited) { set("blockKnownExploited", true); changes.push("Known-exploited (KEV) → block on"); }
-          else already.push("Known-exploited (KEV) already blocked");
+          if (!policy.blockKnownExploited) { set("blockKnownExploited", true); changes.push({ label: "Known-exploited (KEV) → block on", ctl: "SEC-VULN-02" }); }
+          else already.push({ label: "Known-exploited (KEV) already blocked", ctl: "SEC-VULN-02" });
         } else if (rl.type === "CVEs" && rl.block !== false) {
           const v = sevToCvss[rl.minSeverity] ?? 7;
           const cur = policy.cvssBlockThreshold ?? 10;
-          if (v < cur) { set("cvssBlockThreshold", v); changes.push(`Block CVSS ≥ ${v} (${rl.minSeverity || "High"}+)`); }
-          else already.push(`CVSS ≥ ${rl.minSeverity || "High"} already covered (current ${cur} is at least as strict)`);
+          if (v < cur) { set("cvssBlockThreshold", v); changes.push({ label: `Block CVSS ≥ ${v} (${rl.minSeverity || "High"}+)`, ctl: "SEC-VULN-01" }); }
+          else already.push({ label: `CVSS ≥ ${rl.minSeverity || "High"} already covered (current ${cur} is at least as strict)`, ctl: "SEC-VULN-01" });
         }
       }
       if (licences.length !== (policy.licenseBlocklist || []).length) set("licenseBlocklist", licences);
@@ -1087,6 +1099,13 @@ function ControlsAiBuilder({ policy, set }) {
       else setState({ error: "The AI didn't suggest anything these controls can express. Try naming a CVSS level, KEV, or a licence." });
     }).catch(() => { clearTimeout(timer); setState({ error: "AI request failed. Is the assistant configured under Administration?" }); });
   };
+  // Render a list of {label, ctl} entries with each one a "see it" link into the controls table.
+  const entryList = (entries) => entries.map((e, i) => (
+    <span key={i}>{i > 0 && " · "}{e.label}{e.ctl &&
+      <button onClick={() => revealControl(e.ctl)}
+        style={{ marginLeft: 5, fontSize: 11, color: C.accent, background: "none", border: "none", cursor: "pointer", textDecoration: "underline", padding: 0 }}>
+        see it ↓</button>}</span>
+  ));
   // Ready-made examples a novice can click to fill the box — so "describe it in plain English"
   // is shown, not just asked. Clicking one drops the text in (and they can edit before applying).
   const EXAMPLES = [
@@ -1123,22 +1142,23 @@ function ControlsAiBuilder({ policy, set }) {
       </div>
       {state?.error && <div style={{ fontSize: 11.5, color: "#c0392b", marginTop: 10 }}>{state.error}</div>}
       {(state?.changes || state?.already) && (state.changes.length || state.already.length) > 0 && (
-        <div style={{ fontSize: 12, color: C.accentDim, marginTop: 10, padding: "8px 10px", borderRadius: 6, background: "rgba(64,190,70,.1)" }}>
-          {state.changes.length > 0 && (<>✓ Applied: {state.changes.join(" · ")}.<br /></>)}
+        <div style={{ fontSize: 12, color: C.accentDim, marginTop: 10, padding: "8px 10px", borderRadius: 6, background: "rgba(64,190,70,.1)", lineHeight: 1.8 }}>
+          {state.changes.length > 0 && (<>✓ Applied: {entryList(state.changes)}.<br /></>)}
           {state.already.length > 0 && (
-            <span style={{ color: C.sub }}>Already enforced: {state.already.join(" · ")}.<br /></span>
+            <span style={{ color: C.sub }}>Already enforced: {entryList(state.already)}.<br /></span>
           )}
           {state.changes.length > 0
             ? <>Review the controls below, then press <b>Commit &amp; sign policy</b> to save.</>
-            : <>Your current policy already covers this — no changes needed.</>}
+            : <>Your current policy already covers this — click <b>see it</b> to view the rule, or <b>no changes needed</b>.</>}
         </div>
       )}
     </div>
   );
 }
-function Ctl({ id, rule, help, children }) {
+function Ctl({ id, rule, help, children, highlighted }) {
   return (
-    <tr style={s.tr}>
+    <tr id={id ? `ctl-${id}` : undefined}
+      style={{ ...s.tr, transition: "background .3s", background: highlighted ? "rgba(64,190,70,.18)" : undefined }}>
       <td style={{ ...s.td, fontFamily: C.mono, color: C.accent, fontSize: 11, whiteSpace: "nowrap", verticalAlign: "top" }}>{id || "—"}</td>
       <td style={s.td}>
         <div>{rule}</div>
