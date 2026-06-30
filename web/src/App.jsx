@@ -160,45 +160,60 @@ function SplashLogin({ onContinue }) {
     window.location.assign(url);
   };
   return (
-    <div style={{ minHeight: "100vh", background: C.bg, color: C.ink, fontFamily: C.sans, display: "grid", placeItems: "center", position: "relative" }}>
+    <div style={{ position: "fixed", inset: 0, background: "#0a0a0c", color: "#fff", fontFamily: C.sans,
+      display: "flex", flexDirection: "column", overflow: "hidden" }}>
       <style>{FONTS}</style>
-      {/* subtle brand glow */}
-      <div style={{ position: "absolute", top: "-20%", left: "50%", transform: "translateX(-50%)", width: 600, height: 600,
-        background: `radial-gradient(circle, ${C.accent}22 0%, transparent 70%)`, pointerEvents: "none" }} />
-      <div style={{ width: 380, maxWidth: "90vw", background: C.surface, border: `1px solid ${C.line}`, borderRadius: 16,
-        boxShadow: "0 20px 60px rgba(15,39,72,.18)", padding: "36px 32px", textAlign: "center", position: "relative" }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10, marginBottom: 6 }}>
-          <div style={s.logo}>⊻</div>
-          <span style={{ fontWeight: 800, fontSize: 22 }}><span style={{ color: C.ink }}>Advi</span><span style={{ color: "#40be46" }}>sory</span></span>
+
+      {/* HERO PANEL — full-bleed gradient with brand glow, fills the top half */}
+      <div style={{ position: "relative", flex: "1 1 46%", minHeight: 240, overflow: "hidden",
+        background: "radial-gradient(120% 90% at 50% 0%, #6d3df0 0%, #4322a6 38%, #1b1340 72%, #0a0a0c 100%)" }}>
+        <div style={{ position: "absolute", top: "-30%", left: "-10%", width: "70%", height: "120%",
+          background: "radial-gradient(circle, rgba(168,130,255,.55) 0%, transparent 60%)", filter: "blur(20px)" }} />
+        <div style={{ position: "absolute", top: "10%", right: "-15%", width: "60%", height: "100%",
+          background: "radial-gradient(circle, rgba(120,80,230,.45) 0%, transparent 60%)", filter: "blur(20px)" }} />
+        {/* wordmark only — no icon */}
+        <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <span style={{ fontWeight: 900, fontSize: 56, letterSpacing: -2, fontStyle: "italic",
+            color: "#fff", textShadow: "0 0 40px rgba(168,130,255,.6)" }}>
+            <span>ADVI</span><span style={{ color: "#cbb6ff" }}>SORY</span>
+          </span>
         </div>
-        <div style={{ fontSize: 12.5, color: C.sub, marginBottom: 28 }}>Software supply-chain firewall</div>
+      </div>
 
-        {sso ? (
-          <>
-            <button onClick={ssoLogin} style={{ width: "100%", padding: "13px", borderRadius: 8, border: "none", cursor: "pointer",
-              background: C.accent, color: "#fff", fontSize: 14, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
-              <span>🔐</span> Sign in with SSO
-            </button>
-            <div style={{ fontSize: 11, color: C.sub, marginTop: 12, lineHeight: 1.5 }}>
-              You'll be redirected to your organisation's identity provider.
-            </div>
-          </>
-        ) : (
-          <>
-            <button onClick={onContinue} style={{ width: "100%", padding: "13px", borderRadius: 8, border: "none", cursor: "pointer",
-              background: C.accent, color: "#fff", fontSize: 14, fontWeight: 700 }}>
-              Continue →
-            </button>
-            <div style={{ fontSize: 11, color: C.warn, marginTop: 12, lineHeight: 1.5 }}>
-              ⚠ Testing mode — SSO is off, anyone can continue without signing in.
-            </div>
-          </>
-        )}
+      {/* SIGN-IN PANEL */}
+      <div style={{ flex: "1 1 54%", display: "flex", flexDirection: "column", alignItems: "center",
+        padding: "34px 24px 28px", background: "#0a0a0c" }}>
+        <div style={{ width: "100%", maxWidth: 380 }}>
+          <div style={{ fontSize: 30, fontWeight: 800, letterSpacing: -0.5, marginBottom: 6 }}>Welcome</div>
+          <div style={{ fontSize: 14, color: "rgba(255,255,255,.55)", marginBottom: 28 }}>
+            Sign in to the supply-chain firewall console.
+          </div>
 
-        {/* the on/off switch */}
-        <div style={{ marginTop: 26, paddingTop: 18, borderTop: `1px solid ${C.line}`, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <span style={{ fontSize: 12, color: C.sub }}>Require SSO sign-in</span>
-          <Switch on={sso} onChange={setSsoPersist} />
+          {sso ? (
+            <button onClick={ssoLogin} style={{ width: "100%", padding: "16px", borderRadius: 14, border: "none", cursor: "pointer",
+              background: "linear-gradient(90deg, #7a4cf0 0%, #5a2fd0 100%)", color: "#fff", fontSize: 15, fontWeight: 700,
+              boxShadow: "0 10px 30px rgba(110,60,240,.35)" }}>
+              Sign in with SSO
+            </button>
+          ) : (
+            <button onClick={onContinue} style={{ width: "100%", padding: "16px", borderRadius: 14, border: "none", cursor: "pointer",
+              background: "linear-gradient(90deg, #7a4cf0 0%, #5a2fd0 100%)", color: "#fff", fontSize: 15, fontWeight: 700,
+              boxShadow: "0 10px 30px rgba(110,60,240,.35)" }}>
+              Continue
+            </button>
+          )}
+
+          <div style={{ fontSize: 12, color: sso ? "rgba(255,255,255,.45)" : "#e6a23c", marginTop: 14, textAlign: "center", lineHeight: 1.5 }}>
+            {sso ? "You'll be redirected to your organisation's identity provider."
+                 : "Testing mode — SSO is off, anyone can continue without signing in."}
+          </div>
+
+          {/* SSO on/off switch */}
+          <div style={{ marginTop: 30, paddingTop: 18, borderTop: "1px solid rgba(255,255,255,.08)",
+            display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <span style={{ fontSize: 13, color: "rgba(255,255,255,.6)" }}>Require SSO sign-in</span>
+            <Switch on={sso} onChange={setSsoPersist} />
+          </div>
         </div>
       </div>
     </div>
