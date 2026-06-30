@@ -74,12 +74,14 @@ echo "→ Creating handoff/$OUT…"
 rm -rf "$STAGE"
 
 cat > "$HANDOFF/INSTALL.md" <<TXT
-# Advisory - install
+# Advisory - install (Podman)
 
 You have one file: \`$OUT\`. It contains the full Advisory firewall, pre-configured and ready to run.
 
 ## Requirements
-- Linux/macOS with **Docker OR Podman** (incl. the Compose plugin).
+- Linux with **Podman** (incl. the Compose plugin). Verify: \`podman compose version\`.
+  If \`podman compose\` is missing, install \`podman-compose\` (\`pip install podman-compose\`) - the
+  installer detects that too. (Docker also works; the installer auto-detects whichever you have.)
 - ~6 GB free disk, ~4 GB RAM. Outbound HTTPS on first run (see deploy/README.md section 1a).
 
 ## Install
@@ -88,14 +90,23 @@ tar -xzf $OUT
 cd advisory-rollout/deploy
 ./install.sh            # add --scanners to also start the PII + extension scanners
 \`\`\`
-It is already configured. The installer builds the images, starts the stack, and prints the URLs.
+It is already configured and auto-detects Podman. The installer builds the images, starts the stack,
+and prints the URLs.
 
 ## After it starts
 - Console (curation team):  http://<this-host>:8088
 - Nexus repo (developers):  http://<this-host>:8081
 
 Open the console, click **Continue**, then follow the in-app **? Guide** (top bar) or
-deploy/docs/TUTORIAL-gate-your-first-package.md. Full ops/SSO/troubleshooting: deploy/README.md.
+deploy/docs/TUTORIAL-gate-your-first-package.md.
+
+## Commands (in advisory-rollout/deploy)
+\`\`\`
+podman compose ps          # status
+podman compose logs -f     # logs
+podman compose down        # stop
+\`\`\`
+Full ops/SSO/troubleshooting: deploy/README.md.
 TXT
 
 echo "✓ Done: $HANDOFF/$OUT  (+ INSTALL.md)"
