@@ -152,6 +152,7 @@ export default function App() {
   const [offline, setOffline] = useState(false);
   const [saving, setSaving] = useState(false);
   const [decisionFilter, setDecisionFilter] = useState(null); // null = all; else "Block"|"Allow"|"Quarantine"
+  const [showAdvancedControls, setShowAdvancedControls] = useState(false); // raw SEC-* table collapsed by default
   const [askAiOpen, setAskAiOpen] = useState(false);
   const [askAiSeed, setAskAiSeed] = useState(null);
   // Any screen can open the assistant pre-seeded: window.dispatchEvent(new CustomEvent("pkgfw-askai", { detail: question }))
@@ -261,8 +262,16 @@ export default function App() {
               <div style={{ fontSize: 13, color: C.sub }}>Commit increments the version, re-signs, and writes to the ledger.</div>
               <button onClick={save} disabled={saving} style={s.save}>{saving ? "Signing…" : "Commit & sign policy"}</button>
             </div>
-            <Card title="Policy controls" desc="Each row is one rule the firewall enforces on every package. The plain-English line says what it does; the setting on the right is how strict it is. Committing re-signs the policy and writes it to the ledger as the audit artifact.">
+            <Card title="Policy controls" desc="Set what the firewall allows or blocks. Start with a profile or describe it in plain English — then fine-tune the individual controls under Advanced settings if you want. Nothing takes effect until you Commit & sign.">
+              <PolicyPresets policy={policy} setPolicy={setPolicy} />
               <ControlsAiBuilder policy={policy} set={set} />
+              <button onClick={() => setShowAdvancedControls((x) => !x)}
+                style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", textAlign: "left", cursor: "pointer",
+                  background: "none", border: "none", borderTop: `1px solid ${C.line}`, padding: "14px 0 4px", marginTop: 4 }}>
+                <span style={{ fontSize: 13, fontWeight: 700, color: C.text }}>{showAdvancedControls ? "⌃" : "⌄"} Advanced settings</span>
+                <span style={{ fontSize: 12, color: C.sub }}>every individual control, with the standard reference codes (the signed audit artifact)</span>
+              </button>
+              {showAdvancedControls && (<>
               <SubHead>SEC-VULN — Known vulnerabilities</SubHead>
               <Table cols={["Control", "Rule", "Setting"]}>
                 <Ctl id="SEC-VULN-01" rule="Block when CVSS base score at or above"
@@ -352,6 +361,7 @@ export default function App() {
                   help="Opens up each package's actual files and scans them for hard-coded secrets (API keys, passwords, private keys) and insecure infrastructure-as-code settings. A High-severity finding blocks the package.">
                   <Switch on={policy.enableContentScan} onChange={(v) => set("enableContentScan", v)} /></Ctl>
               </Table>
+              </>)}
             </Card>
           </>)}
 
@@ -989,6 +999,48 @@ function Table({ cols, children }) {
     </table>
   );
 }
+// One-click starting points for the whole policy. The novice path: pick a profile, review, commit.
+// KEV (actively-exploited) stays blocked in every profile — that's the floor, never negotiable.
+const POLICY_PRESETS = {
+  Strict:     { cvssBlockThreshold: 7, blockKnownExploited: true, epssBlockThreshold: 0.3, minPackageAgeDays: 30, minScorecardScore: 5, operationalRiskAction: "Block",    enableContentScan: true },
+  Balanced:   { cvssBlockThreshold: 8, blockKnownExploited: true, epssBlockThreshold: 0.5, minPackageAgeDays: 14, minScorecardScore: 0, operationalRiskAction: "Notify",   enableContentScan: true },
+  Permissive: { cvssBlockThreshold: 9, blockKnownExploited: true, epssBlockThreshold: 0.7, minPackageAgeDays: 0,  minScorecardScore: 0, operationalRiskAction: "Disabled", enableContentScan: false },
+};
+const PRESET_BLURB = {
+  Strict: "Locks down hard — blocks high-severity flaws, likely-to-be-exploited issues, brand-new packages, and unhealthy projects. Best for sensitive or regulated codebases.",
+  Balanced: "Sensible defaults for most teams — blocks high & critical flaws and actively-exploited issues, with a short cooling-off on new packages.",
+  Permissive: "Lightest touch — blocks only critical flaws and actively-exploited issues. Best for fast-moving or experimental work.",
+};
+function PolicyPresets({ policy, setPolicy }) {
+  // Which preset (if any) the current policy exactly matches — so the active one is highlighted.
+  const active = Object.keys(POLICY_PRESETS).find((k) =>
+    Object.entries(POLICY_PRESETS[k]).every(([f, v]) => policy[f] === v));
+  const apply = (k) => setPolicy((p) => ({ ...p, ...POLICY_PRESETS[k] }));
+  return (
+    <div style={{ marginBottom: 18 }}>
+      <div style={{ fontSize: 14, fontWeight: 700, color: C.text, marginBottom: 4 }}>Choose a starting point</div>
+      <div style={{ fontSize: 12.5, color: C.sub, marginBottom: 12 }}>
+        One click sets every control to a sensible profile. You can fine-tune anything afterwards, and nothing saves until you commit.
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12 }}>
+        {Object.keys(POLICY_PRESETS).map((k) => {
+          const on = active === k;
+          return (
+            <button key={k} onClick={() => apply(k)}
+              style={{ textAlign: "left", padding: 14, borderRadius: 8, cursor: "pointer",
+                border: `1.5px solid ${on ? C.accent : C.line}`, background: on ? "rgba(64,190,70,.08)" : C.surface }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                <span style={{ fontSize: 13.5, fontWeight: 700, color: on ? C.accentDim : C.text }}>{k}</span>
+                {on && <span style={{ fontSize: 10.5, fontWeight: 700, color: C.accentDim }}>✓ ACTIVE</span>}
+              </div>
+              <div style={{ fontSize: 11.5, color: C.sub, lineHeight: 1.5 }}>{PRESET_BLURB[k]}</div>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 // "Build rules with AI" for the Policy controls page. Same Groq endpoint as the Watches builder,
 // but instead of appending watch rules it MAPS the AI's suggestions onto the live policy controls
 // (CVSS threshold, KEV toggle, EPSS, licence blocklist). Always tells the user exactly what changed.
@@ -1027,11 +1079,22 @@ function ControlsAiBuilder({ policy, set }) {
       if (changes.length) setText("");
     }).catch(() => { clearTimeout(timer); setState({ error: "AI request failed. Is the assistant configured under Administration?" }); });
   };
+  // Ready-made examples a novice can click to fill the box — so "describe it in plain English"
+  // is shown, not just asked. Clicking one drops the text in (and they can edit before applying).
+  const EXAMPLES = [
+    "Block critical CVEs and anything actively exploited",
+    "Block GPL and AGPL licences",
+    "Be strict — block high-severity flaws and new packages",
+    "Block known-exploited vulns and warn on medium",
+  ];
   return (
-    <div style={{ border: `1px solid ${C.line}`, borderRadius: 8, padding: 14, marginBottom: 16, background: "rgba(64,190,70,.04)" }}>
-      <div style={{ marginBottom: 8 }}>
-        <span style={{ fontSize: 13, fontWeight: 700, color: C.accentDim }}>✦ Build rules with AI</span>
-        <span style={{ fontSize: 12, color: C.sub, marginLeft: 8 }}>describe the policy in plain English — the AI sets the matching controls below</span>
+    <div style={{ border: `1px solid ${C.accent}`, borderRadius: 8, padding: 16, marginBottom: 18, background: "rgba(64,190,70,.05)" }}>
+      <div style={{ marginBottom: 4 }}>
+        <span style={{ fontSize: 14, fontWeight: 700, color: C.accentDim }}>✦ Build rules with AI</span>
+      </div>
+      <div style={{ fontSize: 12.5, color: C.sub, marginBottom: 10, lineHeight: 1.5 }}>
+        Type what you want the firewall to do in plain English and the AI sets the matching controls below for you —
+        nothing is saved until you press <b>Commit &amp; sign policy</b>, so it's safe to try.
       </div>
       <div style={{ display: "flex", gap: 8 }}>
         <input value={text} onChange={(e) => setText(e.target.value)}
@@ -1042,10 +1105,18 @@ function ControlsAiBuilder({ policy, set }) {
           style={{ ...s.add, opacity: state === "thinking" || !text.trim() ? 0.6 : 1, whiteSpace: "nowrap" }}>
           {state === "thinking" ? "Thinking…" : "✦ Apply to controls"}</button>
       </div>
-      {state?.error && <div style={{ fontSize: 11.5, color: "#c0392b", marginTop: 8 }}>{state.error}</div>}
+      <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap", gap: 7, alignItems: "center" }}>
+        <span style={{ fontSize: 11, color: C.sub, fontWeight: 600 }}>Try one:</span>
+        {EXAMPLES.map((ex) => (
+          <button key={ex} onClick={() => { setText(ex); setState(null); }}
+            style={{ fontSize: 11, padding: "4px 10px", borderRadius: 14, cursor: "pointer",
+              border: `1px solid ${C.line}`, background: C.surface, color: C.sub }}>{ex}</button>
+        ))}
+      </div>
+      {state?.error && <div style={{ fontSize: 11.5, color: "#c0392b", marginTop: 10 }}>{state.error}</div>}
       {state?.changes && (
-        <div style={{ fontSize: 11.5, color: C.accentDim, marginTop: 8 }}>
-          Applied: {state.changes.join(" · ")}. Review below, then <b>Commit &amp; sign policy</b> to save.
+        <div style={{ fontSize: 12, color: C.accentDim, marginTop: 10, padding: "8px 10px", borderRadius: 6, background: "rgba(64,190,70,.1)" }}>
+          ✓ Applied: {state.changes.join(" · ")}.<br />Review the controls below, then press <b>Commit &amp; sign policy</b> to save.
         </div>
       )}
     </div>
