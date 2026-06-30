@@ -1046,7 +1046,7 @@ function PolicyPresets({ policy, setPolicy }) {
 // (CVSS threshold, KEV toggle, EPSS, licence blocklist). Always tells the user exactly what changed.
 function ControlsAiBuilder({ policy, set }) {
   const [text, setText] = useState("");
-  const [state, setState] = useState(null); // null | 'thinking' | {error} | {changes:[...]}
+  const [state, setState] = useState(null); // null | 'thinking' | {error} | {changes,already}
   // CVSS threshold a severity word implies (lower = stricter / blocks more).
   const sevToCvss = { Critical: 9, High: 7, Medium: 4, Low: 0.1 };
   const build = () => {
@@ -1059,24 +1059,32 @@ function ControlsAiBuilder({ policy, set }) {
         setState({ error: r.error || "The assistant couldn't turn that into controls. Try rephrasing." });
         return;
       }
-      const changes = [];
+      const changes = [];   // controls this actually changed
+      const already = [];    // controls whose intent the policy already enforces (stricter or equal)
       const licences = [...(policy.licenseBlocklist || [])];
       for (const rl of r.rules) {
         if (rl.type === "License") {
           // Pull a licence id out of the rule name (e.g. "block-gpl-license" → GPL).
           const m = (rl.name || "").toUpperCase().match(/(AGPL|LGPL|GPL|MPL|EPL|CDDL|MIT|APACHE|BSD)[-\d.]*/);
           const lic = m ? m[0].replace(/-$/, "") : null;
-          if (lic && !licences.some((x) => x.toUpperCase().startsWith(lic))) { licences.push(lic); changes.push(`Prohibited licence + ${lic}`); }
+          if (lic) {
+            if (!licences.some((x) => x.toUpperCase().startsWith(lic))) { licences.push(lic); changes.push(`Prohibited licence + ${lic}`); }
+            else already.push(`${lic} licence already blocked`);
+          }
         } else if (rl.knownExploitedOnly && rl.block !== false) {
           if (!policy.blockKnownExploited) { set("blockKnownExploited", true); changes.push("Known-exploited (KEV) → block on"); }
+          else already.push("Known-exploited (KEV) already blocked");
         } else if (rl.type === "CVEs" && rl.block !== false) {
           const v = sevToCvss[rl.minSeverity] ?? 7;
-          if (v < (policy.cvssBlockThreshold ?? 10)) { set("cvssBlockThreshold", v); changes.push(`Block CVSS ≥ ${v} (${rl.minSeverity || "High"}+)`); }
+          const cur = policy.cvssBlockThreshold ?? 10;
+          if (v < cur) { set("cvssBlockThreshold", v); changes.push(`Block CVSS ≥ ${v} (${rl.minSeverity || "High"}+)`); }
+          else already.push(`CVSS ≥ ${rl.minSeverity || "High"} already covered (current ${cur} is at least as strict)`);
         }
       }
       if (licences.length !== (policy.licenseBlocklist || []).length) set("licenseBlocklist", licences);
-      setState(changes.length ? { changes } : { error: "The AI didn't suggest anything these controls can express. Try naming a CVSS level, KEV, or a licence." });
-      if (changes.length) setText("");
+      // "Already enforced" is success, not an error — only red when we couldn't express ANYTHING.
+      if (changes.length || already.length) { setState({ changes, already }); if (changes.length) setText(""); }
+      else setState({ error: "The AI didn't suggest anything these controls can express. Try naming a CVSS level, KEV, or a licence." });
     }).catch(() => { clearTimeout(timer); setState({ error: "AI request failed. Is the assistant configured under Administration?" }); });
   };
   // Ready-made examples a novice can click to fill the box — so "describe it in plain English"
@@ -1114,9 +1122,15 @@ function ControlsAiBuilder({ policy, set }) {
         ))}
       </div>
       {state?.error && <div style={{ fontSize: 11.5, color: "#c0392b", marginTop: 10 }}>{state.error}</div>}
-      {state?.changes && (
+      {(state?.changes || state?.already) && (state.changes.length || state.already.length) > 0 && (
         <div style={{ fontSize: 12, color: C.accentDim, marginTop: 10, padding: "8px 10px", borderRadius: 6, background: "rgba(64,190,70,.1)" }}>
-          ✓ Applied: {state.changes.join(" · ")}.<br />Review the controls below, then press <b>Commit &amp; sign policy</b> to save.
+          {state.changes.length > 0 && (<>✓ Applied: {state.changes.join(" · ")}.<br /></>)}
+          {state.already.length > 0 && (
+            <span style={{ color: C.sub }}>Already enforced: {state.already.join(" · ")}.<br /></span>
+          )}
+          {state.changes.length > 0
+            ? <>Review the controls below, then press <b>Commit &amp; sign policy</b> to save.</>
+            : <>Your current policy already covers this — no changes needed.</>}
         </div>
       )}
     </div>
