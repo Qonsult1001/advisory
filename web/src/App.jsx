@@ -451,7 +451,7 @@ export default function App() {
 
           {tab === "waivers" && <Waivers policy={policy} setPolicy={setPolicy} />}
 
-          {tab === "queue" && <IntakeQueue />}
+          {tab === "queue" && <IntakeQueue setTab={setTab} />}
 
           {tab === "scans" && <ScansList setTab={setTab} />}
           {tab === "xrayoverview" && <XrayOverview setTab={setTab} />}
@@ -3220,13 +3220,10 @@ function ApprovedPackages() {
 }
 
 // Intake queue — visible message queue: enqueue a package, watch it drain through the gate.
-function IntakeQueue() {
+// The PromotionBridge re-evaluates quarantine on this interval (server NEXUS_POLL_SECONDS default).
+const QUEUE_CYCLE_SECONDS = 30;
+function IntakeQueue({ setTab }) {
   const [depth, setDepth] = useState(null);
-  const [eco, setEco] = useState("npm");
-  const [name, setName] = useState("");
-  const [version, setVersion] = useState("");
-  const [msgs, setMsgs] = useState([]); // this-session messages we enqueued
-  const [busy, setBusy] = useState(false);
 
   // Live depth poll.
   useEffect(() => {
@@ -3237,48 +3234,20 @@ function IntakeQueue() {
     return () => { active = false; clearInterval(iv); };
   }, []);
 
-  const enqueue = async () => {
-    if (!name.trim()) return;
-    setBusy(true);
-    const pkg = { ecosystem: eco, name: name.trim(), version: version.trim() || "latest" };
-    try {
-      const r = await api.enqueue(pkg);
-      const m = { id: r.messageId, pkg: `${eco}:${pkg.name}@${pkg.version}`, status: "queued", at: Date.now() };
-      setMsgs((x) => [m, ...x]);
-      // Track resolution by watching processed count rise (best-effort, optimistic).
-      const baseline = depth?.processed ?? 0;
-      let polls = 0;
-      const watch = setInterval(async () => {
-        polls++;
-        try {
-          const d = await api.getQueueDepth();
-          setDepth(d);
-          if (d.processed > baseline) { setMsgs((xs) => xs.map((mm) => mm.id === m.id ? { ...mm, status: "done" } : mm)); clearInterval(watch); }
-          else if (d.deadLettered > (0)) { setMsgs((xs) => xs.map((mm) => mm.id === m.id && mm.status !== "done" ? { ...mm, status: "dead" } : mm)); }
-          else setMsgs((xs) => xs.map((mm) => mm.id === m.id && mm.status === "queued" ? { ...mm, status: "processing" } : mm));
-        } catch {}
-        if (polls > 40) clearInterval(watch);
-      }, 1500);
-    } catch {
-      setMsgs((x) => [{ id: "?", pkg: `${eco}:${pkg.name}`, status: "error", at: Date.now() }, ...x]);
-    } finally { setBusy(false); setName(""); setVersion(""); }
-  };
-
   const stat = (k, v, tone) => (
     <div style={{ ...s.kpi, padding: "16px 18px" }}>
       <div style={{ ...s.kpiVal, color: tone || C.ink }}>{v ?? "—"}</div>
       <div style={s.kpiLbl}>{k}</div>
     </div>
   );
-  const statusTone = (st) => st === "done" ? C.allow : st === "dead" || st === "error" ? C.block
-    : st === "processing" ? C.warn : C.info;
 
   return (
     <div style={{ animation: "fwfade .2s ease" }}>
       <div style={{ fontSize: 22, fontWeight: 700, letterSpacing: -0.4, marginBottom: 2 }}>Intake queue</div>
       <div style={{ color: C.sub, fontSize: 13, marginBottom: 20 }}>
-        Enqueue decouples submission from evaluation — the caller never waits. Messages drain through the full gate
-        with at-least-once delivery, retry, and dead-letter. Backend: durable SQL queue (in-memory fallback).
+        Live view of the firewall's work queue. You submit a package from the <b>Catalog</b> ("Send to Intake queue");
+        it lands here, drains through the gate with at-least-once delivery + retry + dead-letter, then shows up in
+        <b> Quarantine</b> as Promoted or Held. Backend: durable SQL queue (in-memory fallback).
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 14, marginBottom: 20 }}>
@@ -3287,37 +3256,19 @@ function IntakeQueue() {
         {stat("Dead-lettered", depth?.deadLettered, depth?.deadLettered > 0 ? C.block : C.ink)}
       </div>
 
-      <Card title="Enqueue a package" desc="Returns 202 immediately with a message id; the consumer evaluates it in the background.">
-        <div style={{ display: "flex", gap: 10, padding: 18, flexWrap: "wrap", alignItems: "center" }}>
-          <select value={eco} onChange={(e) => setEco(e.target.value)} style={s.select}>
-            {CATALOG_ECOS.map((x) => <option key={x.key} value={x.key}>{x.label}</option>)}
-          </select>
-          <input value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && enqueue()}
-            placeholder="package name" style={{ ...s.formInput, flex: "2 1 200px" }} />
-          <input value={version} onChange={(e) => setVersion(e.target.value)} onKeyDown={(e) => e.key === "Enter" && enqueue()}
-            placeholder="version (optional)" style={{ ...s.formInput, flex: "1 1 120px" }} />
-          <button onClick={enqueue} disabled={busy} style={s.add}>{busy ? "Enqueuing…" : "Enqueue →"}</button>
+      <Card title="How a package moves through the firewall" desc="">
+        <div style={{ padding: "4px 20px 20px", fontSize: 12.5, color: C.sub, lineHeight: 1.7 }}>
+          <ol style={{ margin: 0, paddingLeft: 18 }}>
+            <li><b>Submit</b> — from a package page in the Catalog, press <i>Send to Intake queue</i>. The call returns immediately; you don't wait.</li>
+            <li><b>Pending</b> — the message sits in this queue until the consumer picks it up (usually within a second or two), and the package is fetched into its quarantine proxy.</li>
+            <li><b>Gate cycle</b> — a background worker re-evaluates quarantine <b>every {QUEUE_CYCLE_SECONDS} seconds</b> against your Policy controls + Intelligence feeds. A package added mid-cycle waits until the next tick — that's why status can briefly read <i>Pending</i> / <i>Promoting…</i>.</li>
+            <li><b>Promote or Hold</b> — <span style={{ color: C.allow, fontWeight: 600 }}>Allow → Promoted</span> to the approved repo (developers can pull it); <span style={{ color: C.block, fontWeight: 600 }}>Block → Held</span> in quarantine (an operator can still override). See the result on the <a style={{ color: C.accent, cursor: "pointer" }} onClick={() => setTab && setTab("quarantine")}>Quarantine</a> page.</li>
+          </ol>
+          <div style={{ marginTop: 14, display: "flex", gap: 10 }}>
+            <button style={s.add} onClick={() => setTab && setTab("catalog")}>→ Go to Catalog to submit a package</button>
+            <button style={{ ...s.add, background: C.surface, color: C.accentDim, border: `1px solid ${C.accent}` }} onClick={() => setTab && setTab("quarantine")}>View Quarantine</button>
+          </div>
         </div>
-      </Card>
-
-      <Card title="Messages this session" desc="Live status as each message moves queued → processing → done (or dead-lettered).">
-        <Table cols={["Message ID", "Package", "Status", "Enqueued"]}>
-          {msgs.length === 0 && <tr><td style={s.td} colSpan={4}>Nothing enqueued yet — submit a package above.</td></tr>}
-          {msgs.map((m) => (
-            <tr key={m.id + m.at} style={s.tr}>
-              <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11.5 }}>{m.id}</td>
-              <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11.5 }}>{m.pkg}</td>
-              <td style={s.td}>
-                <span style={{ display: "inline-flex", alignItems: "center", gap: 6, color: statusTone(m.status), fontWeight: 600, fontSize: 11.5 }}>
-                  <span style={{ width: 7, height: 7, borderRadius: "50%", background: statusTone(m.status),
-                    animation: m.status === "processing" || m.status === "queued" ? "fwpulse 1.2s infinite" : "none" }} />
-                  {m.status}
-                </span>
-              </td>
-              <td style={{ ...s.td, color: C.sub, fontSize: 11 }}>{new Date(m.at).toLocaleTimeString()}</td>
-            </tr>
-          ))}
-        </Table>
       </Card>
     </div>
   );
