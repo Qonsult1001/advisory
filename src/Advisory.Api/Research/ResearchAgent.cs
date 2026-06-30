@@ -85,10 +85,13 @@ public class GroqClient : IGroqClient
         var body = new
         {
             model,
-            max_completion_tokens = maxTokens,
+            // Reasoning models burn completion tokens on hidden chain-of-thought BEFORE the answer.
+            // Keep effort low for these short, structured tasks and give a floor of headroom so the
+            // model never exhausts the budget mid-reasoning and returns empty content (see #157).
+            max_completion_tokens = Math.Max(maxTokens, 2048),
             temperature,
             top_p = 1,
-            reasoning_effort = "medium",
+            reasoning_effort = "low",
             messages = new object[]
             {
                 new { role = "system", content = systemPrompt },
@@ -101,9 +104,25 @@ public class GroqClient : IGroqClient
         using var resp = await _http.SendAsync(req, ct);
         var raw = await resp.Content.ReadAsStringAsync(ct);
         if (!resp.IsSuccessStatusCode) return (false, $"HTTP {(int)resp.StatusCode}: {Truncate(raw, 240)}");
+        return ParseChatResponse(raw);
+    }
+
+    /// <summary>
+    /// Turn a Groq chat-completions body into (ok, text). Reasoning models (e.g. gpt-oss-120b) spend
+    /// completion tokens on hidden chain-of-thought before emitting content; when the budget runs out
+    /// they come back with <c>finish_reason == "length"</c> and an EMPTY content string. Surface that
+    /// as an explicit failure instead of silently returning "" — otherwise the caller reports
+    /// "the assistant did not return anything" with no clue why.
+    /// </summary>
+    public static (bool Ok, string Text) ParseChatResponse(string raw)
+    {
         using var doc = JsonDocument.Parse(raw);
-        var text = doc.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString();
-        return (true, text ?? "");
+        var choice = doc.RootElement.GetProperty("choices")[0];
+        var text = choice.GetProperty("message").GetProperty("content").GetString() ?? "";
+        var finish = choice.TryGetProperty("finish_reason", out var fr) ? fr.GetString() : null;
+        if (string.IsNullOrWhiteSpace(text) && finish == "length")
+            return (false, "The AI ran out of room before it could answer (the model used its budget on reasoning). Try a shorter description.");
+        return (true, text);
     }
 
     private static string Truncate(string s, int n) => s.Length <= n ? s : s[..n] + "…";
