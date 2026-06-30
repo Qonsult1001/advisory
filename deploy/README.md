@@ -140,16 +140,24 @@ default is Groq.** Without an AI key, these features fall back to deterministic 
 
 ## 3. What's running & the ports
 
-| Service | Default URL | Audience | Purpose |
-|---------|-------------|----------|---------|
-| **console** | `http://localhost:8088` | Curation / security team | Search, set policy, gate, approve, audit |
-| **nexus** | `http://localhost:8081` | Developers | Pull approved packages; browse repos |
-| **api** | `http://localhost:5000` | (internal) | Gate engine + promotion bridge + REST API |
-| **mssql** | host `1434` → in-net `1433` | (internal) | Durable intake queue |
-| **privacy-filter** | (internal `8071`) | (internal) | On-prem PII redaction |
-| **vsix-scanner** | (internal `8099`) | (internal) | AI-editor extension code scan |
+| Service | Default URL | Audience | Purpose | Container image (pulled/built) |
+|---------|-------------|----------|---------|--------------------------------|
+| **console** | `http://localhost:8088` | Curation / security team | Search, set policy, gate, approve, audit | **built** here — base `node:20-alpine` (build) + `nginx:alpine` (serve) |
+| **nexus** | `http://localhost:8081` | Developers | Pull approved packages; browse repos | **pulled** — `sonatype/nexus3:3.93.1` |
+| **api** | `http://localhost:5000` | (internal) | Gate engine + promotion bridge + REST API | **built** here — base `mcr.microsoft.com/dotnet/sdk:10.0` + `node:20-alpine` |
+| **mssql** | host `1434` → in-net `1433` | (internal) | Durable intake queue | **pulled** — `mcr.microsoft.com/mssql/server:2022-latest` |
+| **privacy-filter** | (internal `8071`) | (internal) | On-prem PII redaction (optional) | **built** here — base `node:20-slim` |
+| **vsix-scanner** | (internal `8099`) | (internal) | AI-editor extension code scan (optional) | **built** here — base `node:22-slim` |
 
 All ports are overridable in `.env`.
+
+**What your engine downloads.** On `install`, Docker/Podman **pulls** the two ready-made images
+(`sonatype/nexus3` from Docker Hub, `mcr.microsoft.com/mssql/server` from Microsoft) and **builds** the
+other four locally from this bundle's source — which in turn pulls their base images
+(`mcr.microsoft.com/dotnet/sdk`, `node`, `nginx`). All of these come from the container-image hosts in
+[§1a.A](#1a-network-access-firewall--proxy-allowlist) (Docker Hub + Microsoft Container Registry). You
+do **not** install anything on the host directly — everything runs inside containers; the only host
+requirement is the Docker or Podman engine itself.
 
 ---
 
