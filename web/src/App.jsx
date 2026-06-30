@@ -2016,7 +2016,7 @@ function ScansList({ setTab }) {
         onClick={() => setView({ level: "repos" })}>Scans List</span>
       {view.level !== "repos" && <><span style={{ color: C.dim }}>›</span>
         <span style={{ color: view.level === "artifacts" ? C.ink : C.accent, cursor: view.level === "artifacts" ? "default" : "pointer" }}
-          onClick={() => setView({ level: "artifacts", repo: view.repo })}>{view.repo}</span></>}
+          onClick={() => setView({ level: "artifacts", repo: view.repo, pkg: view.pkg })}>{view.pkg?.name ? `${view.pkg.name} (${view.repo})` : view.repo}</span></>}
       {view.level === "artifact" && <><span style={{ color: C.dim }}>›</span>
         <span style={{ color: C.ink }}>{view.art.fileName || view.art.name}</span></>}
     </div>
@@ -2024,8 +2024,8 @@ function ScansList({ setTab }) {
   return (
     <div style={{ animation: "fwfade .2s ease" }}>
       {crumb}
-      {view.level === "repos" && <ScansRepos onOpen={(repo) => setView({ level: "artifacts", repo })} setTab={setTab} />}
-      {view.level === "artifacts" && <RepoArtifacts repo={view.repo} onOpen={(art) => setView({ level: "artifact", repo: view.repo, art })} />}
+      {view.level === "repos" && <ScansRepos onOpen={(repo, pkg) => setView({ level: "artifacts", repo, pkg })} setTab={setTab} />}
+      {view.level === "artifacts" && <RepoArtifacts repo={view.repo} pkg={view.pkg} onOpen={(art) => setView({ level: "artifact", repo: view.repo, art })} />}
       {view.level === "artifact" && <ArtifactOverview repo={view.repo} art={view.art} />}
     </div>
   );
@@ -2564,19 +2564,26 @@ function ScansSubTab({ sub, onOpen }) {
   );
 }
 
-function RepoArtifacts({ repo, onOpen }) {
+function RepoArtifacts({ repo, pkg, onOpen }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   useEffect(() => { api.getRepoArtifacts(repo).then(setData).catch(() => setData({ artifacts: [] })).finally(() => setLoading(false)); }, [repo]);
-  const arts = data?.artifacts || [];
+  // When the user drilled in from the Packages tab, show only THAT package's artifacts (match by name).
+  const allArts = data?.artifacts || [];
+  const arts = pkg?.name ? allArts.filter((a) => (a.name || "").toLowerCase() === pkg.name.toLowerCase()) : allArts;
+  const heading = pkg?.name ? `${pkg.name}` : repo;
+  const desc = pkg?.name
+    ? `Scanned artifacts for ${pkg.name} in ${repo}. Click one for its full scan report.`
+    : "Scanned artifacts in this repository. Click one for its full scan report.";
   return (
     <>
-      <div style={{ fontSize: 22, fontWeight: 700, letterSpacing: -0.4, margin: "4px 0 14px" }}>{repo}</div>
+      <div style={{ fontSize: 22, fontWeight: 700, letterSpacing: -0.4, margin: "4px 0 14px" }}>{heading}
+        {pkg?.name && <span style={{ fontSize: 13, fontWeight: 500, color: C.sub, marginLeft: 10 }}>in {repo}</span>}</div>
       {loading && <div style={s.kevEmpty}>Loading artifacts…</div>}
       {!loading && (
-        <Card title={`Artifacts (${arts.length})`} desc="Scanned artifacts in this repository. Click one for its full scan report.">
+        <Card title={`Artifacts (${arts.length})`} desc={desc}>
           <Table cols={["Artifact", "Version", "Type", "Repository path", "Scan status"]}>
-            {arts.length === 0 && <tr><td style={s.td} colSpan={5}>No artifacts.</td></tr>}
+            {arts.length === 0 && <tr><td style={s.td} colSpan={5}>No artifacts{pkg?.name ? ` for ${pkg.name}` : ""}.</td></tr>}
             {arts.map((a, i) => (
               <tr key={i} style={{ ...s.tr, cursor: "pointer" }} onClick={() => onOpen(a)}>
                 <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11.5, color: C.accent }}>{a.fileName || a.name}</td>
