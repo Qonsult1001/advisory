@@ -17,7 +17,94 @@ does not interfere with any development copy of Advisory on the same machine.
   - The installer auto-detects which you have (prefers Docker if both are present). Every command in
     this README works with either — substitute `podman` for `docker` if that's your engine.
 - ~6 GB free disk and ~4 GB RAM available to the engine (SQL Server + Nexus are the heavy parts).
-- Outbound internet on first run (to build images and let Nexus proxy the public registries).
+- Outbound internet (see the network-access list below) — for image pulls/builds, the package
+  registries Nexus proxies, the threat-intelligence feeds, and the AI assistant.
+
+---
+
+## 1a. Network access (firewall / proxy allowlist)
+
+The stack reaches **external services**. On a restricted network, open outbound **HTTPS (443)** to the
+hosts below (and DNS). Everything is optional except the container-image hosts at install time — but a
+host that's blocked simply disables that capability (e.g. block the Groq host and the AI assistant goes
+silent; block a registry and you can't gate that ecosystem). If you run a corporate proxy, point Docker/
+Podman and the containers at it (`HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY`).
+
+### A. Container images (needed at install/build time)
+| Host | Why |
+|------|-----|
+| `registry-1.docker.io`, `auth.docker.io`, `production.cloudflare.docker.com` | Pull base images (Nexus, SQL Server, node, nginx, python) |
+| `mcr.microsoft.com` | SQL Server image |
+| `registry.npmjs.org` | Console build (npm install) |
+| `*.ubuntu.com` / `dl-cdn.alpinelinux.org` / `deb.debian.org` | OS packages inside image builds |
+
+> Air-gapped? Build the images on a connected host and `docker save` / `podman save` them, then load on
+> the target — ask for the offline image set.
+
+### B. Package registries Nexus proxies (per ecosystem you provision)
+Only the ecosystems you turn on need their upstream open.
+| Ecosystem | Upstream host |
+|-----------|---------------|
+| PyPI (Python) | `pypi.org`, `files.pythonhosted.org` |
+| npm (Node) | `registry.npmjs.org` |
+| NuGet (.NET) | `api.nuget.org`, `*.nuget.org` |
+| Cargo (Rust) | `crates.io`, `static.crates.io` |
+| Go | `proxy.golang.org` |
+| Maven (Java) | `repo1.maven.org`, `search.maven.org` |
+| RubyGems | `rubygems.org` |
+| Composer (PHP) | `repo.packagist.org`, `packagist.org` |
+| Conan (C/C++) | `center.conan.io` |
+| CRAN (R) | `cran.r-project.org`, `crandb.r-pkg.org` |
+| Dart/Pub | `pub.dev` |
+| Alpine | `dl-cdn.alpinelinux.org`, `pkgs.alpinelinux.org` |
+| Debian / Ubuntu (apt) | `sources.debian.org` |
+| HuggingFace (models) | `huggingface.co` |
+| Docker (images) | `registry-1.docker.io`, `auth.docker.io` |
+
+### C. Threat-intelligence feeds (the free gate uses these)
+| Feed | Host | Purpose |
+|------|------|---------|
+| OSV.dev | `api.osv.dev` | Multi-ecosystem CVE matching |
+| CISA KEV | `www.cisa.gov` | Known-exploited gating |
+| FIRST EPSS | `api.first.org` | Exploit-probability gating |
+| OpenSSF Scorecard | `api.securityscorecards.dev` | Project-health scoring |
+| deps.dev | `api.deps.dev` | Dependency-graph enrichment |
+| GitHub API | `api.github.com`, `github.com` | Source/scorecard lookups, Conan index |
+| npm downloads | `api.npmjs.org` | Download-count enrichment |
+| VS Code / Open VSX | `marketplace.visualstudio.com`, `open-vsx.org` | Extension metadata |
+
+### D. Premium intel (only if you set a key)
+| Service | Host | Enable with |
+|---------|------|-------------|
+| VulnCheck (exploited-in-the-wild) | `api.vulncheck.com` | `VULNCHECK_API_KEY` |
+| Socket (behavioural) | `api.socket.dev` | `SOCKET_API_KEY` |
+
+### E. AI assistant (only if you set a key)
+Powers "Ask AI", "Build rules with AI", and per-decision rationales. **The only AI channel enabled by
+default is Groq.** Without an AI key, these features fall back to deterministic behaviour.
+| Provider | Host | Enable with |
+|----------|------|-------------|
+| **Groq** (default) | `api.groq.com` | `GROQ_API_KEY` |
+| OpenRouter (optional alt) | `openrouter.ai` | `OPENROUTER_API_KEY` |
+
+> No package data, CVE text, or source is sent to the AI provider for normal gating — the AI is only
+> called for the assistant chat and the human-readable decision rationale. To run with **no external AI
+> at all**, leave both keys unset.
+
+### F. Identity provider (only if you enable SSO)
+| Use | Host |
+|-----|------|
+| Microsoft Entra ID | `login.microsoftonline.com`, `graph.microsoft.com` |
+| (other OIDC) | your provider's authority URL |
+
+### G. On-prem scanners (first run only, if you start them)
+| Scanner | Host | Why |
+|---------|------|-----|
+| privacy-filter | `huggingface.co` | Downloads its PII model once (~1 GB), then runs fully offline |
+| vsix-scanner | (none after build) | Self-contained once built |
+
+> **Minimum to run the firewall with the free gate:** the container-image hosts (A), the registries for
+> the ecosystems you provision (B), and the free feeds (C). D/E/F/G are all opt-in.
 
 ---
 
