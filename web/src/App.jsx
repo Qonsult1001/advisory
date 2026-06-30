@@ -261,25 +261,44 @@ export default function App() {
               <div style={{ fontSize: 13, color: C.sub }}>Commit increments the version, re-signs, and writes to the ledger.</div>
               <button onClick={save} disabled={saving} style={s.save}>{saving ? "Signing…" : "Commit & sign policy"}</button>
             </div>
-            <Card title="Policy controls" desc="Each control maps to a named standard reference. The committed, signed policy is the audit artifact.">
+            <Card title="Policy controls" desc="Each row is one rule the firewall enforces on every package. The plain-English line says what it does; the setting on the right is how strict it is. Committing re-signs the policy and writes it to the ledger as the audit artifact.">
+              <ControlsAiBuilder policy={policy} set={set} />
+              <SubHead>SEC-VULN — Known vulnerabilities</SubHead>
               <Table cols={["Control", "Rule", "Setting"]}>
-                <Ctl id="SEC-VULN-01" rule="Block when CVSS base score at or above">
+                <Ctl id="SEC-VULN-01" rule="Block when CVSS base score at or above"
+                  help="Every known security flaw (CVE) has a severity score from 0 to 10 (CVSS). A package is blocked if its worst CVE scores at or above this number. 8 catches high + critical flaws; lower it to be stricter, raise it to allow more through.">
                   <Stepper value={policy.cvssBlockThreshold} step={0.5} min={0} max={10}
                     onChange={(v) => set("cvssBlockThreshold", v)} unit="/ 10" /></Ctl>
-                <Ctl id="SEC-VULN-02" rule="Block components on the known-exploited catalogue">
+                <Ctl id="SEC-VULN-02" rule="Block components on the known-exploited catalogue"
+                  help="CISA publishes a list of vulnerabilities that attackers are actively exploiting in the wild right now (the KEV catalogue). When on, any package with a flaw on that list is blocked outright, regardless of its CVSS score.">
                   <Switch on={policy.blockKnownExploited} onChange={(v) => set("blockKnownExploited", v)} /></Ctl>
-                <Ctl id="SEC-VULN-03" rule="Block when exploit probability (EPSS) at or above">
+                <Ctl id="SEC-VULN-03" rule="Block when exploit probability (EPSS) at or above"
+                  help="EPSS estimates the probability (0 to 1) that a flaw will be exploited in the next 30 days. Block a package if any of its flaws is this likely or likelier to be exploited. 0.5 = a coin-flip chance; lower is stricter.">
                   <Stepper value={policy.epssBlockThreshold} step={0.05} min={0} max={1}
                     onChange={(v) => set("epssBlockThreshold", v)} unit="prob" /></Ctl>
-                <Ctl id="SEC-SC-01" rule="Minimum published age before promotion">
+              </Table>
+              <SubHead>SEC-SC — Supply-chain hygiene</SubHead>
+              <Table cols={["Control", "Rule", "Setting"]}>
+                <Ctl id="SEC-SC-01" rule="Minimum published age before promotion"
+                  help="Brand-new releases are the favourite vehicle for malicious or typosquatted packages. A package must have been public for at least this many days before it can be promoted to the approved repo — a cooling-off window that lets bad releases get caught and pulled first.">
                   <Stepper value={policy.minPackageAgeDays} step={1} min={0} max={90}
                     onChange={(v) => set("minPackageAgeDays", v)} unit="days" /></Ctl>
-                <Ctl id="SEC-SC-02" rule="Maximum transitive resolution depth">
+                <Ctl id="SEC-SC-02" rule="Maximum transitive resolution depth"
+                  help="Packages depend on other packages, which depend on others, and so on. This caps how many levels deep the firewall follows that dependency tree when scanning. Higher = more thorough but slower; 8 levels covers almost every real project.">
                   <Stepper value={policy.maxTreeDepth} step={1} min={1} max={20}
                     onChange={(v) => set("maxTreeDepth", v)} unit="levels" /></Ctl>
-                <Ctl id="LEG-LIC-01" rule="Prohibited licences">
+                <Ctl id="SEC-OSSF-01" rule="Block when OpenSSF Scorecard score below (0 = off)"
+                  help="OpenSSF Scorecard rates a project's security practices (code review, signed releases, maintenance) from 0 to 10. Block packages whose project scores below this. Leave at 0 to turn the check off.">
+                  <Stepper value={policy.minScorecardScore ?? 0} step={0.5} min={0} max={10}
+                    onChange={(v) => set("minScorecardScore", v)} unit="/ 10" /></Ctl>
+              </Table>
+              <SubHead>LEG-LIC / SEC-OPR — Licensing & project health</SubHead>
+              <Table cols={["Control", "Rule", "Setting"]}>
+                <Ctl id="LEG-LIC-01" rule="Prohibited licences"
+                  help="Some open-source licences (e.g. GPL-3.0) carry legal obligations a company may not want in its codebase. Any package published under a licence listed here is blocked. Add the SPDX licence IDs you can't accept.">
                   <Chips tags={policy.licenseBlocklist} onChange={(v) => set("licenseBlocklist", v)} /></Ctl>
-                <Ctl id="SEC-OPR-01" rule="On High operational risk (EOL / stale / unhealthy project)">
+                <Ctl id="SEC-OPR-01" rule="On High operational risk (EOL / stale / unhealthy project)"
+                  help="Flags packages whose project is end-of-life, unmaintained, or abandoned — risky to depend on even with no known CVE. Choose what happens: ignore it (Disabled), let it through but record a warning (Notify), or stop it (Block).">
                   <div style={{ display: "flex", gap: 6 }}>
                     {["Disabled", "Notify", "Block"].map((o) => (
                       <button key={o} onClick={() => set("operationalRiskAction", o)}
@@ -289,13 +308,11 @@ export default function App() {
                           color: policy.operationalRiskAction === o ? C.accentDim : C.sub }}>{o}</button>
                     ))}
                   </div></Ctl>
-                <Ctl id="SEC-OSSF-01" rule="Block when OpenSSF Scorecard score below (0 = off)">
-                  <Stepper value={policy.minScorecardScore ?? 0} step={0.5} min={0} max={10}
-                    onChange={(v) => set("minScorecardScore", v)} unit="/ 10" /></Ctl>
               </Table>
-              <SubHead>SEC-EXT-01 — AI-editor extension gate</SubHead>
+              <SubHead>SEC-EXT — AI-editor extension gate</SubHead>
               <Table cols={["Control", "Rule", "Setting"]}>
-                <Ctl id="SEC-EXT-01" rule="On a High-Risk extension (confirmed code threat / on malicious feed)">
+                <Ctl id="SEC-EXT-01" rule="On a High-Risk extension (confirmed code threat / on malicious feed)"
+                  help="VS Code / editor extensions can run arbitrary code. This decides what to do when a scanned extension has a confirmed malicious payload or appears on a known-bad feed: ignore (Disabled), warn (Notify), or stop it (Block).">
                   <div style={{ display: "flex", gap: 6 }}>
                     {["Disabled", "Notify", "Block"].map((o) => (
                       <button key={o} onClick={() => set("extensionRiskAction", o)}
@@ -305,7 +322,8 @@ export default function App() {
                           color: (policy.extensionRiskAction || "Block") === o ? C.accentDim : C.sub }}>{o}</button>
                     ))}
                   </div></Ctl>
-                <Ctl id="SEC-EXT-02" rule="When the ONLY issue is an unverified publisher (no confirmed threat)">
+                <Ctl id="SEC-EXT-02" rule="When the ONLY issue is an unverified publisher (no confirmed threat)"
+                  help="A softer case: the extension isn't known to be malicious, its only red flag is that the publisher isn't verified. Choose how cautious to be — let it through (Allow), warn (Notify), or block it anyway (Block).">
                   <div style={{ display: "flex", gap: 6 }}>
                     {["Allow", "Notify", "Block"].map((o) => (
                       <button key={o} onClick={() => set("extensionUnverifiedAction", o)}
@@ -318,16 +336,20 @@ export default function App() {
               </Table>
               <SubHead>SEC-AIML-01 — Model-weight controls</SubHead>
               <Table cols={["Control", "Rule", "Setting"]}>
-                <Ctl id="" rule="Permit safetensors format only">
+                <Ctl id="" rule="Permit safetensors format only"
+                  help="AI model weight files come in several formats. Safetensors is the safe one — it's pure data and can't execute code. When on, only safetensors model files are allowed through.">
                   <Switch on={policy.weights.safetensorsOnly} onChange={(v) => setW("safetensorsOnly", v)} /></Ctl>
-                <Ctl id="" rule="Block pickle-based formats / scan opcodes">
+                <Ctl id="" rule="Block pickle-based formats / scan opcodes"
+                  help="The older pickle format can hide code that runs the moment a model is loaded — a real attack vector for AI supply chains. When on, pickle files are blocked and their opcodes scanned for malicious instructions.">
                   <Switch on={policy.weights.blockPickle} onChange={(v) => setW("blockPickle", v)} /></Ctl>
-                <Ctl id="" rule="Require SHA-256 hash pin">
+                <Ctl id="" rule="Require SHA-256 hash pin"
+                  help="Requires each model weight to be pinned to an exact SHA-256 fingerprint, so you always get the precise file you vetted and can't be silently served a swapped-out version.">
                   <Switch on={policy.weights.requireHashPin} onChange={(v) => setW("requireHashPin", v)} /></Ctl>
               </Table>
-              <SubHead>SEC-SECRET-01 / SEC-IAC-01 — Artifact content scanning</SubHead>
+              <SubHead>SEC-SECRET / SEC-IAC — Artifact content scanning</SubHead>
               <Table cols={["Control", "Rule", "Setting"]}>
-                <Ctl id="SEC-SECRET-01" rule="Scan artifact content for embedded secrets + IaC misconfigurations (blocks on High)">
+                <Ctl id="SEC-SECRET-01" rule="Scan artifact content for embedded secrets + IaC misconfigurations (blocks on High)"
+                  help="Opens up each package's actual files and scans them for hard-coded secrets (API keys, passwords, private keys) and insecure infrastructure-as-code settings. A High-severity finding blocks the package.">
                   <Switch on={policy.enableContentScan} onChange={(v) => set("enableContentScan", v)} /></Ctl>
               </Table>
             </Card>
@@ -967,12 +989,77 @@ function Table({ cols, children }) {
     </table>
   );
 }
-function Ctl({ id, rule, children }) {
+// "Build rules with AI" for the Policy controls page. Same Groq endpoint as the Watches builder,
+// but instead of appending watch rules it MAPS the AI's suggestions onto the live policy controls
+// (CVSS threshold, KEV toggle, EPSS, licence blocklist). Always tells the user exactly what changed.
+function ControlsAiBuilder({ policy, set }) {
+  const [text, setText] = useState("");
+  const [state, setState] = useState(null); // null | 'thinking' | {error} | {changes:[...]}
+  // CVSS threshold a severity word implies (lower = stricter / blocks more).
+  const sevToCvss = { Critical: 9, High: 7, Medium: 4, Low: 0.1 };
+  const build = () => {
+    if (!text.trim()) return;
+    setState("thinking");
+    const timer = setTimeout(() => setState({ error: "The AI assistant is taking too long — try again, or set the controls below by hand." }), 25000);
+    api.aiPolicyRules(text.trim()).then((r) => {
+      clearTimeout(timer);
+      if (!(r.ok && Array.isArray(r.rules) && r.rules.length)) {
+        setState({ error: r.error || "The assistant couldn't turn that into controls. Try rephrasing." });
+        return;
+      }
+      const changes = [];
+      const licences = [...(policy.licenseBlocklist || [])];
+      for (const rl of r.rules) {
+        if (rl.type === "License") {
+          // Pull a licence id out of the rule name (e.g. "block-gpl-license" → GPL).
+          const m = (rl.name || "").toUpperCase().match(/(AGPL|LGPL|GPL|MPL|EPL|CDDL|MIT|APACHE|BSD)[-\d.]*/);
+          const lic = m ? m[0].replace(/-$/, "") : null;
+          if (lic && !licences.some((x) => x.toUpperCase().startsWith(lic))) { licences.push(lic); changes.push(`Prohibited licence + ${lic}`); }
+        } else if (rl.knownExploitedOnly && rl.block !== false) {
+          if (!policy.blockKnownExploited) { set("blockKnownExploited", true); changes.push("Known-exploited (KEV) → block on"); }
+        } else if (rl.type === "CVEs" && rl.block !== false) {
+          const v = sevToCvss[rl.minSeverity] ?? 7;
+          if (v < (policy.cvssBlockThreshold ?? 10)) { set("cvssBlockThreshold", v); changes.push(`Block CVSS ≥ ${v} (${rl.minSeverity || "High"}+)`); }
+        }
+      }
+      if (licences.length !== (policy.licenseBlocklist || []).length) set("licenseBlocklist", licences);
+      setState(changes.length ? { changes } : { error: "The AI didn't suggest anything these controls can express. Try naming a CVSS level, KEV, or a licence." });
+      if (changes.length) setText("");
+    }).catch(() => { clearTimeout(timer); setState({ error: "AI request failed. Is the assistant configured under Administration?" }); });
+  };
+  return (
+    <div style={{ border: `1px solid ${C.line}`, borderRadius: 8, padding: 14, marginBottom: 16, background: "rgba(64,190,70,.04)" }}>
+      <div style={{ marginBottom: 8 }}>
+        <span style={{ fontSize: 13, fontWeight: 700, color: C.accentDim }}>✦ Build rules with AI</span>
+        <span style={{ fontSize: 12, color: C.sub, marginLeft: 8 }}>describe the policy in plain English — the AI sets the matching controls below</span>
+      </div>
+      <div style={{ display: "flex", gap: 8 }}>
+        <input value={text} onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter" && state !== "thinking") build(); }}
+          placeholder="e.g. block critical CVEs and known-exploited vulns, and block GPL licences"
+          style={{ ...s.formInput, flex: 1 }} />
+        <button onClick={build} disabled={state === "thinking" || !text.trim()}
+          style={{ ...s.add, opacity: state === "thinking" || !text.trim() ? 0.6 : 1, whiteSpace: "nowrap" }}>
+          {state === "thinking" ? "Thinking…" : "✦ Apply to controls"}</button>
+      </div>
+      {state?.error && <div style={{ fontSize: 11.5, color: "#c0392b", marginTop: 8 }}>{state.error}</div>}
+      {state?.changes && (
+        <div style={{ fontSize: 11.5, color: C.accentDim, marginTop: 8 }}>
+          Applied: {state.changes.join(" · ")}. Review below, then <b>Commit &amp; sign policy</b> to save.
+        </div>
+      )}
+    </div>
+  );
+}
+function Ctl({ id, rule, help, children }) {
   return (
     <tr style={s.tr}>
-      <td style={{ ...s.td, fontFamily: C.mono, color: C.accent, fontSize: 11, whiteSpace: "nowrap" }}>{id || "—"}</td>
-      <td style={s.td}>{rule}</td>
-      <td style={{ ...s.td, textAlign: "right" }}>{children}</td>
+      <td style={{ ...s.td, fontFamily: C.mono, color: C.accent, fontSize: 11, whiteSpace: "nowrap", verticalAlign: "top" }}>{id || "—"}</td>
+      <td style={s.td}>
+        <div>{rule}</div>
+        {help && <div style={{ fontSize: 11.5, color: C.sub, marginTop: 3, lineHeight: 1.45, maxWidth: 620 }}>{help}</div>}
+      </td>
+      <td style={{ ...s.td, textAlign: "right", verticalAlign: "top" }}>{children}</td>
     </tr>
   );
 }
@@ -4309,6 +4396,11 @@ function WatchesPolicies({ policy, setPolicy, onViewKev, save, saving }) {
 
   const setWatch = (i, patch) => setPolicy((p) => ({ ...p,
     watches: p.watches.map((w, j) => j === i ? { ...w, ...patch } : w) }));
+  // Delete a watch/policy (they're the same entry here). Confirm, then remove + persist via save.
+  const deleteWatch = (i, label) => {
+    if (!window.confirm(`Delete “${label}”? This removes the watch and its rules. Remember to Commit & sign.`)) return;
+    setPolicy((p) => ({ ...p, watches: p.watches.filter((_, j) => j !== i) }));
+  };
 
   if (wizard) return (
     <PolicyWizard
@@ -4352,7 +4444,10 @@ function WatchesPolicies({ policy, setPolicy, onViewKev, save, saving }) {
                 <td style={{ ...s.td, color: C.sub, maxWidth: 360, fontSize: 12.5, lineHeight: 1.5 }}>{watchSummary(w)}</td>
                 <td style={s.td}><ViewResources items={(w.ecosystems?.length) ? w.ecosystems : ["All ecosystems (repositories + builds)"]} label={`View Resources (${w.ecosystems?.length || 1})`} /></td>
                 <td style={s.td}><a style={s.linkGreen} onClick={() => setWizard({ wi })}>1 | {polName(w)}</a></td>
-                <td style={s.td}><Switch on={w.enabled} onChange={(v) => setWatch(wi, { enabled: v })} /></td>
+                <td style={{ ...s.td, display: "flex", gap: 10, alignItems: "center" }}>
+                  <Switch on={w.enabled} onChange={(v) => setWatch(wi, { enabled: v })} />
+                  <button style={{ ...s.miniBtn, color: "#c0392b" }} onClick={() => deleteWatch(wi, w.name)}>Delete</button>
+                </td>
               </tr>
             ))}
           </tbody></table>
@@ -4370,7 +4465,10 @@ function WatchesPolicies({ policy, setPolicy, onViewKev, save, saving }) {
                 <td style={s.td}><Tag tone={polType(w) === "License" ? C.warn : C.accent}>{polType(w)}</Tag></td>
                 <td style={{ ...s.td, color: C.sub }}>{w.rules.length} Rule{w.rules.length === 1 ? "" : "s"}{w.rules[0] ? ` · ${w.rules[0].name}` : ""}</td>
                 <td style={s.td}><span style={{ fontFamily: C.mono, fontSize: 11.5 }}>{w.name}</span></td>
-                <td style={s.td}><button style={s.miniBtn} onClick={() => setWizard({ wi })}>Edit</button></td>
+                <td style={{ ...s.td, display: "flex", gap: 6 }}>
+                  <button style={s.miniBtn} onClick={() => setWizard({ wi })}>Edit</button>
+                  <button style={{ ...s.miniBtn, color: "#c0392b" }} onClick={() => deleteWatch(wi, polName(w))}>Delete</button>
+                </td>
               </tr>
             ))}
           </tbody></table>
@@ -4415,7 +4513,10 @@ function PolicyWizard({ watch, onCancel, onSave, onViewKev, saving }) {
   const aiBuild = () => {
     if (!aiText.trim()) return;
     setAiState("thinking");
+    // Client-side safety net: never sit on "Thinking…" forever if the request stalls.
+    const timer = setTimeout(() => setAiState({ error: "The AI assistant is taking too long — try again, or use the quick-add presets below." }), 25000);
     api.aiPolicyRules(aiText.trim()).then((r) => {
+      clearTimeout(timer);
       if (r.ok && Array.isArray(r.rules) && r.rules.length) {
         // Normalise + append the AI-suggested rules.
         const added = r.rules.map((rl, i) => ({
@@ -4429,7 +4530,7 @@ function PolicyWizard({ watch, onCancel, onSave, onViewKev, saving }) {
       } else {
         setAiState({ error: r.error || "The assistant couldn't turn that into rules. Try rephrasing." });
       }
-    }).catch(() => setAiState({ error: "AI request failed. Is the assistant configured under Administration?" }));
+    }).catch(() => { clearTimeout(timer); setAiState({ error: "AI request failed. Is the assistant configured under Administration?" }); });
   };
   const name = w.policyName || (watch ? polName(watch) : "");
   const type = w.policyType || (watch ? polType(watch) : "Security");
