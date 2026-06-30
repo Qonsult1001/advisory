@@ -1475,6 +1475,29 @@ function Exceptions({ policy, setPolicy }) {
 
 const ECOS = ["PyPI", "npm", "NuGet", "Cargo", "Go", "HuggingFace"];
 // Intelligence sources with a live health probe (real reachability + latency per feed).
+// Plain-English "what is this feed / why it matters" + whether a novice should keep it on.
+// Keyed by source key. `free` feeds need no credential and are the recommended baseline.
+const SOURCE_INFO = {
+  osv:          { why: "The main free vulnerability database — covers CVEs across npm, PyPI, Maven and more. This is the backbone of the gate; keep it on.", reco: true, free: true },
+  malware:      { why: "OpenSSF's feed of known typosquats and malicious packages — catches deliberately-bad packages, not just buggy ones. Keep it on.", reco: true, free: true },
+  kev:          { why: "CISA's catalogue of flaws being actively exploited in the wild right now. Powers the 'known-exploited' block rule on Policy controls.", reco: true, free: true },
+  epss:         { why: "FIRST's exploit-probability score — how likely each flaw is to be exploited soon. Powers the EPSS block rule on Policy controls.", reco: true, free: true },
+  vulncheck:    { why: "Exploited-in-the-wild enrichment — a broader superset of CISA KEV. Free community key; enable it for earlier warning.", reco: true, free: false },
+  artifactory:  { why: "Cross-references your existing JFrog Xray scans. Optional — only useful if you run Artifactory.", reco: false, free: false },
+  socket:       { why: "Behavioural analysis of install scripts and runtime behaviour. Licensed feed; strong signal but needs a paid key.", reco: false, free: false },
+  "vsix-scanner": { why: "Deep code scan of AI-editor / VS Code extensions for data-exfiltration and credential theft. Keep on if you gate extensions.", reco: true, free: true },
+};
+// One-click source profiles. Minimal = bare CVE feed; Recommended = all free feeds; Everything = all available.
+const SOURCE_PRESETS = {
+  Minimal:     ["osv"],
+  Recommended: ["osv", "malware", "kev", "epss", "vsix-scanner"],
+  Everything:  ["osv", "malware", "kev", "epss", "vulncheck", "vsix-scanner", "artifactory", "socket"],
+};
+const SOURCE_PRESET_BLURB = {
+  Minimal: "Just the core free CVE feed (OSV). The lightest possible setup — misses malware, exploited-in-the-wild and exploit-probability signals.",
+  Recommended: "Every free, no-credential feed: CVEs, malicious-package detection, actively-exploited (KEV) and exploit-probability (EPSS), plus extension scanning. Best for most teams.",
+  Everything: "All available feeds, including credentialed ones (VulnCheck, Artifactory, Socket). Those only switch on once their key is set.",
+};
 function Sources({ sources, policy, set, setPolicy, save, saving }) {
   const [admin, setAdmin] = useState(null);      // { builtins, customs }
   const [tests, setTests] = useState({});        // key -> { ok, status, elapsedMs }
@@ -1483,9 +1506,41 @@ function Sources({ sources, policy, set, setPolicy, save, saving }) {
   const [editor, setEditor] = useState(null);    // { key, label, endpoint, credential } | null  (built-in cred edit)
   const [customEditor, setCustomEditor] = useState(null); // a policy.customSources entry being edited | null
   const [addOpen, setAddOpen] = useState(false);
+  const [aiText, setAiText] = useState("");
+  const [aiState, setAiState] = useState(null); // null | 'thinking' | {error} | {enabled:[keys]}
 
   const reload = () => api.getSourcesAdmin().then(setAdmin).catch(() => setAdmin({ builtins: [], customs: [] }));
   useEffect(() => { reload(); }, []);
+
+  // "Set up sources with AI" — interpret a plain-English request into a set of feeds to enable.
+  // Feeds are a fixed, small, named set, so this is a precise intent parse (keyword → feed key),
+  // not an LLM guess: that makes "enable the free feeds" reliably do the right thing every time.
+  const aiSetupSources = () => {
+    const q = aiText.trim();
+    if (!q) return;
+    setAiState("thinking");
+    const avail = (admin?.builtins || []).map((b) => b.key);
+    const t = q.toLowerCase();
+    const want = new Set(policy.enabledSources || []);
+    const add = (k) => avail.includes(k) && want.add(k);
+    let matched = true;
+    if (/\beverything|all (the )?(feeds|sources|available)|turn on all\b/.test(t)) SOURCE_PRESETS.Everything.forEach(add);
+    else if (/\bfree|no.?(credential|key|cost)|included\b/.test(t)) SOURCE_PRESETS.Recommended.forEach(add);
+    else if (/\bbasic|minimal|just|only|cve|malware|typosquat\b/.test(t)) { add("osv"); add("malware"); }
+    else matched = false;
+    // Additive intents on top of (or instead of) the above.
+    if (/exploit|in.the.wild|kev|known.?exploited|actively/.test(t)) { add("kev"); add("vulncheck"); matched = true; }
+    if (/epss|probab/.test(t)) { add("epss"); matched = true; }
+    if (/extension|vsix|vs.?code|editor/.test(t)) { add("vsix-scanner"); matched = true; }
+    if (/behaviour|behavior|install.?script|socket|runtime/.test(t)) { add("socket"); matched = true; }
+    if (/artifactory|jfrog|xray/.test(t)) { add("artifactory"); matched = true; }
+    setTimeout(() => {
+      if (!matched) { setAiState({ error: "I couldn't match that to any feeds. Try naming what you want — e.g. 'free feeds', 'exploited-in-the-wild', 'everything'." }); return; }
+      const enabled = [...want];
+      set("enabledSources", enabled);
+      setAiState({ enabled }); setAiText("");
+    }, 250);
+  };
 
   const test = (key) => { setTesting(key); api.testSource(key).then((r) => setTests((t) => ({ ...t, [key]: r }))).finally(() => setTesting(null)); };
   const toggleEnabled = (key, on) => set("enabledSources", on ? [...policy.enabledSources, key] : policy.enabledSources.filter((k) => k !== key));
@@ -1520,6 +1575,22 @@ function Sources({ sources, policy, set, setPolicy, save, saving }) {
   if (!admin) return <div style={s.kevEmpty}>Loading sources…</div>;
   const tone = (ok, st) => st == null ? C.dim : ok ? C.allow : (st === "NotConfigured" ? C.sub : C.block);
 
+  // Apply a source preset: enable exactly its keys (intersected with what's actually available).
+  const availableKeys = (admin.builtins || []).map((b) => b.key);
+  const applyPreset = (name) => set("enabledSources", SOURCE_PRESETS[name].filter((k) => availableKeys.includes(k)));
+  const activePreset = Object.keys(SOURCE_PRESETS).find((k) => {
+    const want = SOURCE_PRESETS[k].filter((x) => availableKeys.includes(x)).sort().join(",");
+    return want === [...(policy.enabledSources || [])].sort().join(",");
+  });
+
+  // Coupling warnings: a Policy control silently does nothing if its feed is disabled. Surface that here.
+  const en = (k) => (policy.enabledSources || []).includes(k);
+  const warnings = [];
+  if (policy.blockKnownExploited && !en("kev")) warnings.push({ msg: "Your policy blocks known-exploited flaws, but the CISA KEV feed is OFF — that rule can't fire.", key: "kev" });
+  if ((policy.epssBlockThreshold ?? 0) > 0 && !en("epss")) warnings.push({ msg: "Your policy blocks on exploit probability (EPSS), but the EPSS feed is OFF — that rule can't fire.", key: "epss" });
+  if (!en("osv")) warnings.push({ msg: "The core OSV vulnerability feed is OFF — the gate has almost no data to work with.", key: "osv" });
+  if (!en("malware")) warnings.push({ msg: "The malicious-package feed is OFF — typosquats and known-bad packages won't be caught.", key: "malware" });
+
   const row = (src, custom) => {
     const t = tests[src.key];
     // Built-in enabled/required state is owned by the POLICY (the toggle's write target), not the
@@ -1532,7 +1603,9 @@ function Sources({ sources, policy, set, setPolicy, save, saving }) {
       <React.Fragment key={src.key}>
       <tr style={s.tr}>
         <td style={s.td}><b>{src.label}</b>{custom && <Tag tone={C.info} >custom</Tag>}
+          {!custom && SOURCE_INFO[src.key]?.reco && <Tag tone={C.allow}>recommended</Tag>}
           <div style={{ color: C.sub, fontSize: 11, marginTop: 2 }}>{src.scope}</div>
+          {!custom && SOURCE_INFO[src.key] && <div style={{ color: C.sub, fontSize: 11.5, marginTop: 3, lineHeight: 1.45, maxWidth: 560 }}>{SOURCE_INFO[src.key].why}</div>}
           {src.endpoint
             ? <div style={{ color: C.info, fontSize: 10.5, fontFamily: C.mono, marginTop: 2 }} title="Endpoint override (on-prem mirror)">↳ {src.endpoint} <span style={{ color: C.accentDim }}>· override</span></div>
             : src.defaultEndpoint && <div style={{ color: C.dim, fontSize: 10.5, fontFamily: C.mono, marginTop: 2 }} title="Built-in default endpoint">↳ {src.defaultEndpoint}</div>}
@@ -1582,6 +1655,70 @@ function Sources({ sources, policy, set, setPolicy, save, saving }) {
           {save && <button style={s.save} onClick={save} disabled={saving}>{saving ? "Signing…" : "Commit & sign policy"}</button>}
         </div>
       </div>
+      {/* Coupling warnings — a feed a Policy control depends on is switched off. */}
+      {warnings.map((w, i) => (
+        <div key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12,
+          background: "rgba(214,108,43,.08)", border: `1px solid ${C.warn}`, borderRadius: 8, padding: "9px 12px", marginBottom: 8 }}>
+          <span style={{ fontSize: 12, color: C.text }}>⚠ {w.msg}</span>
+          <button onClick={() => toggleEnabled(w.key, true)}
+            style={{ fontSize: 11.5, padding: "5px 12px", borderRadius: 6, cursor: "pointer", whiteSpace: "nowrap",
+              border: `1px solid ${C.accent}`, background: "rgba(64,190,70,.1)", color: C.accentDim, fontWeight: 600 }}>Turn it on</button>
+        </div>
+      ))}
+
+      {/* Preset profiles */}
+      <div style={{ marginBottom: 16 }}>
+        <div style={{ fontSize: 13.5, fontWeight: 700, color: C.text, marginBottom: 4 }}>Choose which feeds to use</div>
+        <div style={{ fontSize: 12, color: C.sub, marginBottom: 10 }}>One click turns a sensible set of feeds on. Credentialed feeds only activate once their key is set.</div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12 }}>
+          {Object.keys(SOURCE_PRESETS).map((k) => {
+            const on = activePreset === k;
+            return (
+              <button key={k} onClick={() => applyPreset(k)}
+                style={{ textAlign: "left", padding: 14, borderRadius: 8, cursor: "pointer",
+                  border: `1.5px solid ${on ? C.accent : C.line}`, background: on ? "rgba(64,190,70,.08)" : C.surface }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                  <span style={{ fontSize: 13, fontWeight: 700, color: on ? C.accentDim : C.text }}>{k}</span>
+                  {on && <span style={{ fontSize: 10.5, fontWeight: 700, color: C.accentDim }}>✓ ACTIVE</span>}
+                </div>
+                <div style={{ fontSize: 11.5, color: C.sub, lineHeight: 1.5 }}>{SOURCE_PRESET_BLURB[k]}</div>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Set up sources with AI */}
+      <div style={{ border: `1px solid ${C.accent}`, borderRadius: 8, padding: 16, marginBottom: 18, background: "rgba(64,190,70,.05)" }}>
+        <div style={{ fontSize: 14, fontWeight: 700, color: C.accentDim, marginBottom: 4 }}>✦ Set up sources with AI</div>
+        <div style={{ fontSize: 12.5, color: C.sub, marginBottom: 10, lineHeight: 1.5 }}>
+          Describe what intelligence you want in plain English — the AI turns the right feeds on. Nothing saves until you <b>Commit &amp; sign policy</b>.
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <input value={aiText} onChange={(e) => setAiText(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter" && aiState !== "thinking") aiSetupSources(); }}
+            placeholder="e.g. enable all the free feeds and exploited-in-the-wild intelligence"
+            style={{ ...s.formInput, flex: 1 }} />
+          <button onClick={aiSetupSources} disabled={aiState === "thinking" || !aiText.trim()}
+            style={{ ...s.add, opacity: aiState === "thinking" || !aiText.trim() ? 0.6 : 1, whiteSpace: "nowrap" }}>
+            {aiState === "thinking" ? "Thinking…" : "✦ Apply to feeds"}</button>
+        </div>
+        <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap", gap: 7, alignItems: "center" }}>
+          <span style={{ fontSize: 11, color: C.sub, fontWeight: 600 }}>Try one:</span>
+          {["Enable all the free feeds", "Turn on exploited-in-the-wild intelligence", "Just the basics — CVEs and malware", "Everything available"].map((ex) => (
+            <button key={ex} onClick={() => { setAiText(ex); setAiState(null); }}
+              style={{ fontSize: 11, padding: "4px 10px", borderRadius: 14, cursor: "pointer", border: `1px solid ${C.line}`, background: C.surface, color: C.sub }}>{ex}</button>
+          ))}
+        </div>
+        {aiState?.error && <div style={{ fontSize: 11.5, color: "#c0392b", marginTop: 10 }}>{aiState.error}</div>}
+        {aiState?.enabled && (
+          <div style={{ fontSize: 12, color: C.accentDim, marginTop: 10, padding: "8px 10px", borderRadius: 6, background: "rgba(64,190,70,.1)" }}>
+            ✓ Enabled: {aiState.enabled.map((k) => (admin.builtins.find((b) => b.key === k)?.label) || k).join(" · ")}.<br />
+            Review below, then press <b>Commit &amp; sign policy</b> to save.
+          </div>
+        )}
+      </div>
+
       <div style={s.card}>
         <table style={s.table}><thead><tr>
           {["Source", "Tier", "Test status", "Enabled", "Required", "Actions"].map((c) => <th key={c} style={s.th}>{c}</th>)}
