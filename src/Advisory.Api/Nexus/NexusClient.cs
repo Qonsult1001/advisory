@@ -301,17 +301,67 @@ public class NexusClient : INexusClient
         {
             using var resp = await _http.GetAsync(url, ct);
             _log.LogInformation("Fetch {Pkg} into {Repo}: {Status}", name, $"{def.Prefix}-{_quarantineSuffix}", (int)resp.StatusCode);
-            // For ecosystems where the index alone doesn't cache the artifact, also pull the first asset.
-            if (resp.IsSuccessStatusCode && eco == Ecosystem.PyPI)
+            // Requesting the index/metadata is NOT enough to cache a component — Nexus only stores a
+            // component when its actual ARTIFACT (tarball/wheel) is requested through the proxy. So for
+            // each ecosystem, parse the index for the artifact URL and pull it. (PyPI: wheel/sdist from
+            // the simple-index HTML; npm: the version's .tgz tarball from the package metadata JSON.)
+            if (resp.IsSuccessStatusCode)
             {
-                var html = await resp.Content.ReadAsStringAsync(ct);
-                var m = System.Text.RegularExpressions.Regex.Match(html, "href=\"([^\"]+\\.(?:whl|tar\\.gz))");
-                if (m.Success)
+                string? fileUrl = null;
+                if (eco == Ecosystem.PyPI)
                 {
-                    var rel = m.Groups[1].Value.Split('#')[0];
-                    var fileUrl = new Uri(new Uri(url.EndsWith('/') ? url : url + "/"), rel).ToString();
+                    var html = await resp.Content.ReadAsStringAsync(ct);
+                    var m = System.Text.RegularExpressions.Regex.Match(html, "href=\"([^\"]+\\.(?:whl|tar\\.gz))");
+                    if (m.Success)
+                    {
+                        var rel = m.Groups[1].Value.Split('#')[0];
+                        fileUrl = new Uri(new Uri(url.EndsWith('/') ? url : url + "/"), rel).ToString();
+                    }
+                }
+                else if (eco == Ecosystem.npm)
+                {
+                    // npm metadata: versions[<ver>].dist.tarball is the .tgz. Fall back to the latest
+                    // version's tarball if the exact version isn't listed.
+                    var json = await resp.Content.ReadAsStringAsync(ct);
+                    try
+                    {
+                        using var doc = System.Text.Json.JsonDocument.Parse(json);
+                        var root = doc.RootElement;
+                        if (root.TryGetProperty("versions", out var versions) && versions.ValueKind == System.Text.Json.JsonValueKind.Object)
+                        {
+                            System.Text.Json.JsonElement verEl = default;
+                            var found = !string.IsNullOrEmpty(version) && versions.TryGetProperty(version, out verEl);
+                            if (!found)
+                            {
+                                // exact version absent — take the dist-tags.latest, else the first listed version
+                                string? latest = root.TryGetProperty("dist-tags", out var dt) && dt.TryGetProperty("latest", out var lt) ? lt.GetString() : null;
+                                if (latest != null && versions.TryGetProperty(latest, out verEl)) found = true;
+                                else { foreach (var p in versions.EnumerateObject()) { verEl = p.Value; found = true; break; } }
+                            }
+                            if (found && verEl.TryGetProperty("dist", out var dist) && dist.TryGetProperty("tarball", out var tb))
+                            {
+                                var tarball = tb.GetString();
+                                // The tarball URL points at the upstream registry; we must fetch it THROUGH the
+                                // Nexus proxy so the component is cached. Nexus already rewrites the host to itself,
+                                // so its path may already include "/repository/<repo>/...". Take the tail after the
+                                // repo segment (the package path) and re-root it on our repoBase — exactly once.
+                                if (!string.IsNullOrEmpty(tarball))
+                                {
+                                    var path = new Uri(tarball).AbsolutePath; // e.g. /repository/npm-quarantine/pad-left/-/pad-left-2.1.0.tgz OR /pad-left/-/pad-left-2.1.0.tgz
+                                    var marker = $"/repository/{def.Prefix}-{_quarantineSuffix}/";
+                                    var idx = path.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+                                    var pkgPath = idx >= 0 ? path[(idx + marker.Length)..] : path.TrimStart('/');
+                                    fileUrl = $"{repoBase}/{pkgPath}";
+                                }
+                            }
+                        }
+                    }
+                    catch (Exception jx) { _log.LogWarning(jx, "npm metadata parse failed for {Pkg}.", name); }
+                }
+                if (fileUrl != null)
+                {
                     using var f = await _http.GetAsync(fileUrl, ct);
-                    _log.LogInformation("Cached {Pkg} artifact: {Status}", name, (int)f.StatusCode);
+                    _log.LogInformation("Cached {Pkg} artifact: {Status} ({Url})", name, (int)f.StatusCode, fileUrl);
                 }
             }
             return resp.IsSuccessStatusCode;
