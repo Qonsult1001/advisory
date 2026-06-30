@@ -20,8 +20,15 @@ mkdir -p "$ROOT"
 echo "→ Staging the rollout bundle…"
 
 # The deploy folder (compose, installers, env template, docs) — minus local-only files.
+# By default .env is EXCLUDED (don't ship secrets). Pass --include-keys to bundle the real deploy/.env
+# so the deliverable arrives pre-configured and works out of the box (rotate those keys afterwards).
 mkdir -p "$ROOT/deploy"
-( cd deploy && tar --exclude='.env' --exclude='data' --exclude='package.sh' -cf - . ) | ( cd "$ROOT/deploy" && tar -xf - )
+if [ "${1:-}" = "--include-keys" ] && [ -f deploy/.env ]; then
+  echo "→ Including deploy/.env (live keys) in the bundle — ROTATE these keys after hand-off."
+  ( cd deploy && tar --exclude='data' --exclude='package.sh' -cf - . ) | ( cd "$ROOT/deploy" && tar -xf - )
+else
+  ( cd deploy && tar --exclude='.env' --exclude='data' --exclude='package.sh' -cf - . ) | ( cd "$ROOT/deploy" && tar -xf - )
+fi
 
 # The build contexts the compose needs. Paths mirror the repo so compose's relative contexts resolve.
 #   api + console build from repo root (Dockerfile, web/, src/, etc.); scanners from tools/.
