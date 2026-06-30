@@ -159,59 +159,55 @@ function SplashLogin({ onContinue }) {
     // Best-effort redirect; if the endpoint isn't configured yet, fall through to continue so testing isn't blocked.
     window.location.assign(url);
   };
+  const NAVY = "#16243a", GREEN = "#40be46", GREEN_DIM = "#2f9e36";
   return (
-    <div style={{ position: "fixed", inset: 0, background: "#0a0a0c", color: "#fff", fontFamily: C.sans,
+    <div style={{ position: "fixed", inset: 0, background: "#fff", color: C.ink, fontFamily: C.sans,
       display: "flex", flexDirection: "column", overflow: "hidden" }}>
       <style>{FONTS}</style>
 
-      {/* HERO PANEL — full-bleed gradient with brand glow, fills the top half */}
+      {/* HERO PANEL — dark navy with a green brand glow, fills the top half */}
       <div style={{ position: "relative", flex: "1 1 46%", minHeight: 240, overflow: "hidden",
-        background: "radial-gradient(120% 90% at 50% 0%, #6d3df0 0%, #4322a6 38%, #1b1340 72%, #0a0a0c 100%)" }}>
-        <div style={{ position: "absolute", top: "-30%", left: "-10%", width: "70%", height: "120%",
-          background: "radial-gradient(circle, rgba(168,130,255,.55) 0%, transparent 60%)", filter: "blur(20px)" }} />
-        <div style={{ position: "absolute", top: "10%", right: "-15%", width: "60%", height: "100%",
-          background: "radial-gradient(circle, rgba(120,80,230,.45) 0%, transparent 60%)", filter: "blur(20px)" }} />
+        background: `radial-gradient(120% 90% at 50% 10%, #20344f 0%, ${NAVY} 55%, #0f1929 100%)` }}>
+        <div style={{ position: "absolute", top: "-25%", left: "50%", transform: "translateX(-50%)", width: 620, height: 620,
+          background: `radial-gradient(circle, ${GREEN}33 0%, transparent 62%)`, filter: "blur(12px)", pointerEvents: "none" }} />
         {/* wordmark only — no icon */}
-        <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
-          <span style={{ fontWeight: 900, fontSize: 56, letterSpacing: -2, fontStyle: "italic",
-            color: "#fff", textShadow: "0 0 40px rgba(168,130,255,.6)" }}>
-            <span>ADVI</span><span style={{ color: "#cbb6ff" }}>SORY</span>
+        <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 10 }}>
+          <span style={{ fontWeight: 800, fontSize: 54, letterSpacing: -1.5 }}>
+            <span style={{ color: "#fff" }}>Advi</span><span style={{ color: GREEN }}>sory</span>
           </span>
+          <span style={{ fontSize: 13, color: "rgba(255,255,255,.5)", letterSpacing: 0.3 }}>Software supply-chain firewall</span>
         </div>
+        {/* green base line, echoing the active-nav accent */}
+        <div style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: 3, background: GREEN }} />
       </div>
 
-      {/* SIGN-IN PANEL */}
+      {/* SIGN-IN PANEL — clean white */}
       <div style={{ flex: "1 1 54%", display: "flex", flexDirection: "column", alignItems: "center",
-        padding: "34px 24px 28px", background: "#0a0a0c" }}>
+        padding: "38px 24px 28px", background: "#fff" }}>
         <div style={{ width: "100%", maxWidth: 380 }}>
-          <div style={{ fontSize: 30, fontWeight: 800, letterSpacing: -0.5, marginBottom: 6 }}>Welcome</div>
-          <div style={{ fontSize: 14, color: "rgba(255,255,255,.55)", marginBottom: 28 }}>
+          <div style={{ fontSize: 28, fontWeight: 800, letterSpacing: -0.5, marginBottom: 6, color: C.ink }}>Welcome</div>
+          <div style={{ fontSize: 13.5, color: C.sub, marginBottom: 28 }}>
             Sign in to the supply-chain firewall console.
           </div>
 
-          {sso ? (
-            <button onClick={ssoLogin} style={{ width: "100%", padding: "16px", borderRadius: 14, border: "none", cursor: "pointer",
-              background: "linear-gradient(90deg, #7a4cf0 0%, #5a2fd0 100%)", color: "#fff", fontSize: 15, fontWeight: 700,
-              boxShadow: "0 10px 30px rgba(110,60,240,.35)" }}>
-              Sign in with SSO
-            </button>
-          ) : (
-            <button onClick={onContinue} style={{ width: "100%", padding: "16px", borderRadius: 14, border: "none", cursor: "pointer",
-              background: "linear-gradient(90deg, #7a4cf0 0%, #5a2fd0 100%)", color: "#fff", fontSize: 15, fontWeight: 700,
-              boxShadow: "0 10px 30px rgba(110,60,240,.35)" }}>
-              Continue
-            </button>
-          )}
+          <button onClick={sso ? ssoLogin : onContinue}
+            style={{ width: "100%", padding: "15px", borderRadius: 10, border: "none", cursor: "pointer",
+              background: GREEN, color: "#fff", fontSize: 15, fontWeight: 700, boxShadow: `0 8px 22px ${GREEN}40`,
+              transition: "background .15s" }}
+            onMouseEnter={(e) => e.currentTarget.style.background = GREEN_DIM}
+            onMouseLeave={(e) => e.currentTarget.style.background = GREEN}>
+            {sso ? "Sign in with SSO" : "Continue"}
+          </button>
 
-          <div style={{ fontSize: 12, color: sso ? "rgba(255,255,255,.45)" : "#e6a23c", marginTop: 14, textAlign: "center", lineHeight: 1.5 }}>
+          <div style={{ fontSize: 12, color: sso ? C.sub : "#c0392b", marginTop: 14, textAlign: "center", lineHeight: 1.5 }}>
             {sso ? "You'll be redirected to your organisation's identity provider."
                  : "Testing mode — SSO is off, anyone can continue without signing in."}
           </div>
 
           {/* SSO on/off switch */}
-          <div style={{ marginTop: 30, paddingTop: 18, borderTop: "1px solid rgba(255,255,255,.08)",
+          <div style={{ marginTop: 30, paddingTop: 18, borderTop: `1px solid ${C.line}`,
             display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-            <span style={{ fontSize: 13, color: "rgba(255,255,255,.6)" }}>Require SSO sign-in</span>
+            <span style={{ fontSize: 13, color: C.sub }}>Require SSO sign-in</span>
             <Switch on={sso} onChange={setSsoPersist} />
           </div>
         </div>
@@ -298,6 +294,7 @@ export default function App() {
   // so a refresh doesn't bounce back to the splash.
   const [authed, setAuthed] = useState(() => { try { return sessionStorage.getItem("advisory-authed") === "1"; } catch { return false; } });
   const signIn = () => { try { sessionStorage.setItem("advisory-authed", "1"); } catch {} setAuthed(true); };
+  const signOut = () => { try { sessionStorage.removeItem("advisory-authed"); } catch {} setAuthed(false); };
   if (!authed) return <SplashLogin onContinue={signIn} />;
 
   if (!policy) return (
@@ -344,6 +341,11 @@ export default function App() {
             <div style={s.sig}>SHA-256 {String(sig).slice(0, 12)}</div>
           </div>
           <div style={s.avatar}>W</div>
+          <button onClick={signOut} title="Log out — return to the sign-in screen"
+            style={{ background: "rgba(255,255,255,.1)", color: "#fff", border: "1px solid rgba(255,255,255,.2)",
+              borderRadius: 5, padding: "6px 12px", fontSize: 12, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}>
+            Log out
+          </button>
         </div>
       </div>
 
