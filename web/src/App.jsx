@@ -190,6 +190,16 @@ export default function App() {
     }
   }, []);
   useEffect(() => { load(); }, [load]);
+  // The audit ledger keeps growing as the gate runs (every cycle), and a reset empties it — so the
+  // initial mount snapshot goes stale. Re-fetch when the user opens a ledger-derived tab, and keep it
+  // live (poll every 5s) while the Decision ledger is open, so promotions/blocks show up without a reload.
+  useEffect(() => {
+    if (!["audit", "violations", "dashboard"].includes(tab)) return;
+    load();
+    if (tab !== "audit") return;
+    const t = setInterval(load, 5000);
+    return () => clearInterval(t);
+  }, [tab, load]);
   // Self-heal: while offline (e.g. API container restarting), retry every 10s instead of
   // sitting on sample data until a manual refresh.
   useEffect(() => {
