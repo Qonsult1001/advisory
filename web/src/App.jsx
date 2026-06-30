@@ -1532,6 +1532,15 @@ function Sources({ sources, policy, set, setPolicy, save, saving }) {
   const [addOpen, setAddOpen] = useState(false);
   const [aiText, setAiText] = useState("");
   const [aiState, setAiState] = useState(null); // null | 'thinking' | {error} | {enabled:[keys]}
+  const [flashKeys, setFlashKeys] = useState([]); // source keys to highlight after AI/preset turns them on
+
+  // Flash the given feed rows green and scroll the first one into view. Used after AI/preset changes.
+  const flashAndScroll = (keys) => {
+    if (!keys.length) return;
+    setFlashKeys(keys);
+    setTimeout(() => { const el = document.getElementById(`src-${keys[0]}`); if (el) el.scrollIntoView({ behavior: "smooth", block: "center" }); }, 60);
+    setTimeout(() => setFlashKeys([]), 2600);
+  };
 
   const reload = () => api.getSourcesAdmin().then(setAdmin).catch(() => setAdmin({ builtins: [], customs: [] }));
   useEffect(() => { reload(); }, []);
@@ -1561,8 +1570,10 @@ function Sources({ sources, policy, set, setPolicy, save, saving }) {
     setTimeout(() => {
       if (!matched) { setAiState({ error: "I couldn't match that to any feeds. Try naming what you want — e.g. 'free feeds', 'exploited-in-the-wild', 'everything'." }); return; }
       const enabled = [...want];
+      const added = enabled.filter((k) => !(policy.enabledSources || []).includes(k));
       set("enabledSources", enabled);
-      setAiState({ enabled }); setAiText("");
+      setAiState({ enabled, added }); setAiText("");
+      flashAndScroll(added);
     }, 250);
   };
 
@@ -1601,7 +1612,12 @@ function Sources({ sources, policy, set, setPolicy, save, saving }) {
 
   // Apply a source preset: enable exactly its keys (intersected with what's actually available).
   const availableKeys = (admin.builtins || []).map((b) => b.key);
-  const applyPreset = (name) => set("enabledSources", SOURCE_PRESETS[name].filter((k) => availableKeys.includes(k)));
+  const applyPreset = (name) => {
+    const keys = SOURCE_PRESETS[name].filter((k) => availableKeys.includes(k));
+    const added = keys.filter((k) => !(policy.enabledSources || []).includes(k));
+    set("enabledSources", keys);
+    flashAndScroll(added);
+  };
   const activePreset = Object.keys(SOURCE_PRESETS).find((k) => {
     const want = SOURCE_PRESETS[k].filter((x) => availableKeys.includes(x)).sort().join(",");
     return want === [...(policy.enabledSources || [])].sort().join(",");
@@ -1609,11 +1625,20 @@ function Sources({ sources, policy, set, setPolicy, save, saving }) {
 
   // Coupling warnings: a Policy control silently does nothing if its feed is disabled. Surface that here.
   const en = (k) => (policy.enabledSources || []).includes(k);
-  const warnings = [];
+  const warnings = [];   // missing-feed warnings (action: turn it on)
   if (policy.blockKnownExploited && !en("kev")) warnings.push({ msg: "Your policy blocks known-exploited flaws, but the CISA KEV feed is OFF — that rule can't fire.", key: "kev" });
   if ((policy.epssBlockThreshold ?? 0) > 0 && !en("epss")) warnings.push({ msg: "Your policy blocks on exploit probability (EPSS), but the EPSS feed is OFF — that rule can't fire.", key: "epss" });
   if (!en("osv")) warnings.push({ msg: "The core OSV vulnerability feed is OFF — the gate has almost no data to work with.", key: "osv" });
   if (!en("malware")) warnings.push({ msg: "The malicious-package feed is OFF — typosquats and known-bad packages won't be caught.", key: "malware" });
+
+  // Credential warnings: a feed is enabled but needs an API key / licence it doesn't have, so it
+  // produces no data despite the toggle being on. Common when "Everything" is chosen (Artifactory, Socket).
+  const credWarnings = (admin.builtins || [])
+    .filter((b) => en(b.key) && b.needsCredential && !b.hasCredential)
+    .map((b) => ({
+      key: b.key, label: b.label, tier: b.tier,
+      msg: `${b.label} is enabled but has no ${b.tier === "Licensed" ? "licence key" : "credential"} yet — it won't return any data until you add one.`,
+    }));
 
   const row = (src, custom) => {
     const t = tests[src.key];
@@ -1623,11 +1648,14 @@ function Sources({ sources, policy, set, setPolicy, save, saving }) {
     const enabled = custom ? src.enabled : (policy.enabledSources || []).includes(src.key);
     const required = custom ? false : (policy.requiredSources || []).includes(src.key);
     const open = flowOpen === src.key;
+    const needsCred = !custom && src.needsCredential && !src.hasCredential && enabled;
+    const flash = flashKeys.includes(src.key);
     return (
       <React.Fragment key={src.key}>
-      <tr style={s.tr}>
+      <tr id={`src-${src.key}`} style={{ ...s.tr, transition: "background .3s", background: flash ? "rgba(64,190,70,.18)" : undefined }}>
         <td style={s.td}><b>{src.label}</b>{custom && <Tag tone={C.info} >custom</Tag>}
           {!custom && SOURCE_INFO[src.key]?.reco && <Tag tone={C.allow}>recommended</Tag>}
+          {needsCred && <Tag tone={C.warn}>needs key</Tag>}
           {/* Prefer the fuller plain-English "why"; fall back to the short scope line for feeds without one. */}
           {!custom && SOURCE_INFO[src.key]
             ? <div style={{ color: C.sub, fontSize: 11.5, marginTop: 3, lineHeight: 1.45, maxWidth: 560 }}>{SOURCE_INFO[src.key].why}</div>
@@ -1691,6 +1719,24 @@ function Sources({ sources, policy, set, setPolicy, save, saving }) {
               border: `1px solid ${C.accent}`, background: "rgba(64,190,70,.1)", color: C.accentDim, fontWeight: 600 }}>Turn it on</button>
         </div>
       ))}
+      {/* Credential warnings — an enabled feed has no key/licence yet, so it returns nothing (e.g. after "Everything"). */}
+      {credWarnings.map((w) => {
+        const b = (admin.builtins || []).find((x) => x.key === w.key);
+        return (
+          <div key={w.key} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12,
+            background: "rgba(214,108,43,.08)", border: `1px solid ${C.warn}`, borderRadius: 8, padding: "9px 12px", marginBottom: 8 }}>
+            <span style={{ fontSize: 12, color: C.text }}>⚠ {w.msg}</span>
+            <div style={{ display: "flex", gap: 6, whiteSpace: "nowrap" }}>
+              <button onClick={() => b && setEditor({ key: b.key, label: b.label, endpoint: b.endpoint || "", credential: "", needsCredential: b.needsCredential, hasCredential: b.hasCredential, defaultEndpoint: b.defaultEndpoint })}
+                style={{ fontSize: 11.5, padding: "5px 12px", borderRadius: 6, cursor: "pointer",
+                  border: `1px solid ${C.accent}`, background: "rgba(64,190,70,.1)", color: C.accentDim, fontWeight: 600 }}>Add {w.tier === "Licensed" ? "licence" : "key"}</button>
+              <button onClick={() => toggleEnabled(w.key, false)}
+                style={{ fontSize: 11.5, padding: "5px 12px", borderRadius: 6, cursor: "pointer",
+                  border: `1px solid ${C.line}`, background: C.surface, color: C.sub }}>Turn it off</button>
+            </div>
+          </div>
+        );
+      })}
 
       {/* Preset profiles — "Recommended" is the primary default. */}
       <div style={{ marginBottom: 16 }}>
@@ -1750,7 +1796,9 @@ function Sources({ sources, policy, set, setPolicy, save, saving }) {
         {aiState?.error && <div style={{ fontSize: 11.5, color: "#c0392b", marginTop: 10 }}>{aiState.error}</div>}
         {aiState?.enabled && (
           <div style={{ fontSize: 12, color: C.accentDim, marginTop: 10, padding: "8px 10px", borderRadius: 6, background: "rgba(64,190,70,.1)" }}>
-            ✓ Enabled: {aiState.enabled.map((k) => (admin.builtins.find((b) => b.key === k)?.label) || k).join(" · ")}.<br />
+            {aiState.added && aiState.added.length
+              ? <>✓ Turned on: {aiState.added.map((k) => (admin.builtins.find((b) => b.key === k)?.label) || k).join(" · ")} (highlighted below).<br /></>
+              : <>✓ Those feeds were already on — nothing to change.<br /></>}
             Review below, then press <b>Commit &amp; sign policy</b> to save.
           </div>
         )}
