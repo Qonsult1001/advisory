@@ -73,10 +73,16 @@ services:
       - AzureAd__Audience=${AZURE_AD_AUDIENCE:-}
     volumes:
       # All runtime data lives in THIS bundle's ./data — isolated from the dev stack's data dir.
-      - "./data:/data"
+      # ":z" relabels for SELinux (Podman / RHEL / Fedora); harmless on Docker / non-SELinux hosts.
+      - "./data:/data:z"
 
   # --- On-prem PII redaction sidecar (model cached after first download).
+  # OPTIONAL scanners — behind the "scanners" profile, so a default rollout stays lean. The gate works
+  # fully without them (it falls back). Enable with:  docker compose --profile scanners up --build -d
+  # (or podman compose --profile scanners up --build -d). privacy-filter downloads a ~1GB model on first
+  # run; vsix-scanner powers the AI-editor extension gate.
   privacy-filter:
+    profiles: ["scanners"]
     build: { context: ../tools/privacy-filter, dockerfile: Dockerfile }
     restart: unless-stopped
     environment:
@@ -85,8 +91,9 @@ services:
       - PF_CACHE=/cache
     volumes: ["pf-cache:/cache"]
 
-  # --- VS Code / AI-editor extension code scanner sidecar.
+  # --- VS Code / AI-editor extension code scanner sidecar (optional; "scanners" profile).
   vsix-scanner:
+    profiles: ["scanners"]
     build: { context: ../tools/vsix-scanner, dockerfile: Dockerfile }
     restart: unless-stopped
 

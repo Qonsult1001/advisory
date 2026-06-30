@@ -253,6 +253,101 @@ function SplashLogin({ onContinue }) {
     </div>
   );
 }
+// ── Interactive guided tour ───────────────────────────────────────────────────
+// The in-portal version of the step-by-step manual. Each step navigates to a screen (tab), optionally
+// spotlights a real element (by data-tour id) with a tooltip, and tells the user what to do / see.
+// Robust by design: if a target isn't on screen, the step still shows as a centered card (never breaks).
+const TOUR_STEPS = [
+  { title: "Welcome to Advisory", body: "This 60-second tour walks you through gating your first package — from looking it up, to the firewall approving it, to seeing the evidence. Use Next / Back; press Skip anytime.", tab: "catalog" },
+  { title: "1. Confirm an ecosystem is ready", body: "The firewall gates one package world at a time. Open Scans List → Repositories and make sure PyPI shows an Add/Remove card (provisioned). If it shows Add, click it.", tab: "scans", target: "nav-scans" },
+  { title: "2. Find a package", body: "Open the Catalog, choose the PyPI ecosystem, and search a clean package like 'six'. Click it to see the firewall's preview verdict (✓ Approved for downloading).", tab: "catalog", target: "nav-catalog" },
+  { title: "3. Send it through the firewall", body: "On a package page, press Send to Intake queue. The package is handed to the gate — you don't wait. (Open a package first to see this button.)", tab: "catalog", target: "send-to-pipeline" },
+  { title: "4. Watch it in the queue", body: "Open Intake queue. The gate re-checks every 30 seconds — a package you just submitted may show Pending, then Processed.", tab: "queue", target: "nav-queue" },
+  { title: "5. See the gate's decision", body: "Open Quarantine. A clean package becomes Promoting… then Promoted (Allowed). A risky one shows Held / Blocked with the reason.", tab: "quarantine", target: "nav-quarantine" },
+  { title: "6. Confirm it's approved", body: "Open Approved packages — promoted packages land here. This is the list developers are allowed to pull from the repository.", tab: "approved", target: "nav-approved" },
+  { title: "7. Read the evidence", body: "Open the Decision ledger and click any row to expand it: why the decision was made, which controls fired, and which feeds were consulted. Every decision is recorded.", tab: "audit", target: "nav-audit" },
+  { title: "8. Set your policy", body: "Open Policy controls to tune what the firewall allows — pick a preset, describe it with AI, or run Guided setup. Remember to Commit & sign policy.", tab: "controls", target: "nav-controls" },
+  { title: "You're set!", body: "That's the core loop: research → gate → quarantine → approve → evidence. Reopen this tour anytime from the ? Guide button. The full manual lives under docs/manual.", tab: "catalog" },
+];
+function GuidedTour({ onClose, setTab }) {
+  const [i, setI] = useState(0);
+  const [rect, setRect] = useState(null); // spotlight rect of the target element
+  const step = TOUR_STEPS[i];
+  const last = i === TOUR_STEPS.length - 1;
+
+  // On each step: navigate to its tab, then locate the target element and measure it.
+  useEffect(() => {
+    if (step.tab) setTab(step.tab);
+    let tries = 0;
+    const find = () => {
+      const el = step.target ? document.querySelector(`[data-tour="${step.target}"]`) : null;
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+        setRect(el.getBoundingClientRect());
+      } else if (step.target && tries < 8) { tries++; setTimeout(find, 120); } // wait for the screen to render
+      else setRect(null); // no target (or not found) → centered card
+    };
+    const t = setTimeout(find, 160);
+    const onResize = () => { const el = step.target && document.querySelector(`[data-tour="${step.target}"]`); if (el) setRect(el.getBoundingClientRect()); };
+    window.addEventListener("resize", onResize);
+    return () => { clearTimeout(t); window.removeEventListener("resize", onResize); };
+  }, [i]); // eslint-disable-line
+
+  const pad = 8;
+  const hasSpot = !!rect;
+  // Tooltip placement: to the right of the spotlight if room, else below, else centered.
+  const tip = (() => {
+    if (!hasSpot) return { left: "50%", top: "50%", transform: "translate(-50%,-50%)" };
+    const vw = window.innerWidth;
+    if (rect.right + 360 < vw) return { left: rect.right + 16, top: Math.max(16, rect.top) };       // right
+    if (rect.bottom + 220 < window.innerHeight) return { left: Math.max(16, rect.left), top: rect.bottom + 16 }; // below
+    return { left: Math.max(16, rect.left - 360), top: Math.max(16, rect.top) };                    // left
+  })();
+
+  return (
+    <div style={{ position: "fixed", inset: 0, zIndex: 300 }}>
+      {/* dim overlay with a spotlight hole (four panels around the target, or a full dim if no target) */}
+      {hasSpot ? (
+        <>
+          {/* spotlight ring */}
+          <div style={{ position: "fixed", left: rect.left - pad, top: rect.top - pad, width: rect.width + pad * 2,
+            height: rect.height + pad * 2, borderRadius: 8, boxShadow: "0 0 0 9999px rgba(15,25,41,.72)",
+            border: "2px solid #40be46", pointerEvents: "none", transition: "all .2s" }} />
+        </>
+      ) : (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(15,25,41,.72)" }} onClick={onClose} />
+      )}
+
+      {/* tooltip card */}
+      <div style={{ position: "fixed", ...tip, width: 340, maxWidth: "90vw", background: "#fff", color: "#34373c",
+        borderRadius: 12, boxShadow: "0 20px 50px rgba(15,39,72,.35)", padding: 18, zIndex: 301 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+          <span style={{ fontSize: 11, fontWeight: 700, color: "#2f9e36", textTransform: "uppercase", letterSpacing: 0.5 }}>
+            Step {i + 1} of {TOUR_STEPS.length}
+          </span>
+          <button onClick={onClose} style={{ background: "none", border: "none", color: "#6e7479", fontSize: 12, cursor: "pointer" }}>Skip ✕</button>
+        </div>
+        <div style={{ fontSize: 15.5, fontWeight: 800, marginBottom: 6 }}>{step.title}</div>
+        <div style={{ fontSize: 13, color: "#4a4f55", lineHeight: 1.55, marginBottom: 16 }}>{step.body}</div>
+        {/* progress dots */}
+        <div style={{ display: "flex", gap: 4, marginBottom: 14 }}>
+          {TOUR_STEPS.map((_, k) => (
+            <span key={k} style={{ flex: 1, height: 3, borderRadius: 2, background: k <= i ? "#40be46" : "#e4e6e9" }} />
+          ))}
+        </div>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <button onClick={() => (i === 0 ? onClose() : setI(i - 1))}
+            style={{ fontSize: 12.5, padding: "8px 14px", borderRadius: 6, cursor: "pointer", border: "1px solid #e4e6e9", background: "#fff", color: "#6e7479" }}>
+            {i === 0 ? "Close" : "← Back"}</button>
+          <button onClick={() => (last ? onClose() : setI(i + 1))}
+            style={{ fontSize: 12.5, fontWeight: 700, padding: "8px 16px", borderRadius: 6, cursor: "pointer", border: "none", background: "#40be46", color: "#fff" }}>
+            {last ? "Finish" : "Next →"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [policy, setPolicy] = useState(null);
   const [sig, setSig] = useState("");
@@ -333,6 +428,14 @@ export default function App() {
   const [authed, setAuthed] = useState(() => { try { return sessionStorage.getItem("advisory-authed") === "1"; } catch { return false; } });
   const signIn = () => { try { sessionStorage.setItem("advisory-authed", "1"); } catch {} setAuthed(true); };
   const signOut = () => { try { sessionStorage.removeItem("advisory-authed"); } catch {} setAuthed(false); };
+
+  // Interactive guided tour — open from the ? Guide button, and auto-open once for new users.
+  const [tourOpen, setTourOpen] = useState(false);
+  useEffect(() => {
+    if (!authed) return;
+    try { if (!localStorage.getItem("advisory-tour-seen")) { setTourOpen(true); localStorage.setItem("advisory-tour-seen", "1"); } } catch {}
+  }, [authed]);
+
   if (!authed) return <SplashLogin onContinue={signIn} />;
 
   if (!policy) return (
@@ -372,6 +475,10 @@ export default function App() {
           <div style={s.globalSearch}><span style={{ color: "rgba(255,255,255,.6)", fontSize: 12 }}>⌕</span>
             <input placeholder="Search packages, CVEs…" style={{ border: "none", outline: "none", background: "transparent", fontSize: 12.5, fontFamily: C.sans, color: "#fff", width: 180 }} /></div>
           <DownloadsIndicator onOpen={() => setTab("aicatalog")} />
+          <button onClick={() => setTourOpen(true)} title="Interactive walkthrough — learn the firewall step by step"
+            style={{ background: "rgba(255,255,255,.1)", color: "#fff", border: "1px solid rgba(255,255,255,.2)",
+              borderRadius: 5, padding: "6px 12px", fontSize: 12, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}>
+            ? Guide</button>
           <button style={s.askAi} onClick={() => setAskAiOpen(true)}>✦ Ask AI</button>
           <Status ok={!offline} />
           <div style={{ textAlign: "right" }}>
@@ -629,6 +736,7 @@ export default function App() {
       </div>
 
       {askAiOpen && <AskAi initial={askAiSeed} onClose={() => { setAskAiOpen(false); setAskAiSeed(null); }} goSettings={() => { setAskAiOpen(false); setTab("sources"); }} />}
+      {tourOpen && <GuidedTour setTab={setTab} onClose={() => setTourOpen(false)} />}
     </div>
   );
 }
@@ -928,7 +1036,7 @@ function NavGroups({ tab, setTab }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
       {NAV.map(g => g.type === "item" ? (
-        <button key={g.key} onClick={() => setTab(g.key)} style={{ ...s.navItem, ...(tab === g.key ? s.navOn : {}) }}>
+        <button key={g.key} data-tour={`nav-${g.key}`} onClick={() => setTab(g.key)} style={{ ...s.navItem, ...(tab === g.key ? s.navOn : {}) }}>
           <span style={{ width: 18, display: "inline-flex", justifyContent: "center", color: tab === g.key ? "#5fd968" : "rgba(255,255,255,.55)" }}>
             {ICON_PATHS[g.icon] ? <Icon name={g.icon} size={15} color={tab === g.key ? "#5fd968" : "rgba(255,255,255,.55)"} /> : g.icon}</span>{g.label}</button>
       ) : (
@@ -939,7 +1047,7 @@ function NavGroups({ tab, setTab }) {
             <span style={{ fontSize: 9, color: "rgba(255,255,255,.4)", transition: "transform .12s", transform: open[g.key] ? "none" : "rotate(-90deg)" }}>▾</span>
           </button>
           {open[g.key] && g.children.map(([k, l]) => (
-            <button key={k} onClick={() => setTab(k)} style={{ ...s.navSub, ...(tab === k ? s.navSubOn : {}) }}>{l}</button>
+            <button key={k} data-tour={`nav-${k}`} onClick={() => setTab(k)} style={{ ...s.navSub, ...(tab === k ? s.navSubOn : {}) }}>{l}</button>
           ))}
         </div>
       ))}
@@ -4333,7 +4441,7 @@ function PackageOverview({ pkg, onVersion }) {
             </div>
             {/* Send this package through the real firewall — enqueues it into the Intake queue so the
                 gate evaluates it and (if clean + not revoked) promotes it to the approved repo. */}
-            <button onClick={() => sendToPipeline(false)} disabled={sendState === "sending" || sendState === "sent"}
+            <button data-tour="send-to-pipeline" onClick={() => sendToPipeline(false)} disabled={sendState === "sending" || sendState === "sent"}
               style={{ marginTop: 10, width: "100%", padding: "8px 12px", borderRadius: 6, fontSize: 12, fontWeight: 600,
                 border: "none", cursor: sendState === "sent" ? "default" : "pointer",
                 background: sendState === "sent" ? C.surface2 : C.accent, color: sendState === "sent" ? C.accentDim : "#fff",

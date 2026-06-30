@@ -5,15 +5,15 @@ Set-Location $PSScriptRoot
 
 Write-Host "-- Advisory rollout --------------------------------------------------"
 
-# 1. Docker present?
-try { docker version | Out-Null } catch {
-  Write-Host "X Docker is not installed/running. Install Docker Desktop and start it: https://docs.docker.com/get-docker/" -ForegroundColor Red
+# 1. Container engine? Prefer Docker, fall back to Podman.
+$DC = $null
+if ((Get-Command docker -ErrorAction SilentlyContinue) -and (docker compose version 2>$null)) { $DC = "docker" }
+elseif ((Get-Command podman -ErrorAction SilentlyContinue) -and (podman compose version 2>$null)) { $DC = "podman" }
+if (-not $DC) {
+  Write-Host "X No container engine found. Install Docker Desktop (https://docs.docker.com/get-docker/) or Podman with the compose plugin, then re-run." -ForegroundColor Red
   exit 1
 }
-try { docker compose version | Out-Null } catch {
-  Write-Host "X 'docker compose' (v2) not available. Update Docker Desktop." -ForegroundColor Red
-  exit 1
-}
+Write-Host "-> Using: $DC compose"
 
 # 2. .env present?
 if (-not (Test-Path ".env")) {
@@ -23,9 +23,11 @@ if (-not (Test-Path ".env")) {
   exit 1
 }
 
-# 3. Build + start.
+# 3. Build + start. Pass -Scanners to also bring up the optional PII + extension scanners.
+$profileArgs = @()
+if ($args -contains "-Scanners") { $profileArgs = @("--profile","scanners"); Write-Host "-> Including optional scanners." }
 Write-Host "-> Building images from source (first run takes a few minutes)..."
-docker compose up --build -d
+& $DC compose @profileArgs up --build -d
 
 # Read ports from .env (default if absent).
 function Get-EnvVal($key, $default) {
@@ -46,11 +48,11 @@ for ($i = 0; $i -lt 30; $i++) {
 Write-Host ""
 Write-Host "-- Done --------------------------------------------------------------"
 if ($ok) { Write-Host "OK Stack is up." -ForegroundColor Green }
-else { Write-Host "! API didn't answer yet - Nexus can take 1-2 min on first boot. Check: docker compose logs -f api" -ForegroundColor Yellow }
+else { Write-Host "! API didn't answer yet - Nexus can take 1-2 min on first boot. Check: & $DC compose logs -f api" -ForegroundColor Yellow }
 Write-Host ""
 Write-Host "  Console (curation team):  http://localhost:$consolePort"
 Write-Host "  Nexus repo (developers):  http://localhost:$nexusPort"
 Write-Host "  API health:               http://localhost:$apiPort/api/health"
 Write-Host ""
 Write-Host "  Next: open the console, then follow docs/manual/TUTORIAL-gate-your-first-package.md"
-Write-Host "  Stop:  docker compose down      Logs: docker compose logs -f"
+Write-Host "  Stop:  $DC compose down      Logs: $DC compose logs -f"

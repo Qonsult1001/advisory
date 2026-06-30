@@ -11,9 +11,12 @@ does not interfere with any development copy of Advisory on the same machine.
 
 ## 1. Prerequisites
 
-- **Docker** with Compose v2 (Docker Desktop on Windows/Mac, or Docker Engine + compose plugin on
-  Linux). Verify: `docker version` and `docker compose version`.
-- ~6 GB free disk and ~4 GB RAM available to Docker (SQL Server + Nexus are the heavy parts).
+- **A container engine — Docker _or_ Podman** (your choice), with Compose v2:
+  - Docker Desktop (Win/Mac) or Docker Engine + compose plugin (Linux) — `docker compose version`, **or**
+  - Podman with the compose plugin — `podman compose version`.
+  - The installer auto-detects which you have (prefers Docker if both are present). Every command in
+    this README works with either — substitute `podman` for `docker` if that's your engine.
+- ~6 GB free disk and ~4 GB RAM available to the engine (SQL Server + Nexus are the heavy parts).
 - Outbound internet on first run (to build images and let Nexus proxy the public registries).
 
 ---
@@ -38,6 +41,13 @@ does not interfere with any development copy of Advisory on the same machine.
 3. **Open the console** at `http://localhost:8088` (or your `CONSOLE_PORT`). On the splash, leave the
    SSO switch **off** and click **Continue** to verify the stack — then turn SSO on for production
    (§5).
+
+> **Optional scanners.** The PII redaction (privacy-filter) and AI-editor extension scanner
+> (vsix-scanner) are **off by default** to keep the rollout lean — the gate works fully without them.
+> To include them, run the installer with the scanners flag:
+> `./install.sh --scanners` (Linux/Mac) or `.\install.ps1 -Scanners` (Windows), or by hand
+> `docker compose --profile scanners up --build -d` (substitute `podman` if that's your engine).
+> Note: privacy-filter downloads a ~1 GB model on first run.
 
 ---
 
