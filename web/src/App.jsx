@@ -413,8 +413,6 @@ export default function App() {
                 <Ctl id="SEC-REACH-02" rule="Downgrade: a finding proven not-reachable does not block on its own">
                   <Switch on={policy.downgradeUnreachable} onChange={(v)=>set("downgradeUnreachable", v)} /></Ctl>
               </Table>
-              <SubHead>AI assistant — Groq (OpenAI-compatible)</SubHead>
-              <AiSettingsPanel />
             </Card>
           )}
 
@@ -1630,8 +1628,10 @@ function Sources({ sources, policy, set, setPolicy, save, saving }) {
       <tr style={s.tr}>
         <td style={s.td}><b>{src.label}</b>{custom && <Tag tone={C.info} >custom</Tag>}
           {!custom && SOURCE_INFO[src.key]?.reco && <Tag tone={C.allow}>recommended</Tag>}
-          <div style={{ color: C.sub, fontSize: 11, marginTop: 2 }}>{src.scope}</div>
-          {!custom && SOURCE_INFO[src.key] && <div style={{ color: C.sub, fontSize: 11.5, marginTop: 3, lineHeight: 1.45, maxWidth: 560 }}>{SOURCE_INFO[src.key].why}</div>}
+          {/* Prefer the fuller plain-English "why"; fall back to the short scope line for feeds without one. */}
+          {!custom && SOURCE_INFO[src.key]
+            ? <div style={{ color: C.sub, fontSize: 11.5, marginTop: 3, lineHeight: 1.45, maxWidth: 560 }}>{SOURCE_INFO[src.key].why}</div>
+            : <div style={{ color: C.sub, fontSize: 11, marginTop: 2 }}>{src.scope}</div>}
           {src.endpoint
             ? <div style={{ color: C.info, fontSize: 10.5, fontFamily: C.mono, marginTop: 2 }} title="Endpoint override (on-prem mirror)">↳ {src.endpoint} <span style={{ color: C.accentDim }}>· override</span></div>
             : src.defaultEndpoint && <div style={{ color: C.dim, fontSize: 10.5, fontFamily: C.mono, marginTop: 2 }} title="Built-in default endpoint">↳ {src.defaultEndpoint}</div>}
