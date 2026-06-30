@@ -97,7 +97,7 @@ public class PromotionBridgeTests
         };
         var bridge = new PromotionBridge(nexus, provider.GetRequiredService<IServiceScopeFactory>(),
             new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string,string?>{["NEXUS_POLL_SECONDS"]="1"}).Build(),
-            NullLogger<PromotionBridge>.Instance);
+            NullLogger<PromotionBridge>.Instance, new Advisory.Api.Nexus.BridgeResetSignal());
 
         using var cts = new CancellationTokenSource();
         var run = bridge.StartAsync(cts.Token);
@@ -119,7 +119,7 @@ public class PromotionBridgeTests
         };
         var bridge = new PromotionBridge(nexus, provider.GetRequiredService<IServiceScopeFactory>(),
             new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string,string?>{["NEXUS_POLL_SECONDS"]="1"}).Build(),
-            NullLogger<PromotionBridge>.Instance);
+            NullLogger<PromotionBridge>.Instance, new Advisory.Api.Nexus.BridgeResetSignal());
 
         using var cts = new CancellationTokenSource();
         await bridge.StartAsync(cts.Token);

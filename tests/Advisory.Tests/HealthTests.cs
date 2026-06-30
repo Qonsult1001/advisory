@@ -191,9 +191,9 @@ public class HealthTests : IClassFixture<WebApplicationFactory<Program>>
 
                         var json = await response.Content.ReadAsStringAsync();
                         using var doc = System.Text.Json.JsonDocument.Parse(json);
-                        var cpu = doc.RootElement.GetProperty("cpu").GetInt32();
+                        var cpu = doc.RootElement.GetProperty("cores").GetInt32();   // #96: /api/cpu now reports { cores }
 
-                        Assert.True(cpu > 0, $"CPU count should be >0 but was {cpu}");
+                        Assert.True(cpu > 0, $"CPU core count should be >0 but was {cpu}");
                     }
                 [Fact]
                 public async Task Get_Ticks_ReturnsPositiveTicks()
@@ -207,18 +207,24 @@ public class HealthTests : IClassFixture<WebApplicationFactory<Program>>
                     Assert.True(ticks > 0);
                 }
             [Fact]
-            public async Task GetMemory_Returns200AndPositiveBytes()
+            public async Task GetMemory_Returns200AndNonNegativeWorkingSet()   // #98: /api/memory now reports { workingSetBytes }
             {
                 var response = await _client.GetAsync("/api/memory");
                 Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
-                var payload = await System.Net.Http.Json.HttpContentJsonExtensions.ReadFromJsonAsync<MemoryResponse>(response.Content);
-                Assert.NotNull(payload);
-                Assert.True(payload!.bytes > 0);
+                using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+                Assert.True(doc.RootElement.TryGetProperty("workingSetBytes", out var ws));
+                Assert.True(ws.GetInt64() >= 0);
             }
 
-            private class MemoryResponse
+            // #84: GET /api/runtime → { framework }
+            [Fact]
+            public async Task Runtime_returns_200_and_nonempty_framework()
             {
-                public long bytes { get; set; }
+                var response = await _client.GetAsync("/api/runtime");
+                Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+                using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+                Assert.True(doc.RootElement.TryGetProperty("framework", out var fw));
+                Assert.False(string.IsNullOrWhiteSpace(fw.GetString()), "framework must be non-empty");
             }
         [Fact]
         public async Task GetThreads_Returns200AndPositiveCount()

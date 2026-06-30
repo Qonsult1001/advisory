@@ -153,13 +153,15 @@ app.MapGet("/api/health", () => Results.Ok(new { status = "ok", service = "Advis
 app.MapGet("/api/numcpu", () => new { numcpu = Environment.ProcessorCount }).AllowAnonymous();
 app.MapGet("/api/alloc2", () => new { alloc = GC.GetTotalAllocatedBytes(true) }).AllowAnonymous();
 app.MapGet("/api/is64bit", () => new { is64bit = Environment.Is64BitProcess }).AllowAnonymous();
-app.MapGet("/api/cpu", () => new { cpu = Environment.ProcessorCount }).AllowAnonymous();
+// Diagnostics (anonymous): runtime/cpu/memory. Field names match the documented contracts (#84/#96/#98).
+app.MapGet("/api/runtime", () => new { framework = System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription }).AllowAnonymous();
+app.MapGet("/api/cpu", () => new { cores = Environment.ProcessorCount }).AllowAnonymous();
 app.MapGet("/api/platform", () => new { platform = System.Runtime.InteropServices.RuntimeInformation.OSDescription }).AllowAnonymous();
 app.MapGet("/api/framework", () => new { framework = System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription }).AllowAnonymous();
 app.MapGet("/api/cores", () => new { cores = Environment.ProcessorCount }).AllowAnonymous();
 app.MapGet("/api/logical", () => new { logical = Environment.ProcessorCount }).AllowAnonymous();
 app.MapGet("/api/ticks", () => new { ticks = DateTime.UtcNow.Ticks }).AllowAnonymous();
-app.MapGet("/api/memory", () => new { bytes = System.Diagnostics.Process.GetCurrentProcess().WorkingSet64 }).AllowAnonymous();
+app.MapGet("/api/memory", () => new { workingSetBytes = System.Diagnostics.Process.GetCurrentProcess().WorkingSet64 }).AllowAnonymous();
 app.MapGet("/api/threads", () => new { threads = System.Diagnostics.Process.GetCurrentProcess().Threads.Count }).AllowAnonymous();
 app.MapGet("/api/health/live", () => Results.Ok(new { status = "ok" }))
    .AllowAnonymous();

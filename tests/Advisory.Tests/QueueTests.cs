@@ -62,7 +62,10 @@ public class QueueTests
         cts.Cancel();
 
         var depth = await q.DepthAsync(default);
-        Assert.Equal(0, depth.Pending);     // drained
-        Assert.True(depth.Processed >= 1);  // evaluated + acked
+        Assert.Equal(0, depth.Pending);                       // drained — nothing left pending
+        // The test has no live Nexus, so the quarantine fetch can't succeed. Per #159 the consumer no
+        // longer silently acks a failed fetch — it dead-letters it. Either way the message is drained
+        // and accounted for (processed OR dead-lettered), never silently lost.
+        Assert.True(depth.Processed + depth.DeadLettered >= 1);
     }
 }
