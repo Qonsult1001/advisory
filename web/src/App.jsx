@@ -160,20 +160,19 @@ function SplashLogin({ onContinue }) {
     window.location.assign(url);
   };
   const NAVY = "#16243a", GREEN = "#40be46", GREEN_DIM = "#2f9e36";
-  // Strong, demonstrable capabilities (the "✓ this build" column) scattered across the hero like art.
-  // top/left in %, rotation in deg, size scale — hand-placed for a funky, non-grid collage feel.
-  const CHIPS = [
-    { t: "✓ Multi-ecosystem CVE matching · OSV.dev", x: 8,  y: 14, r: -7,  s: 1.0 },
-    { t: "✓ Known-exploited gating · CISA KEV",       x: 46, y: 9,  r: 5,   s: 1.08 },
-    { t: "✓ Exploit-probability · EPSS",              x: 60, y: 26, r: -4,  s: 0.95 },
-    { t: "✓ Transitive tree · cycle-safe",            x: 14, y: 34, r: 6,   s: 0.92 },
-    { t: "✓ License policy",                          x: 50, y: 44, r: -8,  s: 0.9 },
-    { t: "✓ Pickle / model-weight opcode scan",       x: 6,  y: 54, r: 4,   s: 1.0 },
-    { t: "✓ Secret scanning in artifacts",            x: 44, y: 62, r: 7,   s: 0.94 },
-    { t: "✓ SBOM · CycloneDX",                        x: 16, y: 74, r: -5,  s: 0.9 },
-    { t: "✓ Policy-as-gate · SHA-256 signed",         x: 52, y: 80, r: 4,   s: 1.02 },
-    { t: "✓ Append-only audit ledger",                x: 8,  y: 88, r: 6,   s: 0.92 },
-    { t: "✓ Non-bypassable Nexus pre-download hook",  x: 38, y: 92, r: -6,  s: 0.96 },
+  // Demonstrable capabilities (the "✓ this build" column), shown as a clean, organised feature list.
+  const FEATURES = [
+    "Multi-ecosystem CVE matching — OSV.dev",
+    "Known-exploited gating — CISA KEV",
+    "Exploit-probability gating — EPSS",
+    "Transitive tree resolution — cycle-safe",
+    "License policy enforcement",
+    "Model-weight / pickle opcode scanning",
+    "Secret scanning in artifacts",
+    "SBOM generation — CycloneDX",
+    "Policy-as-gate — SHA-256 signed & versioned",
+    "Append-only, tamper-evident audit ledger",
+    "Non-bypassable Nexus pre-download enforcement",
   ];
   return (
     <div style={{ position: "fixed", inset: 0, background: "#fff", color: C.ink, fontFamily: C.sans,
@@ -221,29 +220,35 @@ function SplashLogin({ onContinue }) {
         </div>
       </div>
 
-      {/* RIGHT — green branded hero with scattered capability chips */}
+      {/* RIGHT — green branded hero with a clean headline + organised feature list */}
       <div className="splash-hero" style={{ flex: "1 1 58%", minWidth: 0, position: "relative", overflow: "hidden",
-        background: `radial-gradient(130% 120% at 22% 12%, #2f9e36 0%, ${GREEN_DIM} 26%, ${NAVY} 74%, #0f1929 100%)` }}>
-        {/* soft light streaks */}
-        <div style={{ position: "absolute", top: "-15%", left: "5%", width: 520, height: 760, transform: "rotate(20deg)",
-          background: "linear-gradient(90deg, rgba(255,255,255,.14) 0%, transparent 60%)", filter: "blur(40px)", pointerEvents: "none" }} />
-        <div style={{ position: "absolute", bottom: "-12%", right: "-6%", width: 560, height: 560,
-          background: `radial-gradient(circle, ${GREEN}50 0%, transparent 60%)`, filter: "blur(30px)", pointerEvents: "none" }} />
+        background: `linear-gradient(160deg, ${GREEN_DIM} 0%, #248a2c 34%, ${NAVY} 100%)` }}>
+        {/* subtle depth glow */}
+        <div style={{ position: "absolute", top: "-18%", left: "-10%", width: 620, height: 620,
+          background: "radial-gradient(circle, rgba(255,255,255,.12) 0%, transparent 60%)", filter: "blur(40px)", pointerEvents: "none" }} />
 
-        {/* headline */}
-        <div style={{ position: "absolute", top: "9%", left: "clamp(40px,5vw,72px)", right: "8%", zIndex: 2 }}>
-          <div style={{ fontSize: "clamp(34px,4vw,56px)", fontWeight: 800, lineHeight: 1.05, letterSpacing: -1.4, color: "#fff" }}>
-            <span style={{ fontStyle: "italic", fontWeight: 700, color: "#cdeccd" }}>Secure</span> every package,<br />before it ships.
+        <div style={{ position: "relative", zIndex: 2, height: "100%", display: "flex", flexDirection: "column",
+          justifyContent: "center", padding: "0 clamp(48px, 6vw, 88px)" }}>
+          {/* headline */}
+          <div style={{ fontSize: "clamp(34px, 3.6vw, 52px)", fontWeight: 800, lineHeight: 1.08, letterSpacing: -1.2, color: "#fff", marginBottom: 14 }}>
+            Secure every package,<br />before it ships.
+          </div>
+          <div style={{ fontSize: 15, color: "rgba(255,255,255,.72)", lineHeight: 1.6, maxWidth: 440, marginBottom: 36 }}>
+            Allow, block, or quarantine dependencies across every major ecosystem — with live vulnerability,
+            exploit, and licence intelligence on each one.
+          </div>
+
+          {/* organised feature list */}
+          <div style={{ display: "grid", gap: 13, maxWidth: 460 }}>
+            {FEATURES.map((f, i) => (
+              <div key={i} style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                <span style={{ flexShrink: 0, width: 20, height: 20, borderRadius: "50%", background: "rgba(255,255,255,.16)",
+                  border: "1px solid rgba(255,255,255,.3)", display: "grid", placeItems: "center", color: "#fff", fontSize: 11, fontWeight: 700 }}>✓</span>
+                <span style={{ fontSize: 13.5, color: "rgba(255,255,255,.92)", fontWeight: 500 }}>{f}</span>
+              </div>
+            ))}
           </div>
         </div>
-
-        {/* scattered capability chips — funky collage */}
-        {CHIPS.map((c, i) => (
-          <div key={i} style={{ position: "absolute", left: `${c.x}%`, top: `${c.y}%`, transform: `rotate(${c.r}deg) scale(${c.s})`,
-            background: "rgba(255,255,255,.10)", border: "1px solid rgba(255,255,255,.22)", backdropFilter: "blur(6px)",
-            color: "#eafaea", fontSize: 12.5, fontWeight: 600, padding: "8px 13px", borderRadius: 999, whiteSpace: "nowrap",
-            boxShadow: "0 6px 18px rgba(0,0,0,.18)", pointerEvents: "none" }}>{c.t}</div>
-        ))}
       </div>
     </div>
   );
