@@ -330,7 +330,8 @@ export default function App() {
               <SubHead>LEG-LIC / SEC-OPR — Licensing & project health</SubHead>
               <Table cols={["Control", "Rule", "Setting"]}>
                 <Ctl id="LEG-LIC-01" rule="Prohibited licences" highlighted={highlightedCtl === "LEG-LIC-01"}
-                  help="Some open-source licences (e.g. GPL-3.0) carry legal obligations a company may not want in its codebase. Any package published under a licence listed here is blocked. Add the SPDX licence IDs you can't accept.">
+                  help="Some open-source licences (e.g. GPL-3.0) carry legal obligations a company may not want in its codebase. Any package published under a licence listed here is blocked. Add the SPDX licence IDs you can't accept."
+                  reco={<RecoBadge ctlId="LEG-LIC-01" current={policy.licenseBlocklist} onUse={set} />}>
                   <Chips tags={policy.licenseBlocklist} onChange={(v) => set("licenseBlocklist", v)} /></Ctl>
                 <Ctl id="SEC-OPR-01" rule="On High operational risk (EOL / stale / unhealthy project)"
                   help="Flags packages whose project is end-of-life, unmaintained, or abandoned — risky to depend on even with no known CVE. Choose what happens: ignore it (Disabled), let it through but record a warning (Notify), or stop it (Block)."
@@ -1263,37 +1264,62 @@ function ControlsAiBuilder({ policy, set, revealControl }) {
 }
 // Industry-grounded recommendations for every control — drives both the inline "Recommended" badge
 // and the Guided setup wizard. `field` is the policy key, `value` the recommended setting, `why` the
-// one-line justification (sources researched: PCI-DSS/FIRST for CVSS+EPSS, CISA KEV, OpenSSF Scorecard).
+// one-line justification, `src` the published source the value comes from (shown so a recommendation
+// is transparently research-backed, not a magic number). `kind:"list"` controls hold a recommended SET.
 const CONTROL_RECO = {
   "SEC-VULN-01": { field: "cvssBlockThreshold", value: 7, label: "Block CVSS ≥ 7",
-    why: "7.0 is the industry 'high-severity' line — PCI-DSS and most teams block at or above it." },
+    why: "7.0 is the industry 'high-severity' line — PCI-DSS and most teams block at or above it.",
+    src: "PCI-DSS v4 / FIRST CVSS", url: "https://www.first.org/cvss/v2/cvss-based-patch-policy.pdf" },
   "SEC-VULN-02": { field: "blockKnownExploited", value: true, label: "Turn on",
-    why: "These flaws are being exploited in the wild right now (CISA KEV) — never let them through." },
+    why: "These flaws are being exploited in the wild right now (CISA KEV) — never let them through.",
+    src: "CISA KEV", url: "https://www.cisa.gov/known-exploited-vulnerabilities-catalog" },
   "SEC-VULN-03": { field: "epssBlockThreshold", value: 0.1, label: "Block EPSS ≥ 0.1",
-    why: "A 10% exploit-probability cut catches ~63% of exploited flaws for ~3% of the effort (FIRST EPSS)." },
+    why: "A 10% exploit-probability cut catches ~63% of exploited flaws for ~3% of the effort (FIRST EPSS).",
+    src: "FIRST EPSS", url: "https://www.first.org/epss/model" },
   "SEC-SC-01": { field: "minPackageAgeDays", value: 14, label: "14 days",
-    why: "A two-week cooling-off lets malicious or typosquatted new releases get caught and pulled first." },
+    why: "A two-week cooling-off lets malicious or typosquatted new releases get caught and pulled first.",
+    src: "OpenSSF supply-chain guidance" },
   "SEC-SC-02": { field: "maxTreeDepth", value: 8, label: "8 levels",
     why: "8 levels deep covers almost every real dependency graph without slowing scans." },
   "SEC-OSSF-01": { field: "minScorecardScore", value: 5, label: "Score ≥ 5",
-    why: "On OpenSSF Scorecard's 0–10 scale, below 5 signals high-risk project practices." },
+    why: "On OpenSSF Scorecard's 0–10 scale, below 5 signals high-risk project practices.",
+    src: "OpenSSF Scorecard", url: "https://www.scorecard.dev/" },
   "SEC-OPR-01": { field: "operationalRiskAction", value: "Notify", label: "Notify",
     why: "Warn on end-of-life / unmaintained projects without hard-blocking work that may still be fine." },
   "SEC-SECRET-01": { field: "enableContentScan", value: true, label: "Turn on",
     why: "Catches hard-coded secrets and insecure infrastructure settings inside the package files." },
+  // List-type control: a recommended SET of licences to block, not a single value.
+  "LEG-LIC-01": { field: "licenseBlocklist", kind: "list", value: ["AGPL-3.0", "GPL-3.0", "GPL-2.0"], label: "Block AGPL-3.0, GPL-3.0, GPL-2.0",
+    why: "Strong-copyleft licences carry 'viral' obligations that can force your own code open. Google and most enterprises block AGPL/GPL outright; permissive licences (MIT, Apache, BSD) are unaffected.",
+    src: "Google Open Source / Wiz copyleft guidance", url: "https://opensource.google/documentation/reference/using/agpl-policy" },
 };
 // Inline "⭐ Recommended: X — why  [Use]" line shown under a control. onUse applies the value.
+// Handles both single-value controls and kind:"list" controls (recommended SET, e.g. licences).
 function RecoBadge({ ctlId, current, onUse }) {
   const r = CONTROL_RECO[ctlId];
   if (!r) return null;
-  const atReco = current === r.value;
+  let atReco, applyValue;
+  if (r.kind === "list") {
+    const have = new Set((current || []).map((x) => String(x).toUpperCase()));
+    const missing = r.value.filter((v) => !have.has(v.toUpperCase()));
+    atReco = missing.length === 0;
+    // Add the missing recommended licences without removing any the user already chose.
+    applyValue = [...(current || []), ...missing];
+  } else {
+    atReco = current === r.value;
+    applyValue = r.value;
+  }
   return (
     <div style={{ fontSize: 11, marginTop: 6, display: "flex", alignItems: "baseline", gap: 6, flexWrap: "wrap" }}>
       <span style={{ color: atReco ? C.accentDim : C.brand, fontWeight: 600 }}>
         {atReco ? "✓ At recommended" : `⭐ Recommended: ${r.label}`}
       </span>
-      <span style={{ color: C.sub, maxWidth: 540 }}>— {r.why}</span>
-      {!atReco && <button onClick={() => onUse(r.field, r.value)}
+      <span style={{ color: C.sub, maxWidth: 540 }}>— {r.why}
+        {r.src && <> <span style={{ color: C.dim }}>(source: {r.url
+          ? <a href={r.url} target="_blank" rel="noreferrer" style={{ color: C.accent }}>{r.src}</a>
+          : r.src})</span></>}
+      </span>
+      {!atReco && <button onClick={() => onUse(r.field, applyValue)}
         style={{ fontSize: 10.5, padding: "2px 9px", borderRadius: 12, cursor: "pointer",
           border: `1px solid ${C.accent}`, background: "rgba(64,190,70,.08)", color: C.accentDim, fontWeight: 600 }}>Use</button>}
     </div>
@@ -1666,19 +1692,30 @@ function Sources({ sources, policy, set, setPolicy, save, saving }) {
         </div>
       ))}
 
-      {/* Preset profiles */}
+      {/* Preset profiles — "Recommended" is the primary default. */}
       <div style={{ marginBottom: 16 }}>
         <div style={{ fontSize: 13.5, fontWeight: 700, color: C.text, marginBottom: 4 }}>Choose which feeds to use</div>
-        <div style={{ fontSize: 12, color: C.sub, marginBottom: 10 }}>One click turns a sensible set of feeds on. Credentialed feeds only activate once their key is set.</div>
+        <div style={{ fontSize: 12, color: C.sub, marginBottom: 10 }}>
+          Each option turns a different set of feeds on in one click. <b>Recommended is the best choice for most teams</b> —
+          start there. Minimal is a bare-bones fallback; Everything also tries the paid/credentialed feeds.
+          Credentialed feeds only activate once their key is set.
+        </div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12 }}>
           {Object.keys(SOURCE_PRESETS).map((k) => {
             const on = activePreset === k;
+            const primary = k === "Recommended"; // the default we steer novices to
+            const count = SOURCE_PRESETS[k].filter((x) => availableKeys.includes(x)).length;
             return (
               <button key={k} onClick={() => applyPreset(k)}
-                style={{ textAlign: "left", padding: 14, borderRadius: 8, cursor: "pointer",
-                  border: `1.5px solid ${on ? C.accent : C.line}`, background: on ? "rgba(64,190,70,.08)" : C.surface }}>
+                style={{ position: "relative", textAlign: "left", padding: 14, borderRadius: 8, cursor: "pointer",
+                  border: `${primary ? 2 : 1.5}px solid ${on ? C.accent : primary ? C.accent : C.line}`,
+                  background: on ? "rgba(64,190,70,.08)" : primary ? "rgba(64,190,70,.03)" : C.surface }}>
+                {primary && <span style={{ position: "absolute", top: -9, left: 12, fontSize: 9.5, fontWeight: 700, letterSpacing: 0.4,
+                  background: C.accent, color: "#fff", padding: "2px 8px", borderRadius: 10 }}>★ RECOMMENDED</span>}
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-                  <span style={{ fontSize: 13, fontWeight: 700, color: on ? C.accentDim : C.text }}>{k}</span>
+                  <span style={{ fontSize: 13, fontWeight: 700, color: on || primary ? C.accentDim : C.text }}>
+                    {k} <span style={{ fontSize: 10.5, fontWeight: 500, color: C.sub }}>· {count} feed{count === 1 ? "" : "s"}</span>
+                  </span>
                   {on && <span style={{ fontSize: 10.5, fontWeight: 700, color: C.accentDim }}>✓ ACTIVE</span>}
                 </div>
                 <div style={{ fontSize: 11.5, color: C.sub, lineHeight: 1.5 }}>{SOURCE_PRESET_BLURB[k]}</div>
