@@ -141,6 +141,69 @@ const SOURCE_HINT = {
   socket: "Licensed behavioural feed — activates when SOCKET_API_KEY is set.",
 };
 
+// Splash login page — the front door to the console. A single SSO switch controls the button:
+//   SSO ON  → "Sign in with SSO" (redirects to the IdP; the API's JWT path takes over)
+//   SSO OFF → "Continue" (testing shortcut — same splash, skips auth and goes straight in)
+// The switch reads from build-time __SSO_ENABLED__ (Vite define), falling back to a localStorage
+// override (advisory-sso) so you can flip it at runtime for testing without a rebuild.
+const SSO_ENABLED_DEFAULT = (typeof __SSO_ENABLED__ !== "undefined") ? !!__SSO_ENABLED__ : false;
+function SplashLogin({ onContinue }) {
+  const [sso, setSso] = useState(() => {
+    try { const o = localStorage.getItem("advisory-sso"); return o === null ? SSO_ENABLED_DEFAULT : o === "1"; }
+    catch { return SSO_ENABLED_DEFAULT; }
+  });
+  const setSsoPersist = (v) => { try { localStorage.setItem("advisory-sso", v ? "1" : "0"); } catch {} setSso(v); };
+  const ssoLogin = () => {
+    // Production: hand off to the IdP. Wired to /api/auth/login if present; otherwise informs the tester.
+    const url = `${API}/auth/login?returnTo=${encodeURIComponent(window.location.href)}`;
+    // Best-effort redirect; if the endpoint isn't configured yet, fall through to continue so testing isn't blocked.
+    window.location.assign(url);
+  };
+  return (
+    <div style={{ minHeight: "100vh", background: C.bg, color: C.ink, fontFamily: C.sans, display: "grid", placeItems: "center", position: "relative" }}>
+      <style>{FONTS}</style>
+      {/* subtle brand glow */}
+      <div style={{ position: "absolute", top: "-20%", left: "50%", transform: "translateX(-50%)", width: 600, height: 600,
+        background: `radial-gradient(circle, ${C.accent}22 0%, transparent 70%)`, pointerEvents: "none" }} />
+      <div style={{ width: 380, maxWidth: "90vw", background: C.surface, border: `1px solid ${C.line}`, borderRadius: 16,
+        boxShadow: "0 20px 60px rgba(15,39,72,.18)", padding: "36px 32px", textAlign: "center", position: "relative" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10, marginBottom: 6 }}>
+          <div style={s.logo}>⊻</div>
+          <span style={{ fontWeight: 800, fontSize: 22 }}><span style={{ color: C.ink }}>Advi</span><span style={{ color: "#40be46" }}>sory</span></span>
+        </div>
+        <div style={{ fontSize: 12.5, color: C.sub, marginBottom: 28 }}>Software supply-chain firewall</div>
+
+        {sso ? (
+          <>
+            <button onClick={ssoLogin} style={{ width: "100%", padding: "13px", borderRadius: 8, border: "none", cursor: "pointer",
+              background: C.accent, color: "#fff", fontSize: 14, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+              <span>🔐</span> Sign in with SSO
+            </button>
+            <div style={{ fontSize: 11, color: C.sub, marginTop: 12, lineHeight: 1.5 }}>
+              You'll be redirected to your organisation's identity provider.
+            </div>
+          </>
+        ) : (
+          <>
+            <button onClick={onContinue} style={{ width: "100%", padding: "13px", borderRadius: 8, border: "none", cursor: "pointer",
+              background: C.accent, color: "#fff", fontSize: 14, fontWeight: 700 }}>
+              Continue →
+            </button>
+            <div style={{ fontSize: 11, color: C.warn, marginTop: 12, lineHeight: 1.5 }}>
+              ⚠ Testing mode — SSO is off, anyone can continue without signing in.
+            </div>
+          </>
+        )}
+
+        {/* the on/off switch */}
+        <div style={{ marginTop: 26, paddingTop: 18, borderTop: `1px solid ${C.line}`, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <span style={{ fontSize: 12, color: C.sub }}>Require SSO sign-in</span>
+          <Switch on={sso} onChange={setSsoPersist} />
+        </div>
+      </div>
+    </div>
+  );
+}
 export default function App() {
   const [policy, setPolicy] = useState(null);
   const [sig, setSig] = useState("");
@@ -215,6 +278,12 @@ export default function App() {
   };
   const set = (k, v) => setPolicy((p) => ({ ...p, [k]: v }));
   const setW = (k, v) => setPolicy((p) => ({ ...p, weights: { ...p.weights, [k]: v } }));
+
+  // Splash login gate. Once "signed in" (SSO or the testing Continue), we remember it for the session
+  // so a refresh doesn't bounce back to the splash.
+  const [authed, setAuthed] = useState(() => { try { return sessionStorage.getItem("advisory-authed") === "1"; } catch { return false; } });
+  const signIn = () => { try { sessionStorage.setItem("advisory-authed", "1"); } catch {} setAuthed(true); };
+  if (!authed) return <SplashLogin onContinue={signIn} />;
 
   if (!policy) return (
     <div style={{ minHeight: "100vh", background: C.bg, color: C.sub, fontFamily: C.sans,
