@@ -7132,8 +7132,9 @@ function LedgerRow({ e }) {
                 {e.researchRationale
                   ? <pre style={s.rationale}>{e.researchRationale}</pre>
                   : <p style={{ margin: 0, color: C.sub, fontSize: 12, lineHeight: 1.5 }}>
-                      No written rationale on this entry. Enable <b>SEC-AUD-03</b> (Intelligence sources tab) to
-                      record an explanation per decision; set <code style={s.code}>ANTHROPIC_API_KEY</code> for AI-written prose.</p>}
+                      No written rationale on this entry (it was recorded before the research agent was enabled).
+                      Turn on <b>SEC-AUD-03</b> under <b>Intelligence sources</b> and the Groq AI assistant writes a
+                      plain-English explanation for every new decision. Older entries stay as-is.</p>}
               </Drawer>
               <Drawer label="Triggered controls">
                 <span style={{ fontFamily: C.mono, fontSize: 11 }}>
