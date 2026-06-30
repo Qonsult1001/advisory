@@ -173,6 +173,17 @@ public class NexusClient : INexusClient
                         continue;
                     }
                 }
+                // Cargo on this Nexus version stores raw-HTTP fetches with the request PATH as the name
+                // (the maintained cargo plugin is archived, so proper crate indexing isn't available).
+                // Normalise "/api/v1/crates/<crate>/<ver>/download" → name=<crate>, version=<ver>; drop the
+                // bare metadata component ("/api/v1/crates/<crate>" with no version) so it isn't gated twice.
+                if (eco == Ecosystem.Cargo && name.StartsWith("/api/v1/crates/", StringComparison.OrdinalIgnoreCase))
+                {
+                    var m = System.Text.RegularExpressions.Regex.Match(name, @"^/api/v1/crates/(?<n>[^/]+)/(?<v>[^/]+)/download$");
+                    if (!m.Success) continue; // bare metadata blob — not a real artifact, skip
+                    name = m.Groups["n"].Value;
+                    version = m.Groups["v"].Value;
+                }
                 items.Add(new NexusComponent(comp.GetProperty("id").GetString() ?? "",
                     eco, name, version, fileName, sha, dl ?? ""));
             }
@@ -286,13 +297,21 @@ public class NexusClient : INexusClient
         // Each registry caches a component when its artifact path is requested through the proxy. We
         // request the package metadata/index, which is enough for Nexus to index it into quarantine.
         // (For wheels/tarballs, fetching the index is what makes the component appear in the repo.)
+        var nameLower = name.ToLowerInvariant();
         string url = eco switch
         {
-            Ecosystem.PyPI    => $"{repoBase}/simple/{Uri.EscapeDataString(name.ToLowerInvariant())}/",
+            Ecosystem.PyPI    => $"{repoBase}/simple/{Uri.EscapeDataString(nameLower)}/",
             Ecosystem.npm     => $"{repoBase}/{Uri.EscapeDataString(name)}",
-            Ecosystem.NuGet   => $"{repoBase}/v3/registration/{Uri.EscapeDataString(name.ToLowerInvariant())}/index.json",
-            Ecosystem.Cargo   => $"{repoBase}/api/v1/crates/{Uri.EscapeDataString(name)}",
-            Ecosystem.RubyGems=> $"{repoBase}/api/v1/gems/{Uri.EscapeDataString(name)}.json",
+            // NuGet flat-container ("PackageBaseAddress") on a Nexus V3 proxy lives at v3/content/0/.
+            // The package's index.json lists its available versions; the artifact is the .nupkg below it.
+            Ecosystem.NuGet   => $"{repoBase}/v3/content/0/{Uri.EscapeDataString(nameLower)}/index.json",
+            // Cargo: when the version is known, hit the .crate download directly (the index/metadata GET
+            // would otherwise be cached as a junk component). Only fall back to metadata to find the latest.
+            Ecosystem.Cargo   => string.IsNullOrEmpty(version)
+                ? $"{repoBase}/api/v1/crates/{Uri.EscapeDataString(name)}"
+                : $"{repoBase}/api/v1/crates/{Uri.EscapeDataString(name)}/{Uri.EscapeDataString(version)}/download",
+            // RubyGems: the .gem download is served directly at gems/<name>-<ver>.gem — no metadata step.
+            Ecosystem.RubyGems=> $"{repoBase}/gems/{Uri.EscapeDataString(name)}-{Uri.EscapeDataString(version)}.gem",
             Ecosystem.Composer=> $"{repoBase}/p2/{Uri.EscapeDataString(name)}.json",
             Ecosystem.Maven   => $"{repoBase}/{name.Replace('.', '/').Replace(':', '/')}/",
             _                 => $"{repoBase}/{Uri.EscapeDataString(name)}",
@@ -357,35 +376,35 @@ public class NexusClient : INexusClient
                 }
                 case Ecosystem.NuGet:
                 {
-                    // registration index → catalogEntry.packageContent is the .nupkg.
+                    // Flat-container index lists "versions"; the artifact is v3/content/0/<id>/<ver>/<id>.<ver>.nupkg.
+                    var nameLower = name.ToLowerInvariant();
                     using var doc = System.Text.Json.JsonDocument.Parse(body);
-                    foreach (var item in EnumDeep(doc.RootElement, "packageContent"))
+                    string? ver = null;
+                    if (doc.RootElement.TryGetProperty("versions", out var vers) && vers.ValueKind == System.Text.Json.JsonValueKind.Array)
                     {
-                        var content = item.GetString();
-                        if (string.IsNullOrEmpty(content)) continue;
-                        if (string.IsNullOrEmpty(version) || content.Contains(version, StringComparison.OrdinalIgnoreCase))
-                            return ReRoot(repoBase, content);
+                        var list = vers.EnumerateArray().Select(e => e.GetString()).Where(s => s != null).ToList();
+                        ver = (!string.IsNullOrEmpty(version) && list.Contains(version)) ? version : list.LastOrDefault();
                     }
-                    return null;
+                    if (string.IsNullOrEmpty(ver)) return null;
+                    var verLower = ver.ToLowerInvariant();
+                    return $"{repoBase}/v3/content/0/{nameLower}/{verLower}/{nameLower}.{verLower}.nupkg";
                 }
                 case Ecosystem.RubyGems:
-                {
-                    // gem JSON: gem_uri is the .gem file.
-                    using var doc = System.Text.Json.JsonDocument.Parse(body);
-                    if (doc.RootElement.TryGetProperty("gem_uri", out var gu)) return ReRoot(repoBase, gu.GetString());
+                    // The index URL IS the .gem download — the first fetch already cached it; nothing more to pull.
                     return null;
-                }
                 case Ecosystem.Cargo:
-                {
-                    // crate metadata: build the conventional download path /api/v1/crates/<name>/<ver>/download.
-                    var ver = version;
-                    if (string.IsNullOrEmpty(ver))
+                    // With a known version we already fetched the .crate directly (index URL was the artifact).
+                    // Only when version was empty did we fetch metadata — resolve max_version's download here.
+                    if (!string.IsNullOrEmpty(version)) return null;
+                    using (var doc = System.Text.Json.JsonDocument.Parse(body))
                     {
-                        using var doc = System.Text.Json.JsonDocument.Parse(body);
-                        if (doc.RootElement.TryGetProperty("crate", out var cr) && cr.TryGetProperty("max_version", out var mv)) ver = mv.GetString();
+                        if (doc.RootElement.TryGetProperty("crate", out var cr) && cr.TryGetProperty("max_version", out var mv))
+                        {
+                            var ver = mv.GetString();
+                            if (!string.IsNullOrEmpty(ver)) return $"{repoBase}/api/v1/crates/{Uri.EscapeDataString(name)}/{Uri.EscapeDataString(ver)}/download";
+                        }
                     }
-                    return string.IsNullOrEmpty(ver) ? null : $"{repoBase}/api/v1/crates/{Uri.EscapeDataString(name)}/{Uri.EscapeDataString(ver)}/download";
-                }
+                    return null;
                 case Ecosystem.Composer:
                 {
                     // p2 metadata: packages[name][].dist.url is the zip.
