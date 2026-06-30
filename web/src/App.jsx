@@ -277,9 +277,11 @@ export default function App() {
               <PolicyPresets policy={policy} setPolicy={setPolicy} />
               <ControlsAiBuilder policy={policy} set={set} revealControl={revealControl} />
               <button onClick={() => setShowAdvancedControls((x) => !x)}
-                style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", textAlign: "left", cursor: "pointer",
+                style={{ display: "flex", alignItems: "baseline", gap: 10, width: "100%", textAlign: "left", cursor: "pointer",
                   background: "none", border: "none", borderTop: `1px solid ${C.line}`, padding: "14px 0 4px", marginTop: 4 }}>
-                <span style={{ fontSize: 13, fontWeight: 700, color: C.text }}>{showAdvancedControls ? "⌃" : "⌄"} Advanced settings</span>
+                <span style={{ fontSize: 10, color: C.sub, width: 12, flexShrink: 0, transform: showAdvancedControls ? "rotate(90deg)" : "none",
+                  transition: "transform .15s", display: "inline-block", lineHeight: 1 }}>▶</span>
+                <span style={{ fontSize: 13, fontWeight: 700, color: C.text }}>Advanced settings</span>
                 <span style={{ fontSize: 12, color: C.sub }}>every individual control, with the standard reference codes (the signed audit artifact)</span>
               </button>
               {showAdvancedControls && (<>
