@@ -154,6 +154,7 @@ export default function App() {
   const [decisionFilter, setDecisionFilter] = useState(null); // null = all; else "Block"|"Allow"|"Quarantine"
   const [showAdvancedControls, setShowAdvancedControls] = useState(false); // raw SEC-* table collapsed by default
   const [highlightedCtl, setHighlightedCtl] = useState(null); // SEC-* id to flash when "see it" is clicked
+  const [guidedOpen, setGuidedOpen] = useState(false); // guided-setup wizard modal
   // Open Advanced settings, scroll to the named control, and flash it — used by the AI builder's "see it" links.
   const revealControl = (ctlId) => {
     setShowAdvancedControls(true);
@@ -269,11 +270,17 @@ export default function App() {
           )}
 
           {tab === "controls" && (<>
+            {guidedOpen && <GuidedSetup policy={policy} set={set} onClose={() => setGuidedOpen(false)} />}
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
               <div style={{ fontSize: 13, color: C.sub }}>Commit increments the version, re-signs, and writes to the ledger.</div>
-              <button onClick={save} disabled={saving} style={s.save}>{saving ? "Signing…" : "Commit & sign policy"}</button>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button onClick={() => setGuidedOpen(true)}
+                  style={{ background: C.surface, color: C.accentDim, border: `1px solid ${C.accent}`, padding: "11px 12px", borderRadius: 4,
+                    cursor: "pointer", fontSize: 13, fontWeight: 600, marginBottom: 8 }}>✦ Guided setup</button>
+                <button onClick={save} disabled={saving} style={s.save}>{saving ? "Signing…" : "Commit & sign policy"}</button>
+              </div>
             </div>
-            <Card title="Policy controls" desc="Set what the firewall allows or blocks. Start with a profile or describe it in plain English — then fine-tune the individual controls under Advanced settings if you want. Nothing takes effect until you Commit & sign.">
+            <Card title="Policy controls" desc="Set what the firewall allows or blocks. New here? Click Guided setup for a step-by-step walkthrough. Or start with a profile, describe it in plain English, or fine-tune individual controls under Advanced settings. Nothing takes effect until you Commit & sign.">
               <PolicyPresets policy={policy} setPolicy={setPolicy} />
               <ControlsAiBuilder policy={policy} set={set} revealControl={revealControl} />
               <button onClick={() => setShowAdvancedControls((x) => !x)}
@@ -288,29 +295,35 @@ export default function App() {
               <SubHead>SEC-VULN — Known vulnerabilities</SubHead>
               <Table cols={["Control", "Rule", "Setting"]}>
                 <Ctl id="SEC-VULN-01" rule="Block when CVSS base score at or above" highlighted={highlightedCtl === "SEC-VULN-01"}
-                  help="Every known security flaw (CVE) has a severity score from 0 to 10 (CVSS). A package is blocked if its worst CVE scores at or above this number. 8 catches high + critical flaws; lower it to be stricter, raise it to allow more through.">
+                  help="Every known security flaw (CVE) has a severity score from 0 to 10 (CVSS). A package is blocked if its worst CVE scores at or above this number. 8 catches high + critical flaws; lower it to be stricter, raise it to allow more through."
+                  reco={<RecoBadge ctlId="SEC-VULN-01" current={policy.cvssBlockThreshold} onUse={set} />}>
                   <Stepper value={policy.cvssBlockThreshold} step={0.5} min={0} max={10}
                     onChange={(v) => set("cvssBlockThreshold", v)} unit="/ 10" /></Ctl>
                 <Ctl id="SEC-VULN-02" rule="Block components on the known-exploited catalogue" highlighted={highlightedCtl === "SEC-VULN-02"}
-                  help="CISA publishes a list of vulnerabilities that attackers are actively exploiting in the wild right now (the KEV catalogue). When on, any package with a flaw on that list is blocked outright, regardless of its CVSS score.">
+                  help="CISA publishes a list of vulnerabilities that attackers are actively exploiting in the wild right now (the KEV catalogue). When on, any package with a flaw on that list is blocked outright, regardless of its CVSS score."
+                  reco={<RecoBadge ctlId="SEC-VULN-02" current={policy.blockKnownExploited} onUse={set} />}>
                   <Switch on={policy.blockKnownExploited} onChange={(v) => set("blockKnownExploited", v)} /></Ctl>
                 <Ctl id="SEC-VULN-03" rule="Block when exploit probability (EPSS) at or above"
-                  help="EPSS estimates the probability (0 to 1) that a flaw will be exploited in the next 30 days. Block a package if any of its flaws is this likely or likelier to be exploited. 0.5 = a coin-flip chance; lower is stricter.">
+                  help="EPSS estimates the probability (0 to 1) that a flaw will be exploited in the next 30 days. Block a package if any of its flaws is this likely or likelier to be exploited. 0.5 = a coin-flip chance; lower is stricter."
+                  reco={<RecoBadge ctlId="SEC-VULN-03" current={policy.epssBlockThreshold} onUse={set} />}>
                   <Stepper value={policy.epssBlockThreshold} step={0.05} min={0} max={1}
                     onChange={(v) => set("epssBlockThreshold", v)} unit="prob" /></Ctl>
               </Table>
               <SubHead>SEC-SC — Supply-chain hygiene</SubHead>
               <Table cols={["Control", "Rule", "Setting"]}>
                 <Ctl id="SEC-SC-01" rule="Minimum published age before promotion"
-                  help="Brand-new releases are the favourite vehicle for malicious or typosquatted packages. A package must have been public for at least this many days before it can be promoted to the approved repo — a cooling-off window that lets bad releases get caught and pulled first.">
+                  help="Brand-new releases are the favourite vehicle for malicious or typosquatted packages. A package must have been public for at least this many days before it can be promoted to the approved repo — a cooling-off window that lets bad releases get caught and pulled first."
+                  reco={<RecoBadge ctlId="SEC-SC-01" current={policy.minPackageAgeDays} onUse={set} />}>
                   <Stepper value={policy.minPackageAgeDays} step={1} min={0} max={90}
                     onChange={(v) => set("minPackageAgeDays", v)} unit="days" /></Ctl>
                 <Ctl id="SEC-SC-02" rule="Maximum transitive resolution depth"
-                  help="Packages depend on other packages, which depend on others, and so on. This caps how many levels deep the firewall follows that dependency tree when scanning. Higher = more thorough but slower; 8 levels covers almost every real project.">
+                  help="Packages depend on other packages, which depend on others, and so on. This caps how many levels deep the firewall follows that dependency tree when scanning. Higher = more thorough but slower; 8 levels covers almost every real project."
+                  reco={<RecoBadge ctlId="SEC-SC-02" current={policy.maxTreeDepth} onUse={set} />}>
                   <Stepper value={policy.maxTreeDepth} step={1} min={1} max={20}
                     onChange={(v) => set("maxTreeDepth", v)} unit="levels" /></Ctl>
                 <Ctl id="SEC-OSSF-01" rule="Block when OpenSSF Scorecard score below (0 = off)"
-                  help="OpenSSF Scorecard rates a project's security practices (code review, signed releases, maintenance) from 0 to 10. Block packages whose project scores below this. Leave at 0 to turn the check off.">
+                  help="OpenSSF Scorecard rates a project's security practices (code review, signed releases, maintenance) from 0 to 10. Block packages whose project scores below this. Leave at 0 to turn the check off."
+                  reco={<RecoBadge ctlId="SEC-OSSF-01" current={policy.minScorecardScore ?? 0} onUse={set} />}>
                   <Stepper value={policy.minScorecardScore ?? 0} step={0.5} min={0} max={10}
                     onChange={(v) => set("minScorecardScore", v)} unit="/ 10" /></Ctl>
               </Table>
@@ -320,7 +333,8 @@ export default function App() {
                   help="Some open-source licences (e.g. GPL-3.0) carry legal obligations a company may not want in its codebase. Any package published under a licence listed here is blocked. Add the SPDX licence IDs you can't accept.">
                   <Chips tags={policy.licenseBlocklist} onChange={(v) => set("licenseBlocklist", v)} /></Ctl>
                 <Ctl id="SEC-OPR-01" rule="On High operational risk (EOL / stale / unhealthy project)"
-                  help="Flags packages whose project is end-of-life, unmaintained, or abandoned — risky to depend on even with no known CVE. Choose what happens: ignore it (Disabled), let it through but record a warning (Notify), or stop it (Block).">
+                  help="Flags packages whose project is end-of-life, unmaintained, or abandoned — risky to depend on even with no known CVE. Choose what happens: ignore it (Disabled), let it through but record a warning (Notify), or stop it (Block)."
+                  reco={<RecoBadge ctlId="SEC-OPR-01" current={policy.operationalRiskAction} onUse={set} />}>
                   <div style={{ display: "flex", gap: 6 }}>
                     {["Disabled", "Notify", "Block"].map((o) => (
                       <button key={o} onClick={() => set("operationalRiskAction", o)}
@@ -371,7 +385,8 @@ export default function App() {
               <SubHead>SEC-SECRET / SEC-IAC — Artifact content scanning</SubHead>
               <Table cols={["Control", "Rule", "Setting"]}>
                 <Ctl id="SEC-SECRET-01" rule="Scan artifact content for embedded secrets + IaC misconfigurations (blocks on High)"
-                  help="Opens up each package's actual files and scans them for hard-coded secrets (API keys, passwords, private keys) and insecure infrastructure-as-code settings. A High-severity finding blocks the package.">
+                  help="Opens up each package's actual files and scans them for hard-coded secrets (API keys, passwords, private keys) and insecure infrastructure-as-code settings. A High-severity finding blocks the package."
+                  reco={<RecoBadge ctlId="SEC-SECRET-01" current={policy.enableContentScan} onUse={set} />}>
                   <Switch on={policy.enableContentScan} onChange={(v) => set("enableContentScan", v)} /></Ctl>
               </Table>
               </>)}
@@ -1054,6 +1069,95 @@ function PolicyPresets({ policy, setPolicy }) {
     </div>
   );
 }
+// Guided setup wizard — walks a novice through each control one at a time with the recommended
+// value + plain "why", letting them Accept or set their own, ending with a complete policy.
+// Order + how each control renders its choices:
+const WIZARD_STEPS = [
+  { ctl: "SEC-VULN-01", title: "Security flaw severity (CVSS)", q: "How severe must a known flaw be before we block the package?",
+    kind: "stepper", step: 0.5, min: 0, max: 10, unit: "/ 10" },
+  { ctl: "SEC-VULN-02", title: "Actively-exploited flaws (KEV)", q: "Block packages with flaws attackers are exploiting right now?",
+    kind: "switch" },
+  { ctl: "SEC-VULN-03", title: "Exploit probability (EPSS)", q: "Block flaws that are likely to be exploited soon?",
+    kind: "stepper", step: 0.05, min: 0, max: 1, unit: "prob" },
+  { ctl: "SEC-SC-01", title: "New-package cooling-off", q: "How long must a release be public before we trust it?",
+    kind: "stepper", step: 1, min: 0, max: 90, unit: "days" },
+  { ctl: "SEC-OSSF-01", title: "Project health (OpenSSF Scorecard)", q: "Require a minimum project-health score? (0 = off)",
+    kind: "stepper", step: 0.5, min: 0, max: 10, unit: "/ 10" },
+  { ctl: "SEC-OPR-01", title: "Unhealthy / abandoned projects", q: "What should happen on an end-of-life or unmaintained project?",
+    kind: "choice", options: ["Disabled", "Notify", "Block"] },
+  { ctl: "SEC-SECRET-01", title: "Scan inside the package", q: "Scan package files for embedded secrets & misconfigurations?",
+    kind: "switch" },
+];
+function GuidedSetup({ policy, set, onClose }) {
+  const [i, setI] = useState(0);
+  const step = WIZARD_STEPS[i];
+  const reco = CONTROL_RECO[step.ctl];
+  const cur = policy[reco.field];
+  const atLast = i === WIZARD_STEPS.length - 1;
+  const useReco = () => set(reco.field, reco.value);
+  return (
+    <div style={{ position: "fixed", inset: 0, zIndex: 200, background: "rgba(15,39,72,.45)", display: "grid", placeItems: "center" }}
+      onClick={onClose}>
+      <div onClick={(e) => e.stopPropagation()}
+        style={{ width: 560, maxWidth: "92vw", background: C.surface, borderRadius: 14, boxShadow: "0 20px 50px rgba(15,39,72,.3)", overflow: "hidden" }}>
+        <div style={{ padding: "16px 22px", borderBottom: `1px solid ${C.line}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <span style={{ fontSize: 14, fontWeight: 700, color: C.text }}>✦ Guided setup</span>
+          <span style={{ fontSize: 11.5, color: C.sub }}>Step {i + 1} of {WIZARD_STEPS.length}</span>
+        </div>
+        {/* progress bar */}
+        <div style={{ height: 4, background: C.line }}>
+          <div style={{ height: "100%", width: `${((i + 1) / WIZARD_STEPS.length) * 100}%`, background: C.accent, transition: "width .2s" }} />
+        </div>
+        <div style={{ padding: "22px 22px 8px" }}>
+          <div style={{ fontSize: 11, fontFamily: C.mono, color: C.accent, marginBottom: 4 }}>{step.ctl}</div>
+          <div style={{ fontSize: 16, fontWeight: 700, color: C.text, marginBottom: 6 }}>{step.title}</div>
+          <div style={{ fontSize: 13, color: C.sub, marginBottom: 16 }}>{step.q}</div>
+
+          {/* current setting control */}
+          <div style={{ marginBottom: 16 }}>
+            {step.kind === "stepper" && (
+              <Stepper value={cur ?? 0} step={step.step} min={step.min} max={step.max} unit={step.unit}
+                onChange={(v) => set(reco.field, v)} />
+            )}
+            {step.kind === "switch" && (
+              <Switch on={!!cur} onChange={(v) => set(reco.field, v)} />
+            )}
+            {step.kind === "choice" && (
+              <div style={{ display: "flex", gap: 6 }}>
+                {step.options.map((o) => (
+                  <button key={o} onClick={() => set(reco.field, o)}
+                    style={{ fontSize: 12, fontWeight: 600, padding: "6px 14px", borderRadius: 6, cursor: "pointer",
+                      border: `1px solid ${cur === o ? C.accent : C.line}`,
+                      background: cur === o ? "rgba(64,190,70,.1)" : C.surface, color: cur === o ? C.accentDim : C.sub }}>{o}</button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* recommendation */}
+          <div style={{ fontSize: 12, padding: "10px 12px", borderRadius: 8, background: "rgba(64,190,70,.07)", border: `1px solid ${C.line}` }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+              <span style={{ color: cur === reco.value ? C.accentDim : C.brand, fontWeight: 600 }}>
+                {cur === reco.value ? "✓ You're at the recommended setting" : `⭐ Recommended: ${reco.label}`}
+              </span>
+              {cur !== reco.value && <button onClick={useReco}
+                style={{ fontSize: 11.5, padding: "5px 12px", borderRadius: 6, cursor: "pointer", whiteSpace: "nowrap",
+                  border: `1px solid ${C.accent}`, background: "rgba(64,190,70,.1)", color: C.accentDim, fontWeight: 600 }}>Use recommended</button>}
+            </div>
+            <div style={{ color: C.sub, marginTop: 6, lineHeight: 1.5 }}>{reco.why}</div>
+          </div>
+        </div>
+        <div style={{ padding: "14px 22px 18px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <button onClick={() => (i === 0 ? onClose() : setI(i - 1))}
+            style={{ fontSize: 12.5, padding: "8px 14px", borderRadius: 6, cursor: "pointer", border: `1px solid ${C.line}`, background: C.surface, color: C.sub }}>
+            {i === 0 ? "Cancel" : "← Back"}</button>
+          <button onClick={() => (atLast ? onClose() : setI(i + 1))} style={s.add}>
+            {atLast ? "Finish — review & commit" : "Next →"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
 // "Build rules with AI" for the Policy controls page. Same Groq endpoint as the Watches builder,
 // but instead of appending watch rules it MAPS the AI's suggestions onto the live policy controls
 // (CVSS threshold, KEV toggle, EPSS, licence blocklist). Always tells the user exactly what changed.
@@ -1157,7 +1261,45 @@ function ControlsAiBuilder({ policy, set, revealControl }) {
     </div>
   );
 }
-function Ctl({ id, rule, help, children, highlighted }) {
+// Industry-grounded recommendations for every control — drives both the inline "Recommended" badge
+// and the Guided setup wizard. `field` is the policy key, `value` the recommended setting, `why` the
+// one-line justification (sources researched: PCI-DSS/FIRST for CVSS+EPSS, CISA KEV, OpenSSF Scorecard).
+const CONTROL_RECO = {
+  "SEC-VULN-01": { field: "cvssBlockThreshold", value: 7, label: "Block CVSS ≥ 7",
+    why: "7.0 is the industry 'high-severity' line — PCI-DSS and most teams block at or above it." },
+  "SEC-VULN-02": { field: "blockKnownExploited", value: true, label: "Turn on",
+    why: "These flaws are being exploited in the wild right now (CISA KEV) — never let them through." },
+  "SEC-VULN-03": { field: "epssBlockThreshold", value: 0.1, label: "Block EPSS ≥ 0.1",
+    why: "A 10% exploit-probability cut catches ~63% of exploited flaws for ~3% of the effort (FIRST EPSS)." },
+  "SEC-SC-01": { field: "minPackageAgeDays", value: 14, label: "14 days",
+    why: "A two-week cooling-off lets malicious or typosquatted new releases get caught and pulled first." },
+  "SEC-SC-02": { field: "maxTreeDepth", value: 8, label: "8 levels",
+    why: "8 levels deep covers almost every real dependency graph without slowing scans." },
+  "SEC-OSSF-01": { field: "minScorecardScore", value: 5, label: "Score ≥ 5",
+    why: "On OpenSSF Scorecard's 0–10 scale, below 5 signals high-risk project practices." },
+  "SEC-OPR-01": { field: "operationalRiskAction", value: "Notify", label: "Notify",
+    why: "Warn on end-of-life / unmaintained projects without hard-blocking work that may still be fine." },
+  "SEC-SECRET-01": { field: "enableContentScan", value: true, label: "Turn on",
+    why: "Catches hard-coded secrets and insecure infrastructure settings inside the package files." },
+};
+// Inline "⭐ Recommended: X — why  [Use]" line shown under a control. onUse applies the value.
+function RecoBadge({ ctlId, current, onUse }) {
+  const r = CONTROL_RECO[ctlId];
+  if (!r) return null;
+  const atReco = current === r.value;
+  return (
+    <div style={{ fontSize: 11, marginTop: 6, display: "flex", alignItems: "baseline", gap: 6, flexWrap: "wrap" }}>
+      <span style={{ color: atReco ? C.accentDim : C.brand, fontWeight: 600 }}>
+        {atReco ? "✓ At recommended" : `⭐ Recommended: ${r.label}`}
+      </span>
+      <span style={{ color: C.sub, maxWidth: 540 }}>— {r.why}</span>
+      {!atReco && <button onClick={() => onUse(r.field, r.value)}
+        style={{ fontSize: 10.5, padding: "2px 9px", borderRadius: 12, cursor: "pointer",
+          border: `1px solid ${C.accent}`, background: "rgba(64,190,70,.08)", color: C.accentDim, fontWeight: 600 }}>Use</button>}
+    </div>
+  );
+}
+function Ctl({ id, rule, help, children, highlighted, reco }) {
   return (
     <tr id={id ? `ctl-${id}` : undefined}
       style={{ ...s.tr, transition: "background .3s", background: highlighted ? "rgba(64,190,70,.18)" : undefined }}>
@@ -1165,6 +1307,7 @@ function Ctl({ id, rule, help, children, highlighted }) {
       <td style={s.td}>
         <div>{rule}</div>
         {help && <div style={{ fontSize: 11.5, color: C.sub, marginTop: 3, lineHeight: 1.45, maxWidth: 620 }}>{help}</div>}
+        {reco}
       </td>
       <td style={{ ...s.td, textAlign: "right", verticalAlign: "top" }}>{children}</td>
     </tr>
