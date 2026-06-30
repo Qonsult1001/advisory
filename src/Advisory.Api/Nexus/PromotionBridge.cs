@@ -23,6 +23,10 @@ public class PromotionBridge : BackgroundService
     // held package when the policy/exceptions have actually CHANGED — otherwise the same Block would
     // be re-audited every cycle, flooding Violations with duplicates.
     private readonly Dictionary<string, string> _evaluatedUnderPolicy = new();
+    // Per component: the (revoked-state, policy-signature) under which we last fully handled it. A
+    // revoked package is already held, so re-handling it every cycle just re-audits the same Block —
+    // only re-handle when its revoke-state or the policy actually changed.
+    private readonly Dictionary<string, string> _lastOutcomeKey = new();
 
     public PromotionBridge(INexusClient nexus, IServiceScopeFactory scopes,
                            IConfiguration cfg, ILogger<PromotionBridge> log)
@@ -65,8 +69,12 @@ public class PromotionBridge : BackgroundService
                             .IsRevoked(c.Ecosystem, c.Name, c.Version);
                     var seenBefore = _evaluatedUnderPolicy.TryGetValue(c.ComponentId, out var lastSig);
                     var policyChanged = !seenBefore || lastSig != policySig;
-                    if (_processed.Contains(c.ComponentId) && !revokedNow && !policyChanged) continue; // promoted + unchanged
-                    if (seenBefore && !_processed.Contains(c.ComponentId) && !revokedNow && !policyChanged) continue; // held + unchanged
+                    // Skip when nothing relevant changed since we last fully handled this component. The
+                    // outcome key folds in revoke-state + policy signature, so a revoked-and-still-revoked
+                    // package under an unchanged policy is skipped (no more re-auditing the same Block).
+                    var outcomeKey = $"{(revokedNow ? "R" : "-")}:{policySig}";
+                    if (_lastOutcomeKey.TryGetValue(c.ComponentId, out var lastKey) && lastKey == outcomeKey
+                        && !policyChanged) continue;
 
                     byte[] bytes = Array.Empty<byte>();
                     if (c.Ecosystem == Ecosystem.HuggingFace || (c.FileName?.EndsWith(".bin") ?? false))
@@ -79,6 +87,7 @@ public class PromotionBridge : BackgroundService
                     var gate = scope.ServiceProvider.GetRequiredService<IGateEngine>();
                     var result = await gate.EvaluateAsync(pkg, ct);
                     _evaluatedUnderPolicy[c.ComponentId] = policySig;
+                    _lastOutcomeKey[c.ComponentId] = outcomeKey;   // remember what we just handled
 
                     // Persist the decision into the scan store so the Quarantine view can show, per
                     // package, what the pipeline did (promoted / blocked / held) and why.

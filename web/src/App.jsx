@@ -231,9 +231,12 @@ export default function App() {
             <div style={s.logo}>⊻</div>
             <span style={{ fontWeight: 700, fontSize: 15 }}><span style={{ color: "#fff" }}>Advi</span><span style={{ color: "#5fd968" }}>sory</span></span>
           </div>
-          <div style={{ display: "flex", gap: 4 }}>
+          <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
             {/* Administration + Memories tabs hidden for now. */}
             <span style={s.appTabOn} onClick={() => setTab("catalog")}>Platform</span>
+            {/* TEMP: global reset for testing — lives in Administration; duplicated here until that
+                page is unhidden. Remove this when Administration returns. */}
+            <GlobalResetButton onDone={load} />
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
@@ -775,8 +778,8 @@ const NAV = [
     ["controls", "Policy controls"], ["sources", "Intelligence sources"], ["kev", "Known-exploited (KEV)"],
   ]},
   { type: "group", key: "pipeline", label: "Pipeline", icon: "⇄", children: [
-    ["queue", "Intake queue"], ["quarantine", "Quarantine"], ["approved", "Approved packages"], ["reports", "Reports"],
-    ["exceptions", "Approved exceptions"], ["audit", "Decision ledger"],
+    ["queue", "Intake queue"], ["quarantine", "Quarantine"], ["approved", "Approved packages"],
+    ["exceptions", "Approved exceptions"], ["audit", "Decision ledger"], ["reports", "Reports"],
   ]},
 ];
 const NAV_PARENT = (() => { const m = {}; NAV.forEach(g => g.children?.forEach(([k]) => m[k] = g.key)); return m; })();
@@ -1007,6 +1010,29 @@ function Kpi({ label, value, tone, onClick, active }) {
   );
 }
 function CountUp({ target }) { return <>{useCountUp(target)}</>; }
+// TEMP global reset (testing aid). Clears the audit ledger + scans + revocations and empties every
+// firewall repo (quarantine + approved) so you can re-run flows from scratch. Belongs in
+// Administration; surfaced in the top bar until that page is unhidden — remove it then.
+function GlobalResetButton({ onDone }) {
+  const [busy, setBusy] = useState(false);
+  const run = async () => {
+    if (!window.confirm("Reset ALL test data?\n\nThis clears the decision ledger, scans and revocations, and empties every firewall repo (quarantine + approved). It does NOT change your policy or provisioned ecosystems. This cannot be undone.")) return;
+    setBusy(true);
+    try {
+      const r = await api.resetDemoData();
+      if (r.ok) { onDone && onDone(); window.alert("✓ Test data cleared."); }
+      else window.alert("Reset failed: " + (r.error || "unknown error"));
+    } catch { window.alert("Reset failed — could not reach the API."); }
+    finally { setBusy(false); }
+  };
+  return (
+    <button onClick={run} disabled={busy} title="Clear all test data (ledger, scans, firewall repos)"
+      style={{ marginLeft: 8, fontSize: 11.5, fontWeight: 600, padding: "5px 11px", borderRadius: 5, cursor: busy ? "default" : "pointer",
+        background: "rgba(214,69,69,.16)", color: "#ff8a8a", border: "1px solid rgba(214,69,69,.5)", opacity: busy ? 0.6 : 1 }}>
+      {busy ? "Resetting…" : "🗑 Reset test data"}
+    </button>
+  );
+}
 function Card({ title, desc, children }) {
   return (
     <section style={s.card}>
