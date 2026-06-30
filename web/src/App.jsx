@@ -6982,6 +6982,98 @@ const REPORT_TYPES = [
   { key: "licenses", label: "Legal · Licenses", icon: "§", desc: "Due-diligence license report for evaluated packages — declared license, prohibited matches, unknowns." },
   { key: "operational", label: "Operational Risk", icon: "⏲", desc: "EOL / deprecated, version age, newer versions, project health for evaluated packages." },
 ];
+// Executive summary for a report: a row of headline stat cards + a distribution bar chart, computed
+// from the live rows. Keeps the detail table below for drill-down + CSV. Per report type we pick the
+// most decision-useful angle (severity mix, block reasons, licence posture, risk drivers).
+function ReportSummary({ type, rows }) {
+  if (!rows.length) return null;
+  const C2 = { Critical: C.block, High: "#e8743b", Medium: C.warn, Low: C.info, Unknown: C.sub, High_: C.block };
+  // Build (cards, chartTitle, chartData[{label,value,color}]) per report type.
+  let cards = [], chartTitle = "", chart = [];
+  const count = (pred) => rows.filter(pred).length;
+  const by = (key, norm = (x) => x) => {
+    const m = {}; rows.forEach((r) => { const k = norm(r[key]) ?? "—"; m[k] = (m[k] || 0) + 1; }); return m;
+  };
+  if (type === "vulnerabilities") {
+    const sev = by("severity");
+    cards = [
+      { label: "Vulnerabilities", value: rows.length },
+      { label: "Critical", value: sev.Critical || 0, tone: C.block },
+      { label: "High", value: sev.High || 0, tone: "#e8743b" },
+      { label: "KEV (exploited)", value: count((r) => r.kev === true || r.knownExploited === true), tone: C.block },
+      { label: "Has fix", value: count((r) => r.fixedVersion || r.fixVersion), tone: C.allow },
+    ];
+    chartTitle = "By severity";
+    chart = ["Critical", "High", "Medium", "Low", "Unknown"].map((s) => ({ label: s, value: sev[s] || 0, color: C2[s] }));
+  } else if (type === "violations") {
+    const dec = by("decision");
+    cards = [
+      { label: "Violations", value: rows.length },
+      { label: "Blocked", value: dec.Block || 0, tone: C.block },
+      { label: "Quarantined", value: dec.Quarantine || 0, tone: C.warn },
+      { label: "Waived", value: count((r) => r.waivedBy || /waiv|exempt/i.test(String(r.status || ""))), tone: C.info },
+    ];
+    chartTitle = "By decision";
+    chart = Object.entries(dec).map(([k, v]) => ({ label: k, value: v, color: k === "Block" ? C.block : k === "Quarantine" ? C.warn : C.sub }));
+  } else if (type === "licenses") {
+    const prohibited = count((r) => r.prohibited === true);
+    const unknown = count((r) => !r.license || /unknown/i.test(String(r.license)));
+    cards = [
+      { label: "Packages", value: rows.length },
+      { label: "Prohibited", value: prohibited, tone: C.block },
+      { label: "Unknown licence", value: unknown, tone: C.warn },
+      { label: "Clean", value: rows.length - prohibited - unknown, tone: C.allow },
+    ];
+    chartTitle = "Top licences";
+    const lic = by("license", (x) => x || "Unknown");
+    chart = Object.entries(lic).sort((a, b) => b[1] - a[1]).slice(0, 6)
+      .map(([k, v]) => ({ label: k, value: v, color: /GPL|AGPL/i.test(k) ? C.block : C.accent }));
+  } else if (type === "operational") {
+    const risk = by("risk");
+    const eol = count((r) => r.eol === true || r.eol === "Yes");
+    const stale = count((r) => (r.versionAgeMonths || 0) >= 24);
+    cards = [
+      { label: "Packages", value: rows.length },
+      { label: "High risk", value: risk.High || 0, tone: C.block },
+      { label: "End-of-life", value: eol, tone: C.block },
+      { label: "Stale (2y+)", value: stale, tone: C.warn },
+      { label: "Behind latest", value: count((r) => (r.newerVersions || 0) > 0), tone: C.info },
+    ];
+    chartTitle = "By risk level";
+    chart = ["High", "Medium", "Low"].map((s) => ({ label: s, value: risk[s] || 0, color: s === "High" ? C.block : s === "Medium" ? C.warn : C.allow }));
+  }
+  const max = Math.max(1, ...chart.map((c) => c.value));
+  const hasChart = chart.some((c) => c.value > 0);
+  return (
+    <div style={{ padding: "16px 18px", borderBottom: `1px solid ${C.lineSoft}`, background: C.bg2 }}>
+      <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: hasChart ? 16 : 0 }}>
+        {cards.map((c) => (
+          <div key={c.label} style={{ flex: "1 1 120px", minWidth: 110, background: C.surface, border: `1px solid ${C.line}`,
+            borderRadius: 10, padding: "12px 14px" }}>
+            <div style={{ fontSize: 24, fontWeight: 800, color: c.tone || C.ink, lineHeight: 1 }}>{c.value}</div>
+            <div style={{ fontSize: 11, color: C.sub, marginTop: 5, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4 }}>{c.label}</div>
+          </div>
+        ))}
+      </div>
+      {hasChart && (
+        <div>
+          <div style={{ fontSize: 11, color: C.sub, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 8 }}>{chartTitle}</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+            {chart.map((c) => (
+              <div key={c.label} style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <span style={{ width: 130, fontSize: 11.5, color: C.ink, textAlign: "right", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={c.label}>{c.label}</span>
+                <div style={{ flex: 1, height: 18, background: C.lineSoft, borderRadius: 4, overflow: "hidden", position: "relative" }}>
+                  <div style={{ width: `${(c.value / max) * 100}%`, height: "100%", background: c.color, borderRadius: 4, transition: "width .5s", minWidth: c.value > 0 ? 3 : 0 }} />
+                </div>
+                <span style={{ width: 34, fontSize: 11.5, fontWeight: 700, color: c.color, textAlign: "left" }}>{c.value}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 function Reports() {
   const [type, setType] = useState(null);
   const [data, setData] = useState(null);
@@ -7026,7 +7118,9 @@ function Reports() {
           </div>
           {rows.length === 0
             ? <EmptyState title="No rows" sub="Run some evaluations through the gate first — reports are derived from the decision ledger." />
-            : <div style={{ overflowX: "auto" }}>
+            : <>
+              <ReportSummary type={type} rows={rows} />
+              <div style={{ overflowX: "auto" }}>
                 <Table cols={cols}>
                   {rows.slice(0, 300).map((r, i) => (
                     <tr key={i} style={s.tr}>
@@ -7039,7 +7133,8 @@ function Reports() {
                     </tr>
                   ))}
                 </Table>
-              </div>}
+              </div>
+            </>}
         </div>
       )}
     </Card>
