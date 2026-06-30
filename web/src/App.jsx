@@ -4109,6 +4109,22 @@ function PackageOverview({ pkg, onVersion }) {
     ...(er ? [["extrisk", "Extension Risk"]] : []),
     ["dependencies", "Dependencies"], ["openssf", "OpenSSF"], ["licenses", "Licenses"], ["oprisk", "Operational Risk"]];
 
+  // The registry has no such package (e.g. a typo'd name) — show a clear not-found state instead of a
+  // blank package page. The API sets found=false on a registry 404 (mirrors the CVE lookup).
+  if (pkg.found === false) {
+    return (
+      <div style={{ animation: "fwfade .2s ease" }}>
+        <div style={{ ...s.card, padding: 36, textAlign: "center", maxWidth: 560, margin: "20px auto" }}>
+          <div style={{ fontSize: 34, marginBottom: 8 }}>🔍</div>
+          <div style={{ fontSize: 16, fontWeight: 700, color: C.ink, marginBottom: 6 }}>Package not found</div>
+          <div style={{ fontSize: 13, color: C.sub, lineHeight: 1.6 }}>
+            <b style={{ fontFamily: C.mono }}>{pkg.name}</b> was not found in the <b>{pkg.ecosystem}</b> registry.
+            Check the name and the selected ecosystem, then search again.
+          </div>
+        </div>
+      </div>
+    );
+  }
   return (
     <div style={{ display: "grid", gridTemplateColumns: "340px 1fr", gap: 20, alignItems: "start", animation: "fwfade .2s ease" }}>
       {/* LEFT info card */}

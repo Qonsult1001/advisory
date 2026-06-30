@@ -46,9 +46,22 @@ public class IntakeConsumer : BackgroundService
                     var nexus = scope.ServiceProvider.GetRequiredService<Advisory.Api.Nexus.INexusClient>();
                     var fetched = await nexus.FetchIntoQuarantineAsync(
                         item.Package.Ecosystem, item.Package.Name, item.Package.Version, ct);
-                    await _queue.AckAsync(item.MessageId, ct);
-                    _log.LogInformation("Intake {Pkg}@{Ver} -> quarantine fetch {Result}",
-                        item.Package.Name, item.Package.Version, fetched ? "ok" : "failed");
+                    if (fetched)
+                    {
+                        await _queue.AckAsync(item.MessageId, ct);
+                        _log.LogInformation("Intake {Pkg}@{Ver} -> quarantine fetch ok",
+                            item.Package.Name, item.Package.Version);
+                    }
+                    else
+                    {
+                        // The registry didn't have this package/version (a 404 isn't an exception, so it
+                        // wouldn't otherwise retry/dead-letter). Don't silently ack it as done — dead-letter
+                        // it with a clear reason so the operator sees the request failed instead of vanishing.
+                        var reason = $"Could not fetch {item.Package.Ecosystem}:{item.Package.Name}@{item.Package.Version} into quarantine — not found in its registry (check the name and version).";
+                        await _queue.DeadLetterAsync(item, reason, ct);
+                        _log.LogWarning("Intake {Pkg}@{Ver} -> quarantine fetch FAILED; dead-lettered: {Reason}",
+                            item.Package.Name, item.Package.Version, reason);
+                    }
                 }
                 catch (Exception ex)
                 {

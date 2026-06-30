@@ -86,7 +86,10 @@ public class CatalogController : ControllerBase
     public async Task<ActionResult> Search([FromQuery] string ecosystem, [FromQuery] string q,
         [FromQuery] int limit = 30, [FromQuery] string? registry = null, CancellationToken ct = default)
     {
-        if (!Enum.TryParse<Ecosystem>(ecosystem, true, out var eco)) eco = Ecosystem.npm;
+        // An unrecognised ecosystem must NOT silently fall back to npm and return npm results mislabelled —
+        // reject it so the caller knows the ecosystem wasn't understood.
+        if (!Enum.TryParse<Ecosystem>(ecosystem, true, out var eco))
+            return BadRequest(new { error = "unknown-ecosystem", ecosystem, message = $"'{ecosystem}' is not a supported ecosystem. Supported: {string.Join(", ", Enum.GetNames<Ecosystem>())}." });
         var hits = await _catalog.SearchAsync(eco, q?.Trim() ?? "", Math.Clamp(limit, 1, 50), ct, registry);
         return Ok(new { query = q, ecosystem = eco.ToString(), registry, count = hits.Count, results = hits });
     }
@@ -97,7 +100,8 @@ public class CatalogController : ControllerBase
         [FromQuery] string? version, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(name)) return BadRequest(new { error = "name is required" });
-        if (!Enum.TryParse<Ecosystem>(ecosystem, true, out var eco)) eco = Ecosystem.npm;
+        if (!Enum.TryParse<Ecosystem>(ecosystem, true, out var eco))
+            return BadRequest(new { error = "unknown-ecosystem", ecosystem, message = $"'{ecosystem}' is not a supported ecosystem. Supported: {string.Join(", ", Enum.GetNames<Ecosystem>())}." });
         return Ok(await _catalog.OverviewAsync(eco, name.Trim(), string.IsNullOrWhiteSpace(version) ? null : version.Trim(), ct));
     }
 

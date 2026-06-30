@@ -100,7 +100,8 @@ public record CatalogOverview(
     string Verdict,            // Clean / Vulnerable / Caution
     IReadOnlyList<string> Notes,
     OperationalRisk? OperationalRisk = null,    // JFrog Xray-style operational-risk analysis
-    ExtensionRisk? ExtensionRisk = null);       // AI-editor extension capability/exfiltration analysis
+    ExtensionRisk? ExtensionRisk = null,        // AI-editor extension capability/exfiltration analysis
+    bool Found = true);                         // false = package not found in its registry (mirrors CatalogCve.Found)
 
 /// <summary>
 /// Aggregates a JFrog-Catalog-style package overview entirely from FREE public sources:
@@ -664,16 +665,22 @@ public class CatalogService
             try
             {
                 var vulns = await Vulns(eco, name, version ?? "", ct);
-                return Finalize(eco.ToString(), name, version, null, null, null, null, version, 0,
-                    new(), new(), null, false, null, new(), vulns, null,
-                    new List<string> { $"Metadata unavailable ({ex.Message}); showing vulnerabilities only." });
+                var notFound = ex is HttpRequestException hre && hre.StatusCode == System.Net.HttpStatusCode.NotFound;
+                var note = notFound
+                    ? $"No such package '{name}' in {eco}. Check the name and ecosystem."
+                    : $"Metadata unavailable ({ex.Message}); showing vulnerabilities only.";
+                var ov2 = Finalize(eco.ToString(), name, version, null, null, null, null, version, 0,
+                    new(), new(), null, false, null, new(), vulns, null, new List<string> { note });
+                return notFound ? ov2 with { Found = false, Verdict = "Not found" } : ov2;
             }
             catch
             {
+                var notFound2 = ex is HttpRequestException hre2 && hre2.StatusCode == System.Net.HttpStatusCode.NotFound;
                 return new CatalogOverview(eco.ToString(), name, version, null, null, null, null, null, 0,
                     Array.Empty<CatalogVersion>(), Array.Empty<string>(), Array.Empty<CatalogMaintainer>(), null, false, null,
-                    Array.Empty<string>(), Array.Empty<CatalogVuln>(), null, "Unknown",
-                    new[] { $"Could not load package: {ex.Message}" });
+                    Array.Empty<string>(), Array.Empty<CatalogVuln>(), null, notFound2 ? "Not found" : "Unknown",
+                    new[] { notFound2 ? $"No such package '{name}' in {eco}." : $"Could not load package: {ex.Message}" },
+                    Found: !notFound2);
             }
         }
     }
