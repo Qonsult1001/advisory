@@ -7543,7 +7543,7 @@ const s = {
   save: { background: C.brand, color: "#fff", border: "none", padding: "11px 12px", borderRadius: 4,
     cursor: "pointer", fontSize: 13, fontWeight: 600, marginBottom: 8 },
   navNote: { fontSize: 10.5, color: C.dim, lineHeight: 1.5 },
-  main: { padding: "26px 30px", overflow: "auto" },
+  main: { padding: "26px 30px 80px", minWidth: 0 },
   card: { background: C.surface, border: `1px solid ${C.line}`, borderRadius: 16, padding: 0, marginBottom: 18,
     boxShadow: "0 2px 14px rgba(15,39,72,.05)", overflow: "hidden" },
   cardHead: { padding: "16px 20px", borderBottom: `1px solid ${C.lineSoft}` },
