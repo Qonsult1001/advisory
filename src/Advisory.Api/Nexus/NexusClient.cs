@@ -302,71 +302,155 @@ public class NexusClient : INexusClient
             using var resp = await _http.GetAsync(url, ct);
             _log.LogInformation("Fetch {Pkg} into {Repo}: {Status}", name, $"{def.Prefix}-{_quarantineSuffix}", (int)resp.StatusCode);
             // Requesting the index/metadata is NOT enough to cache a component — Nexus only stores a
-            // component when its actual ARTIFACT (tarball/wheel) is requested through the proxy. So for
-            // each ecosystem, parse the index for the artifact URL and pull it. (PyPI: wheel/sdist from
-            // the simple-index HTML; npm: the version's .tgz tarball from the package metadata JSON.)
+            // component when its actual ARTIFACT is requested through the proxy. Resolve each ecosystem's
+            // artifact URL from the index response and pull it so the component materialises in quarantine.
             if (resp.IsSuccessStatusCode)
             {
-                string? fileUrl = null;
-                if (eco == Ecosystem.PyPI)
-                {
-                    var html = await resp.Content.ReadAsStringAsync(ct);
-                    var m = System.Text.RegularExpressions.Regex.Match(html, "href=\"([^\"]+\\.(?:whl|tar\\.gz))");
-                    if (m.Success)
-                    {
-                        var rel = m.Groups[1].Value.Split('#')[0];
-                        fileUrl = new Uri(new Uri(url.EndsWith('/') ? url : url + "/"), rel).ToString();
-                    }
-                }
-                else if (eco == Ecosystem.npm)
-                {
-                    // npm metadata: versions[<ver>].dist.tarball is the .tgz. Fall back to the latest
-                    // version's tarball if the exact version isn't listed.
-                    var json = await resp.Content.ReadAsStringAsync(ct);
-                    try
-                    {
-                        using var doc = System.Text.Json.JsonDocument.Parse(json);
-                        var root = doc.RootElement;
-                        if (root.TryGetProperty("versions", out var versions) && versions.ValueKind == System.Text.Json.JsonValueKind.Object)
-                        {
-                            System.Text.Json.JsonElement verEl = default;
-                            var found = !string.IsNullOrEmpty(version) && versions.TryGetProperty(version, out verEl);
-                            if (!found)
-                            {
-                                // exact version absent — take the dist-tags.latest, else the first listed version
-                                string? latest = root.TryGetProperty("dist-tags", out var dt) && dt.TryGetProperty("latest", out var lt) ? lt.GetString() : null;
-                                if (latest != null && versions.TryGetProperty(latest, out verEl)) found = true;
-                                else { foreach (var p in versions.EnumerateObject()) { verEl = p.Value; found = true; break; } }
-                            }
-                            if (found && verEl.TryGetProperty("dist", out var dist) && dist.TryGetProperty("tarball", out var tb))
-                            {
-                                var tarball = tb.GetString();
-                                // The tarball URL points at the upstream registry; we must fetch it THROUGH the
-                                // Nexus proxy so the component is cached. Nexus already rewrites the host to itself,
-                                // so its path may already include "/repository/<repo>/...". Take the tail after the
-                                // repo segment (the package path) and re-root it on our repoBase — exactly once.
-                                if (!string.IsNullOrEmpty(tarball))
-                                {
-                                    var path = new Uri(tarball).AbsolutePath; // e.g. /repository/npm-quarantine/pad-left/-/pad-left-2.1.0.tgz OR /pad-left/-/pad-left-2.1.0.tgz
-                                    var marker = $"/repository/{def.Prefix}-{_quarantineSuffix}/";
-                                    var idx = path.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
-                                    var pkgPath = idx >= 0 ? path[(idx + marker.Length)..] : path.TrimStart('/');
-                                    fileUrl = $"{repoBase}/{pkgPath}";
-                                }
-                            }
-                        }
-                    }
-                    catch (Exception jx) { _log.LogWarning(jx, "npm metadata parse failed for {Pkg}.", name); }
-                }
+                var body = await resp.Content.ReadAsStringAsync(ct);
+                var fileUrl = ResolveArtifactUrl(eco, repoBase, url, name, version, body);
                 if (fileUrl != null)
                 {
                     using var f = await _http.GetAsync(fileUrl, ct);
                     _log.LogInformation("Cached {Pkg} artifact: {Status} ({Url})", name, (int)f.StatusCode, fileUrl);
                 }
+                else
+                    _log.LogWarning("No artifact URL resolved for {Eco} {Pkg}@{Ver} — component may not cache.", eco, name, version);
             }
             return resp.IsSuccessStatusCode;
         }
         catch (Exception ex) { _log.LogWarning(ex, "Fetch {Pkg} into quarantine failed.", name); return false; }
+    }
+
+    /// <summary>
+    /// Given a proxy index/metadata response, work out the URL of the actual artifact to pull so Nexus
+    /// caches a component. Each registry exposes the artifact differently; unknown ecosystems fall back
+    /// to the index URL (best-effort). Returns null if no artifact URL could be derived.
+    /// </summary>
+    private string? ResolveArtifactUrl(Ecosystem eco, string repoBase, string indexUrl, string name, string version, string body)
+    {
+        try
+        {
+            switch (eco)
+            {
+                case Ecosystem.PyPI:
+                {
+                    // simple-index HTML: first wheel/sdist link (prefer one matching the version).
+                    var matches = System.Text.RegularExpressions.Regex.Matches(body, "href=\"([^\"]+\\.(?:whl|tar\\.gz))");
+                    string? rel = null;
+                    foreach (System.Text.RegularExpressions.Match m in matches)
+                    {
+                        var href = m.Groups[1].Value.Split('#')[0];
+                        if (!string.IsNullOrEmpty(version) && href.Contains(version)) { rel = href; break; }
+                        rel ??= href;
+                    }
+                    return rel is null ? null : new Uri(new Uri(indexUrl.EndsWith('/') ? indexUrl : indexUrl + "/"), rel).ToString();
+                }
+                case Ecosystem.npm:
+                {
+                    using var doc = System.Text.Json.JsonDocument.Parse(body);
+                    var root = doc.RootElement;
+                    if (!root.TryGetProperty("versions", out var versions) || versions.ValueKind != System.Text.Json.JsonValueKind.Object) return null;
+                    var verEl = PickVersion(root, versions, version);
+                    if (verEl is { } v && v.TryGetProperty("dist", out var dist) && dist.TryGetProperty("tarball", out var tb))
+                        return ReRoot(repoBase, tb.GetString());
+                    return null;
+                }
+                case Ecosystem.NuGet:
+                {
+                    // registration index → catalogEntry.packageContent is the .nupkg.
+                    using var doc = System.Text.Json.JsonDocument.Parse(body);
+                    foreach (var item in EnumDeep(doc.RootElement, "packageContent"))
+                    {
+                        var content = item.GetString();
+                        if (string.IsNullOrEmpty(content)) continue;
+                        if (string.IsNullOrEmpty(version) || content.Contains(version, StringComparison.OrdinalIgnoreCase))
+                            return ReRoot(repoBase, content);
+                    }
+                    return null;
+                }
+                case Ecosystem.RubyGems:
+                {
+                    // gem JSON: gem_uri is the .gem file.
+                    using var doc = System.Text.Json.JsonDocument.Parse(body);
+                    if (doc.RootElement.TryGetProperty("gem_uri", out var gu)) return ReRoot(repoBase, gu.GetString());
+                    return null;
+                }
+                case Ecosystem.Cargo:
+                {
+                    // crate metadata: build the conventional download path /api/v1/crates/<name>/<ver>/download.
+                    var ver = version;
+                    if (string.IsNullOrEmpty(ver))
+                    {
+                        using var doc = System.Text.Json.JsonDocument.Parse(body);
+                        if (doc.RootElement.TryGetProperty("crate", out var cr) && cr.TryGetProperty("max_version", out var mv)) ver = mv.GetString();
+                    }
+                    return string.IsNullOrEmpty(ver) ? null : $"{repoBase}/api/v1/crates/{Uri.EscapeDataString(name)}/{Uri.EscapeDataString(ver)}/download";
+                }
+                case Ecosystem.Composer:
+                {
+                    // p2 metadata: packages[name][].dist.url is the zip.
+                    using var doc = System.Text.Json.JsonDocument.Parse(body);
+                    if (doc.RootElement.TryGetProperty("packages", out var pkgs) && pkgs.ValueKind == System.Text.Json.JsonValueKind.Object)
+                        foreach (var pkg in pkgs.EnumerateObject())
+                            if (pkg.Value.ValueKind == System.Text.Json.JsonValueKind.Array)
+                                foreach (var rel in pkg.Value.EnumerateArray())
+                                {
+                                    var rv = rel.TryGetProperty("version", out var vv) ? vv.GetString() : null;
+                                    if (!string.IsNullOrEmpty(version) && rv != version && rv != $"v{version}") continue;
+                                    if (rel.TryGetProperty("dist", out var d) && d.TryGetProperty("url", out var du))
+                                        return ReRoot(repoBase, du.GetString());
+                                }
+                    return null;
+                }
+                default:
+                    // Maven and any unmapped ecosystem: the index request itself already touches the artifact
+                    // path tree; return null so we don't double-fetch. (Maven caches on the POM/jar GET.)
+                    return null;
+            }
+        }
+        catch (Exception ex) { _log.LogWarning(ex, "Artifact-URL resolution failed for {Eco} {Pkg}.", eco, name); return null; }
+    }
+
+    // Pick the requested version element from an npm "versions" map; fall back to dist-tags.latest, then first.
+    private static System.Text.Json.JsonElement? PickVersion(System.Text.Json.JsonElement root, System.Text.Json.JsonElement versions, string version)
+    {
+        if (!string.IsNullOrEmpty(version) && versions.TryGetProperty(version, out var exact)) return exact;
+        string? latest = root.TryGetProperty("dist-tags", out var dt) && dt.TryGetProperty("latest", out var lt) ? lt.GetString() : null;
+        if (latest != null && versions.TryGetProperty(latest, out var le)) return le;
+        foreach (var p in versions.EnumerateObject()) return p.Value;
+        return null;
+    }
+
+    // Recursively yield every property named <key> anywhere in the JSON tree (for nested registration docs).
+    private static IEnumerable<System.Text.Json.JsonElement> EnumDeep(System.Text.Json.JsonElement el, string key)
+    {
+        if (el.ValueKind == System.Text.Json.JsonValueKind.Object)
+            foreach (var p in el.EnumerateObject())
+            {
+                if (p.NameEquals(key)) yield return p.Value;
+                foreach (var d in EnumDeep(p.Value, key)) yield return d;
+            }
+        else if (el.ValueKind == System.Text.Json.JsonValueKind.Array)
+            foreach (var item in el.EnumerateArray())
+                foreach (var d in EnumDeep(item, key)) yield return d;
+    }
+
+    // A registry's artifact URL points at the upstream host (which Nexus may have rewritten to itself,
+    // possibly including "/repository/<repo>/"). Re-root the package path on our quarantine proxy exactly once.
+    private string ReRoot(string repoBase, string? artifactUrl)
+    {
+        if (string.IsNullOrEmpty(artifactUrl)) return repoBase;
+        var path = Uri.TryCreate(artifactUrl, UriKind.Absolute, out var abs) ? abs.AbsolutePath : artifactUrl;
+        var marker = "/repository/";
+        var idx = path.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+        if (idx >= 0)
+        {
+            // strip "/repository/<repo>/" → keep the package path
+            var after = path[(idx + marker.Length)..];
+            var slash = after.IndexOf('/');
+            path = slash >= 0 ? after[(slash + 1)..] : after;
+        }
+        return $"{repoBase}/{path.TrimStart('/')}";
     }
 
     public async Task<bool> PromoteByNameAsync(Ecosystem eco, string name, string version, CancellationToken ct)
