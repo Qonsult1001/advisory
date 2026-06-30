@@ -26,22 +26,23 @@ mkdir -p "$ROOT/deploy"
 # The build contexts the compose needs. Paths mirror the repo so compose's relative contexts resolve.
 #   api + console build from repo root (Dockerfile, web/, src/, etc.); scanners from tools/.
 echo "→ Copying build sources…"
-# Use git archive when available (respects .gitignore, smallest), else a filtered copy.
+# git archive exports ONLY tracked files (respects .gitignore) — so node_modules, dist, .env, data/,
+# bin/obj never get in. This is required: shipping node_modules would break the image build.
 if command -v git >/dev/null 2>&1 && git rev-parse --git-dir >/dev/null 2>&1; then
   git archive --format=tar HEAD \
     Dockerfile web src tools/privacy-filter tools/vsix-scanner \
-    $(git ls-files '*.csproj' '*.sln' 'src/**' 2>/dev/null | head -0) \
-    2>/dev/null | ( cd "$ROOT" && tar -xf - ) || {
-      echo "  (git archive partial — falling back to copy)"; }
-fi
-# Ensure the essentials are present even if git archive missed paths.
-for p in Dockerfile web src tools/privacy-filter tools/vsix-scanner *.sln; do
-  for match in $p; do
-    [ -e "$match" ] || continue
-    mkdir -p "$ROOT/$(dirname "$match")"
-    cp -r "$match" "$ROOT/$(dirname "$match")/" 2>/dev/null || true
+    | ( cd "$ROOT" && tar -xf - )
+else
+  # No git — fall back to a copy that EXCLUDES the heavy/build-only dirs.
+  echo "  (no git — copying with excludes)"
+  for src in Dockerfile web src tools/privacy-filter tools/vsix-scanner; do
+    [ -e "$src" ] || continue
+    mkdir -p "$ROOT/$(dirname "$src")"
+    rsync -a --exclude 'node_modules' --exclude 'dist' --exclude '.env' --exclude 'bin' \
+      --exclude 'obj' --exclude 'data' "$src" "$ROOT/$(dirname "$src")/" 2>/dev/null \
+      || cp -r "$src" "$ROOT/$(dirname "$src")/"
   done
-done
+fi
 
 # Top-level quick-start so whoever extracts it knows what to do.
 cat > "$ROOT/INSTALL.txt" <<'TXT'

@@ -64,3 +64,5 @@ tools/said/*
 !tools/said/README.md
 .claude-worker/
 vulncheck_known_exploited_vulnerabilities.json
+.tmp-pip-test/
+advisory-rollout-*.tar.gz
