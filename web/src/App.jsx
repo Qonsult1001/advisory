@@ -2524,19 +2524,34 @@ function ScansRepos({ onOpen, setTab }) {
 // state otherwise. No seed.
 function ScansSubTab({ sub, onOpen }) {
   const [data, setData] = useState(null);
+  const [stages, setStages] = useState({}); // "name@version" -> promoted | revoked | held (firewall stage)
   useEffect(() => {
     const url = sub === "packages" ? "packages" : sub === "builds" ? "builds" : "release-bundles";
     setData(null);
     fetch(`${API}/scans/${url}`).then((r) => r.json()).then(setData).catch(() => setData({ count: 0 }));
+    // The packages list doesn't carry promotion state; the pipeline (quarantine) view does — join by name@version.
+    if (sub === "packages") fetch(`${API}/quarantine`).then((r) => r.json())
+      .then((q) => { const m = {}; (q.held || []).forEach((h) => { m[`${(h.name||"").toLowerCase()}@${h.version}`] = h.status; }); setStages(m); })
+      .catch(() => setStages({}));
   }, [sub]);
   if (!data) return <div style={s.kevEmpty}>Loading…</div>;
   if (sub === "packages") {
     const pkgs = data.packages || [];
+    // Map firewall stage → how it reads to a developer + colour.
+    const stageOf = (p) => {
+      const st = stages[`${(p.name||"").toLowerCase()}@${p.version}`];
+      if (st === "promoted") return { text: "✓ Approved", tip: "Promoted to the approved repo — developers can pull it.", c: C.allow };
+      if (st === "revoked") return { text: "⛔ Revoked", tip: "Approval was revoked — pulled back out of the approved repo.", c: C.block };
+      if (st === "held") return { text: "⏸ Held", tip: "Blocked by the gate — held in quarantine, not promoted.", c: C.warn };
+      return { text: "—", tip: "Not yet evaluated by the firewall gate.", c: C.sub };
+    };
     return (
-      <Card title={`Packages (${pkgs.length})`} desc="Every package scanned across all repositories.">
-        <Table cols={["Package", "Version", "Ecosystem", "Repository", "Vulnerabilities", "Verdict", "Last scan"]}>
-          {pkgs.length === 0 && <tr><td style={s.td} colSpan={7}>No packages scanned yet.</td></tr>}
-          {pkgs.map((p, i) => (
+      <Card title={`Packages (${pkgs.length})`} desc="Every package scanned across all repositories. Stage shows where each one sits in the firewall: Approved (promoted) vs Held/Revoked (blocked).">
+        <Table cols={["Package", "Version", "Ecosystem", "Repository", "Vulnerabilities", "Verdict", "Stage", "Last scan"]}>
+          {pkgs.length === 0 && <tr><td style={s.td} colSpan={8}>No packages scanned yet.</td></tr>}
+          {pkgs.map((p, i) => {
+            const stg = stageOf(p);
+            return (
             <tr key={i} style={{ ...s.tr, cursor: "pointer" }} onClick={() => onOpen && onOpen(p.repository, { name: p.name, version: p.version, ecosystem: p.ecosystem })}>
               <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11.5, color: C.accent }}>{p.name}</td>
               <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11.5 }}>{p.version}</td>
@@ -2544,9 +2559,11 @@ function ScansSubTab({ sub, onOpen }) {
               <td style={{ ...s.td, fontSize: 11.5, color: C.sub }}>{p.repository}</td>
               <td style={{ ...s.td, fontFamily: C.mono, color: p.vulnerabilities > 0 ? C.block : C.allow }}>{p.vulnerabilities}</td>
               <td style={s.td}><span style={{ color: p.verdict === "Vulnerable" ? C.block : p.verdict === "Caution" ? C.warn : C.allow, fontWeight: 600, fontSize: 12 }}>{p.verdict}</span></td>
+              <td style={s.td}><span title={stg.tip} style={{ color: stg.c, fontWeight: 600, fontSize: 12 }}>{stg.text}</span></td>
               <td style={{ ...s.td, fontSize: 11, color: C.sub }}>{p.lastScan ? new Date(p.lastScan).toLocaleDateString() : "—"}</td>
             </tr>
-          ))}
+            );
+          })}
         </Table>
       </Card>
     );
