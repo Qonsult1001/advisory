@@ -127,6 +127,9 @@ starts the stack, and prints the URLs. Watch for \`Using: podman compose\` (or \
 Open the console, click **Continue**, then follow the in-app **? Guide** (top bar) or
 deploy/docs/TUTORIAL-gate-your-first-package.md.
 
+To let developers install through the firewall (their normal \`pip\`/\`npm\`, redirected via the proxy) and
+to enforce it org-wide, see deploy/docs/HOW-TO-GUIDES.md guide 6 (incl. the *"For IT"* enforcement part).
+
 ## Commands (in advisory-rollout/deploy)
 
 Use whichever compose command your host has. If \`podman compose\` says "unrecognized command", your
@@ -159,7 +162,7 @@ Read this page first; it tells you what to open and in what order.
 | \`INSTALL.md\` | The **quick install** - three commands to get the stack running on Podman. | **Start here** to stand it up. |
 | \`PODMAN-DEPLOYMENT-NOTES.md\` | Podman-specific notes: verified requirements, fixes already applied, harmless warnings. | If anything looks off during install. |
 | \`docs/TUTORIAL-gate-your-first-package.md\` | **Step-by-step guide** - zero to gating one real package, one safe path. | **After install**, first time in the console. |
-| \`docs/HOW-TO-GUIDES.md\` | **How-to guides** - one real goal per task, for someone who knows the basics. | Day-to-day, for one specific thing. |
+| \`docs/HOW-TO-GUIDES.md\` | **How-to guides** - one goal per task (set policy, gate, approve, exceptions, **point developers' pip/npm at the firewall + enforce it org-wide via IT policy**, reports, add ecosystems). | Day-to-day, for one specific thing. |
 | \`docs/CONSOLE-USER-MANUAL.md\` | Full reference manual - everything you see and do. | Reference / look-up. |
 | \`docs/RUNBOOK.md\` | Operations runbook - network egress allowlist, ports, SSO, scanners, troubleshooting. | Before go-live and for ongoing ops. |
 
@@ -171,6 +174,9 @@ Read this page first; it tells you what to open and in what order.
    (The console also has a built-in **? Guide** button in the top bar.)
 3. **Operate it** - use \`docs/HOW-TO-GUIDES.md\` for individual tasks and \`docs/RUNBOOK.md\` for
    networking/ports/SSO. Keep \`docs/CONSOLE-USER-MANUAL.md\` as your reference.
+4. **Wire up your developers** - so their normal \`pip install\` / \`npm install\` go through the firewall.
+   See \`docs/HOW-TO-GUIDES.md\` guide 6 (developer setup **and** the *"For IT - enforce the redirect for
+   everyone"* section for pushing it org-wide via Group Policy / Intune / a network block).
 
 ## The two guides, in one line each
 
