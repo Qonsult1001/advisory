@@ -6,7 +6,7 @@ COPY src/Advisory.Api/ ./Advisory.Api/
 RUN dotnet publish ./Advisory.Api/Advisory.Api.csproj -c Release -o /app
 
 # Reachability analyzer deps (acorn) installed in a node stage, copied into runtime.
-FROM node:20-alpine AS reach
+FROM docker.io/library/node:20-alpine AS reach
 WORKDIR /reach
 COPY tools/reachability/package.json ./
 RUN npm install --omit=dev

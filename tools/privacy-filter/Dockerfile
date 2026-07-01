@@ -1,5 +1,5 @@
 # OpenAI Privacy Filter sidecar — runs openai/privacy-filter ONNX directly (onnxruntime-node).
-FROM node:20-slim
+FROM docker.io/library/node:20-slim
 WORKDIR /app
 # onnxruntime-node ships prebuilt native binaries; no build toolchain needed on glibc/Debian.
 COPY package.json ./

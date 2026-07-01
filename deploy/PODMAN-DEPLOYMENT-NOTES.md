@@ -10,6 +10,14 @@ This records what was found running the rollout bundle against a real **Podman 4
   `podman-compose` 1.6.0 was present - the `podman compose` plugin form was not installed; the
   installer handled that via its `podman-compose` fallback.)
 - **The image builds complete** (api, console, scanners) - the build phase finished with success.
+- **The full stack comes up and serves.** After the fixes below, `./install.sh --podman` ran to
+  `✓ Stack is up.` with all four core containers Up (nexus, mssql, api, console) and every endpoint
+  answering **HTTP 200**: API health (`:5000/api/health`), console (`:8088`), Nexus (`:8081`).
+- **The firewall gate works end-to-end.** `POST /api/gate/evaluate` for `npm/left-pad@1.3.0` returned a
+  real decision (`Allow`) with the OSV source actually queried (`status:Empty, 366ms`), the OpenSSF
+  malware feed run, and honest coverage/gaps reported - i.e. a genuine live evaluation, not a stub. The
+  catalog DB is populated (`/api/catalog/ecosystems` lists PyPI, npm, NuGet, Cargo, Go, Maven, RubyGems,
+  HuggingFace... as `live`).
 
 ## Issues found and fixed
 
@@ -29,6 +37,36 @@ Cause: the API Dockerfile copies several files that are **gitignored** (the `sai
 Fix (already applied): the packaging step now also copies the gitignored build dependencies and
 `tools/reachability/`. The bundle grew from ~6 MB to ~34 MB to include them. After the fix the API
 image builds. **If you ever repackage, use the current `package.sh`.**
+
+### 2. Short image names not resolvable (FIXED)
+
+The build then failed on the console/scanner images with:
+
+```text
+Error: creating build container: short-name resolution enforced but cannot prompt without a TTY
+```
+
+Cause: unlike Docker, Podman **refuses to guess the registry** for a short image name (`node:20-alpine`,
+`nginx:alpine`, `sonatype/nexus3:...`). Interactively it prompts; from a non-interactive installer it
+can't, so the build aborts and no containers start. Only the already-fully-qualified
+`mcr.microsoft.com/...` images built.
+
+Fix (already applied): every base image is now **fully qualified to `docker.io/...`** in the
+Dockerfiles (`docker.io/library/node:20-alpine`, `docker.io/library/nginx:alpine`,
+`docker.io/library/node:20-slim`, `docker.io/library/node:22-slim`) and in the compose
+(`docker.io/sonatype/nexus3:3.93.1`). This is portable - Docker treats the qualified name identically,
+so the same images work on both engines. (Alternatively an admin can add
+`unqualified-search-registries = ["docker.io"]` to `/etc/containers/registries.conf`, but qualifying
+the images needs no host change and is what the bundle ships.)
+
+### 3. Benign warnings you can ignore
+
+On rootless Podman in WSL2 you may see, and can ignore:
+
+- `HEALTHCHECK is not supported for OCI image format and will be ignored` - Podman builds OCI images;
+  the container healthchecks are cosmetic-only there, the stack still runs.
+- `failed to move the rootless netns slirp4netns process to the systemd user.slice` - a rootless-WSL
+  cgroup message; networking still works (every endpoint returned 200 with it present).
 
 ## Requirements confirmed for Podman
 
@@ -71,8 +109,11 @@ this WSL memory-partition constraint.
 
 ## Status
 
-- Build path on Podman: **verified working** (after the missing-deps fix).
-- Full end-to-end run (all 6 containers healthy + a package gated) on Podman: **not completed in the
-  WSL2 test environment** due to host memory pressure during the build+start spike. On a host with
-  adequate RAM (8 GB+) this is expected to complete; verify with `podman-compose ps` and the console at
-  `http://<host>:8088`. The same end-to-end flow is verified working on Docker.
+- Build path on Podman: **verified working** (after the missing-deps + short-name fixes).
+- Full end-to-end run on Podman: **verified working.** `./install.sh --podman` (Podman 4.6.2,
+  `podman-compose` 1.6.0, Ubuntu 22.04 in WSL2) reached `✓ Stack is up.` with the four core containers
+  (nexus, mssql, api, console) Up, all endpoints returning 200, and a live package gate
+  (`npm/left-pad@1.3.0 → Allow`, OSV queried). Scanners are built and left stopped; start them with
+  `--scanners`.
+- Verify on your host with `podman-compose ps` and the console at `http://<host>:8088`. The same
+  end-to-end flow is also verified on Docker.

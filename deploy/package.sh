@@ -100,10 +100,11 @@ You have one file: \`$OUT\`. It contains the full Advisory firewall, pre-configu
 \`\`\`
 tar -xzf $OUT
 cd advisory-rollout/deploy
-./install.sh            # add --scanners to also start the PII + extension scanners
+./install.sh --podman            # force Podman; add --scanners to also start the scanners
 \`\`\`
-It is already configured and auto-detects Podman. The installer builds the images, starts the stack,
-and prints the URLs.
+\`--podman\` guarantees Podman is used (important if Docker Desktop's WSL integration is also present -
+without it the installer might pick Docker). It is already configured; the installer builds the images,
+starts the stack, and prints the URLs. Watch for \`Using: podman compose\` (or \`podman-compose\`).
 
 ## After it starts
 - Console (curation team):  http://<this-host>:8088
@@ -113,10 +114,18 @@ Open the console, click **Continue**, then follow the in-app **? Guide** (top ba
 deploy/docs/TUTORIAL-gate-your-first-package.md.
 
 ## Commands (in advisory-rollout/deploy)
+
+Use whichever compose command your host has. If \`podman compose\` says "unrecognized command", your
+host uses standalone \`podman-compose\` (pip-installed at ~/.local/bin - ensure it's on PATH with
+\`export PATH="\\\$HOME/.local/bin:\\\$PATH"\`).
 \`\`\`
-podman compose ps          # status
-podman compose logs -f     # logs
-podman compose down        # stop
+podman compose ps          # (plugin)      status
+podman compose logs -f     #               logs
+podman compose down        #               stop
+# or, if you use standalone podman-compose:
+podman-compose ps
+podman-compose logs -f
+podman-compose down
 \`\`\`
 Full ops/SSO/troubleshooting: deploy/README.md.
 TXT

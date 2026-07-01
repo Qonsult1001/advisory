@@ -15,7 +15,7 @@ services:
   # --- Nexus repository: the proxy/store. Quarantine (proxy) + Approved (hosted) repos live here.
   #     Developers pull approved packages from this service. Pinned for reproducibility.
   nexus:
-    image: sonatype/nexus3:3.93.1
+    image: docker.io/sonatype/nexus3:3.93.1
     restart: unless-stopped
     ports: ["${NEXUS_PORT:-8081}:8081"]
     volumes: ["nexus-data:/nexus-data"]

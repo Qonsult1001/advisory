@@ -1,5 +1,5 @@
 # Real VS Code extension exfiltration scanner sidecar — trailofbits/vsix-audit (needs Node 22+).
-FROM node:22-slim
+FROM docker.io/library/node:22-slim
 
 # vsix-audit shells the YARA-X `yr` CLI for its rule engine; install the prebuilt binary so YARA
 # rules actually run (RAT / credential-harvesting / webhook-exfiltration / self-propagation) rather
