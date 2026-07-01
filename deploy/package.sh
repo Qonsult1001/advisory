@@ -98,6 +98,10 @@ cat > "$HANDOFF/INSTALL.md" <<TXT
 
 You have one file: \`$OUT\`. It contains the full Advisory firewall, pre-configured and ready to run.
 
+> New here? Read \`README.md\` in this folder first - it indexes everything. The guides this page points
+> to (\`deploy/docs/...\`, \`deploy/README.md\`) live inside the tarball once you extract it, and are
+> **also copied loose in this folder** as \`docs/\` and \`docs/RUNBOOK.md\` so you can read them now.
+
 ## Requirements
 - Linux with **Podman 4.x or newer** plus a compose tool (\`podman compose\` or \`podman-compose\`).
   Docker also works; the installer auto-detects whichever you have. Check: \`podman --version\`.
@@ -140,5 +144,46 @@ podman-compose down
 Full ops/SSO/troubleshooting: deploy/README.md.
 TXT
 
-echo "✓ Done: $HANDOFF/$OUT  (+ INSTALL.md)"
-echo "  Hand the whole handoff/ folder to IT. They run:  tar -xzf $OUT && cd advisory-rollout/deploy && ./install.sh"
+# Top-level index so whoever receives handoff/ knows what to open and in what order.
+cat > "$HANDOFF/README.md" <<TXT
+# Advisory firewall - IT handoff
+
+This folder is everything you need to install and use the Advisory software-supply-chain firewall.
+Read this page first; it tells you what to open and in what order.
+
+## What's in this folder
+
+| File | What it is | When to read it |
+|------|-----------|-----------------|
+| \`$OUT\` | The whole product, pre-configured (console, gate API, Nexus repo, scanners). | This is what you install. |
+| \`INSTALL.md\` | The **quick install** - three commands to get the stack running on Podman. | **Start here** to stand it up. |
+| \`PODMAN-DEPLOYMENT-NOTES.md\` | Podman-specific notes: verified requirements, fixes already applied, harmless warnings. | If anything looks off during install. |
+| \`docs/TUTORIAL-gate-your-first-package.md\` | **Step-by-step guide** - zero to gating one real package, one safe path. | **After install**, first time in the console. |
+| \`docs/HOW-TO-GUIDES.md\` | **How-to guides** - one real goal per task, for someone who knows the basics. | Day-to-day, for one specific thing. |
+| \`docs/CONSOLE-USER-MANUAL.md\` | Full reference manual - everything you see and do. | Reference / look-up. |
+| \`docs/RUNBOOK.md\` | Operations runbook - network egress allowlist, ports, SSO, scanners, troubleshooting. | Before go-live and for ongoing ops. |
+
+## Do this, in order
+
+1. **Install** - follow \`INSTALL.md\`. When it finishes you'll see \`Stack is up.\` and three URLs
+   (console \`:8088\`, Nexus \`:8081\`, API health \`:5000\`).
+2. **Learn it by doing** - open the console and follow \`docs/TUTORIAL-gate-your-first-package.md\`.
+   (The console also has a built-in **? Guide** button in the top bar.)
+3. **Operate it** - use \`docs/HOW-TO-GUIDES.md\` for individual tasks and \`docs/RUNBOOK.md\` for
+   networking/ports/SSO. Keep \`docs/CONSOLE-USER-MANUAL.md\` as your reference.
+
+## The two guides, in one line each
+
+- **Step-by-step guide** (\`docs/TUTORIAL-gate-your-first-package.md\`) - "I've never used this; walk me
+  from nothing to my first success." One guaranteed path.
+- **How-to guides** (\`docs/HOW-TO-GUIDES.md\`) - "I know the basics; I just need to do *this one thing*."
+  Each guide is a single goal.
+
+## Security note for whoever hands this over
+
+The tarball is **pre-configured with live API keys** (Groq, VulnCheck, OpenRouter). Treat this folder
+as a secret in transit, and **rotate those keys after the handoff**.
+TXT
+
+echo "✓ Done: $HANDOFF/$OUT  (+ README.md, INSTALL.md, docs/)"
+echo "  Hand the whole handoff/ folder to IT. Tell them to open README.md first."
