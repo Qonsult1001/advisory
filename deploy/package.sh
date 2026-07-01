@@ -83,6 +83,16 @@ echo "→ Creating handoff/$OUT…"
 ( cd "$STAGE" && tar -czf - advisory-rollout ) > "$HANDOFF/$OUT"
 rm -rf "$STAGE"
 
+# Also copy the human docs LOOSE into handoff/ so IT can read them WITHOUT extracting the tarball
+# (and so these never drift from the source — this mirror is regenerated on every package run).
+echo "→ Copying docs loose into handoff/docs/ (readable without extracting)…"
+mkdir -p "$HANDOFF/docs"
+cp deploy/docs/TUTORIAL-gate-your-first-package.md "$HANDOFF/docs/" 2>/dev/null || true
+cp deploy/docs/HOW-TO-GUIDES.md                    "$HANDOFF/docs/" 2>/dev/null || true
+cp deploy/docs/CONSOLE-USER-MANUAL.md              "$HANDOFF/docs/" 2>/dev/null || true
+cp deploy/README.md                                "$HANDOFF/docs/RUNBOOK.md" 2>/dev/null || true
+cp deploy/PODMAN-DEPLOYMENT-NOTES.md               "$HANDOFF/PODMAN-DEPLOYMENT-NOTES.md" 2>/dev/null || true
+
 cat > "$HANDOFF/INSTALL.md" <<TXT
 # Advisory - install (Podman)
 
