@@ -7,18 +7,19 @@ where the real world forks ("if X, then…").
 > `<CONSOLE_URL>` / `<NEXUS_URL>` are the addresses your administrator configured for this install.
 
 **Guides in this document**
-1. [Set your firewall policy](#1-set-your-firewall-policy)
-2. [Turn on intelligence feeds](#2-turn-on-intelligence-feeds)
-3. [Gate a package end-to-end](#3-gate-a-package-end-to-end)
-4. [Approve or revoke a package](#4-approve-or-revoke-a-package)
-5. [Grant an exception for a blocked package](#5-grant-an-exception-for-a-blocked-package)
-6. [Pull an approved package (developer)](#6-pull-an-approved-package-developer)
-7. [Read the audit ledger](#7-read-the-audit-ledger)
-8. [Export a report](#8-export-a-report)
-9. [Provision a new ecosystem](#9-provision-a-new-ecosystem)
+1. [Set your firewall policy](#g1)
+2. [Turn on intelligence feeds](#g2)
+3. [Gate a package end-to-end](#g3)
+4. [Approve or revoke a package](#g4)
+5. [Grant an exception for a blocked package](#g5)
+6. [Pull an approved package (developer)](#g6)
+7. [Read the audit ledger](#g7)
+8. [Export a report](#g8)
+9. [Provision a new ecosystem](#g9)
 
 ---
 
+<a id="g1"></a>
 ## 1. Set your firewall policy
 
 **Goal:** decide what the firewall allows or blocks, and save it.
@@ -70,6 +71,7 @@ prohibited licences, etc.), then **Commit & sign policy**.
 
 ---
 
+<a id="g2"></a>
 ## 2. Turn on intelligence feeds
 
 **Goal:** make sure the gate has the threat data it needs.
@@ -95,6 +97,7 @@ prohibited licences, etc.), then **Commit & sign policy**.
 
 ---
 
+<a id="g3"></a>
 ## 3. Gate a package end-to-end
 
 **Goal:** run any package through the firewall and see the verdict.
@@ -124,6 +127,7 @@ prohibited licences, etc.), then **Commit & sign policy**.
 
 ---
 
+<a id="g4"></a>
 ## 4. Approve or revoke a package
 
 **Goal:** override the gate — either force a package in, or pull an approved one out.
@@ -149,6 +153,7 @@ prohibited licences, etc.), then **Commit & sign policy**.
 
 ---
 
+<a id="g5"></a>
 ## 5. Grant an exception for a blocked package
 
 **Goal:** allow a specific package the gate would block, with an audit trail and an expiry.
@@ -175,6 +180,7 @@ prohibited licences, etc.), then **Commit & sign policy**.
 
 ---
 
+<a id="g6"></a>
 ## 6. Pull an approved package (developer)
 
 **Goal:** as a developer, install a package that the firewall has approved — from the repository, not
@@ -209,6 +215,7 @@ npm install <package> --registry <NEXUS_URL>/repository/npm-approved/
 
 ---
 
+<a id="g7"></a>
 ## 7. Read the audit ledger
 
 **Goal:** see exactly what the firewall decided, when, and why — for review or an auditor.
@@ -236,6 +243,7 @@ npm install <package> --registry <NEXUS_URL>/repository/npm-approved/
 
 ---
 
+<a id="g8"></a>
 ## 8. Export a report
 
 **Goal:** produce a shareable report (PDF / Word / CSV) of the firewall's findings.
@@ -264,6 +272,7 @@ npm install <package> --registry <NEXUS_URL>/repository/npm-approved/
 
 ---
 
+<a id="g9"></a>
 ## 9. Provision a new ecosystem
 
 **Goal:** turn on the firewall for a package world it isn't gating yet (e.g. NuGet, Cargo, RubyGems).
