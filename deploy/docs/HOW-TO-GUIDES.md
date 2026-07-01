@@ -178,87 +178,73 @@ prohibited licences, etc.), then **Commit & sign policy**.
 
 ## 6. Install packages through the firewall (developer, from your own PC)
 
-**Goal:** you're a developer on your laptop (call yourself *user ABC*). Instead of `pip install` /
-`npm install` reaching straight out to the public internet, you point your tools at the **Advisory
-proxy** so every package is one the firewall has vetted.
-**Start:** your administrator has given you the repository address — call it `<NEXUS_URL>` (for example
-`http://advisory.mycompany.local:8081` or `http://10.0.0.5:8081`). You have `pip` / `npm` installed.
-**End:** `pip install` / `npm install` pull from the approved repo, and blocked packages simply aren't
-there.
+**Goal:** you're a developer on your laptop (call yourself *user ABC*). You keep running the **normal**
+`pip install` / `npm install` you already use — nothing about your commands changes. A **one-time
+registry setting** silently redirects them through the Advisory proxy, so every package you get is one
+the firewall has vetted.
+**Start:** your administrator has given you the proxy address — call it `<NEXUS_URL>` (for example
+`http://advisory.mycompany.local:8081`). You have `pip` / `npm` installed.
+**End:** plain `pip install <anything>` / `npm install <anything>` are transparently served through the
+firewall — same commands, safe source.
 
-> **Which address?** You always point at the **`-approved`** repo, never `-quarantine`. The path pattern
-> is `<NEXUS_URL>/repository/<ecosystem>-approved/…`. You can only download what passed the gate — that's
-> the whole point of the firewall.
-
-You can do this **two ways**: a **one-off** flag (just this once) or a **permanent** config (every
-install from now on). Do the permanent one — that's what a real setup looks like.
+> **The idea:** you don't type a new URL and you don't learn a new command. You set the redirect **once**
+> (below), then use pip/npm exactly as before. In many organisations **IT sets this for you** (via a
+> managed config or an environment variable) and you skip straight to *"Use it normally"*.
 
 ---
 
 ### Python — pip
 
-**Test it once (one-off, changes nothing permanent):**
+**Set the redirect once:**
 ```
-pip install requests --index-url <NEXUS_URL>/repository/pypi-approved/simple/
+pip config set global.index-url <NEXUS_URL>/repository/pypi-approved/simple/
 ```
-**You should see:** pip downloads from your `<NEXUS_URL>` address (watch the URLs it prints), then
-`Successfully installed requests-…`.
+*(If `<NEXUS_URL>` is plain `http://`, also run:*
+`pip config set global.trusted-host <host part of NEXUS_URL, e.g. advisory.mycompany.local>`*)*
 
-**Make it permanent (recommended)** — so plain `pip install <anything>` always goes through the proxy:
+**Use it normally — same command you always run:**
+```
+pip install requests
+```
 
-1. Create/edit pip's config file:
-   - **Windows:** `%APPDATA%\pip\pip.ini`
-   - **macOS / Linux:** `~/.config/pip/pip.conf`
-2. Put this in it (replace `<NEXUS_URL>` with your real address):
-   ```
-   [global]
-   index-url = <NEXUS_URL>/repository/pypi-approved/simple/
-   ```
-3. Save. Now just run:
-   ```
-   pip install requests
-   ```
+**You should see:** `Successfully installed requests-…`. You didn't type any Nexus URL — pip picked up
+the redirect from its config and pulled through the firewall.
 
-**You should see:** it installs from `<NEXUS_URL>` with no `--index-url` flag needed. You're going
-through the firewall for every install.
-
-> **HTTPS vs HTTP:** if `<NEXUS_URL>` is plain `http://` (common for an internal server), pip may warn.
-> Add the host as trusted — under `[global]` add:
-> `trusted-host = <the host part of NEXUS_URL, e.g. advisory.mycompany.local>`
+> **Prefer not to run a command?** The same setting lives in a file pip reads
+> (`%APPDATA%\pip\pip.ini` on Windows, `~/.config/pip/pip.conf` on macOS/Linux) under
+> `[global]` → `index-url = …`. IT can push that file to every machine so nobody sets anything by hand.
 
 ---
 
 ### Node — npm
 
-**Test it once (one-off):**
-```
-npm install lodash --registry <NEXUS_URL>/repository/npm-approved/
-```
-**You should see:** npm resolves `lodash` from `<NEXUS_URL>` and installs it.
-
-**Make it permanent (recommended):**
+**Set the redirect once:**
 ```
 npm config set registry <NEXUS_URL>/repository/npm-approved/
 ```
-Then plain `npm install lodash` uses the proxy. Check it stuck:
-```
-npm config get registry
-```
-**You should see:** it prints your `<NEXUS_URL>/repository/npm-approved/` address.
 
-> **Per-project instead of global:** put a file called `.npmrc` in the project folder with one line —
-> `registry=<NEXUS_URL>/repository/npm-approved/` — and only that project uses the proxy.
+**Use it normally — same command you always run:**
+```
+npm install lodash
+```
+
+**You should see:** lodash installs as usual. Confirm the redirect is in place with
+`npm config get registry` → it prints your `<NEXUS_URL>` address.
+
+> **Per-project instead of machine-wide:** drop a `.npmrc` file in the project with one line —
+> `registry=<NEXUS_URL>/repository/npm-approved/` — and only that project is redirected. IT can commit
+> this to the repo so every clone is wired automatically.
 
 ---
 
-### Other ecosystems (same pattern)
+### Other ecosystems (same one-time-setting idea)
 
-Point the tool at `<NEXUS_URL>/repository/<eco>-approved/…`:
+Set it once, then use the tool normally:
 
-| Ecosystem | Command / config |
+| Ecosystem | One-time setting |
 |-----------|------------------|
-| **NuGet (.NET)** | `dotnet nuget add source <NEXUS_URL>/repository/nuget-approved/index.json -n advisory` |
-| **Cargo (Rust)** | in `~/.cargo/config.toml`: set a source replacement to `<NEXUS_URL>/repository/cargo-approved/` |
+| **NuGet (.NET)** | `dotnet nuget add source <NEXUS_URL>/repository/nuget-approved/index.json -n advisory` (then remove nuget.org from the project's sources so restores use only the proxy) |
+| **Cargo (Rust)** | in `~/.cargo/config.toml`, replace the crates-io source with `<NEXUS_URL>/repository/cargo-approved/` |
 | **Go** | `go env -w GOPROXY=<NEXUS_URL>/repository/go-approved/` |
 
 (Only ecosystems your administrator has **provisioned** — see guide 9 — will answer.)
@@ -270,23 +256,23 @@ Point the tool at `<NEXUS_URL>/repository/<eco>-approved/…`:
 Two quick proofs:
 
 1. **A blocked package isn't installable.** Ask your security team for a package they know is **Held /
-   Blocked** and try to install it — it should fail with *not found*, because blocked packages never
-   reach the approved repo.
-2. **Browse what's available:** open `<NEXUS_URL>` in a browser → the repository UI → look in the
-   `<eco>-approved` repo. Everything there passed the gate.
+   Blocked** and `pip install` / `npm install` it by name — it should fail with *not found*, because
+   blocked packages never reach the approved repo.
+2. **Check the redirect is set:** `pip config get global.index-url` / `npm config get registry` — each
+   should print your `<NEXUS_URL>` address.
 
 **Branches:**
 - **`pip install` / `npm install` fails with "not found" / 404:** the package hasn't been gated yet, or
   it was **blocked**. Ask your security team to run it through the Catalog (guide 3), or request an
   exception (guide 5). This is expected behaviour, not a broken setup.
-- **"Connection refused" / can't reach `<NEXUS_URL>`:** you're not on the network that can see the
-  server, or the address/port is wrong. Confirm `<NEXUS_URL>` with your administrator and that you can
-  open it in a browser first.
-- **You accidentally pointed at `-quarantine`:** it won't let you download — quarantine is not a
-  pullable repo. Use `-approved`.
+- **Install still hits the public internet:** the redirect didn't take — re-run the `config set` command,
+  then confirm with `pip config get global.index-url` / `npm config get registry`.
+- **"Connection refused" / can't reach the proxy:** you're not on the network that can see the server,
+  or the address is wrong. Confirm `<NEXUS_URL>` with your administrator and that it opens in a browser.
 
-> You **cannot** pull from `<eco>-quarantine` — only approved packages are downloadable. If it's not in
-> `-approved`, the firewall hasn't cleared it.
+> You are always redirected to the **`-approved`** repo. There is nothing to pull from `-quarantine` —
+> only vetted packages are downloadable. That's the whole point: your normal `pip`/`npm` commands can
+> only ever get what passed the gate.
 
 ---
 
