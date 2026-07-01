@@ -276,6 +276,61 @@ Two quick proofs:
 
 ---
 
+### For IT — enforce the redirect for everyone (global policy)
+
+> **Read this if you're the administrator, not an individual developer.** The `config set` commands
+> above are *per-user, per-machine* — they only protect a developer who runs them. To make the firewall
+> **mandatory** (so nobody can accidentally or deliberately pull straight from the public internet), IT
+> must **push the redirect centrally** and, ideally, **block direct registry access at the network**.
+> Do both: config makes the tools use the proxy; the network makes it the *only* option.
+
+**Principle:** deploy the same setting to every machine via your existing management channel (Group
+Policy / Intune / Jamf / a provisioning script / a base container image) instead of asking each user.
+Set it **per ecosystem** — one entry each for pip, npm, NuGet, Cargo, Go. The setting is the same one
+from the sections above; you're just delivering it as a **managed file or environment variable**.
+
+**Per-ecosystem managed setting (deploy these):**
+
+| Ecosystem | What IT pushes (machine-wide) |
+|-----------|-------------------------------|
+| **pip** | A global `pip.conf` / `pip.ini` with `[global]` `index-url = <NEXUS_URL>/repository/pypi-approved/simple/`. Machine-wide locations: Linux `/etc/pip.conf`, Windows `C:\ProgramData\pip\pip.ini`. (Or set the `PIP_INDEX_URL` environment variable for all users.) |
+| **npm** | A global `.npmrc` with `registry=<NEXUS_URL>/repository/npm-approved/`. Machine-wide: the file at npm's global prefix `etc/npmrc`, or set the `NPM_CONFIG_REGISTRY` environment variable for all users. |
+| **NuGet** | A machine-wide `NuGet.Config` with **only** the `<NEXUS_URL>/repository/nuget-approved/index.json` source (remove `nuget.org`). Location: Windows `%ProgramFiles(x86)%\NuGet\Config\`, Linux `/etc/NuGet/NuGet.Config`. |
+| **Cargo** | A shared `~/.cargo/config.toml` (or `$CARGO_HOME/config.toml` baked into the image) that replaces the crates-io source with `<NEXUS_URL>/repository/cargo-approved/`. |
+| **Go** | The `GOPROXY` environment variable set for all users to `<NEXUS_URL>/repository/go-approved/`, plus `GONOSUMDB`/`GOFLAGS` as your policy needs. |
+
+**Deliver it with the channel you already run:**
+- **Windows (domain):** Group Policy *Preferences → Files* to drop `pip.ini` / `.npmrc` / `NuGet.Config`
+  into the ProgramData locations, and *Environment* to set `PIP_INDEX_URL` / `NPM_CONFIG_REGISTRY` /
+  `GOPROXY` for all users.
+- **Windows/macOS (MDM — Intune / Jamf):** ship the same config files and environment variables as a
+  configuration profile.
+- **Linux / servers / CI:** put the files in the machine-wide locations above (or set the env vars in
+  `/etc/environment`) via your config-management tool (Ansible/Chef/Puppet) or the base image.
+- **Docker / CI images:** bake the config files (or `ENV PIP_INDEX_URL=…`, `ENV NPM_CONFIG_REGISTRY=…`)
+  into your **base image** so every build and container is wired with zero developer action.
+
+**Make it enforced, not just default (recommended):**
+1. **Block the public registries at the network** for developer subnets — deny egress to
+   `pypi.org`/`files.pythonhosted.org`, `registry.npmjs.org`, `api.nuget.org`, `crates.io`,
+   `proxy.golang.org`, etc. — and **allow only `<NEXUS_URL>`**. Now the proxy is the *only* reachable
+   source, so a user who removes their local config simply can't install anything from outside.
+   (See RUNBOOK section 1a for the exact host list.) **Note:** block these on the *developer* subnets
+   only — the *Advisory server* still needs to reach them, because the proxy is what fetches upstream.
+2. **Prefer machine-wide config over per-user** so a normal user can't override it, and set the env-var
+   form where you want it to win regardless of local files.
+
+**Verify the fleet is enforced:**
+- On a managed machine, `pip config get global.index-url` / `npm config get registry` print `<NEXUS_URL>`
+  **without anyone having run a command** — that proves the push worked.
+- From a developer subnet, a direct `pip install --index-url https://pypi.org/simple <pkg>` should
+  **fail to connect** (network block), not fall through to the internet.
+
+> Bottom line: **config = the tools use the proxy; network block = the proxy is the only option.** Ship
+> both from IT and the firewall is enforced for every user, not just the ones who set it up themselves.
+
+---
+
 ## 7. Read the audit ledger
 
 **Goal:** see exactly what the firewall decided, when, and why — for review or an auditor.
