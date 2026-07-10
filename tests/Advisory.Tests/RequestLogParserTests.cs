@@ -37,6 +37,48 @@ public class RequestLogParserTests
     }
 
     [Fact]
+    public void Parses_npm_metadata_404_into_npm_package()
+    {
+        const string meta =
+            "10.0.0.5 - - [10/Jul/2026:07:15:01 +0000] \"GET /repository/npm-approved/lodash HTTP/1.1\" 404 - 0 3 \"npm/10.5.0 node/v20\" [q]";
+        Assert.True(RequestLogParser.TryParseMiss(meta, out var pkg));
+        Assert.Equal(Ecosystem.npm, pkg!.Ecosystem);
+        Assert.Equal("lodash", pkg.Name);
+    }
+
+    [Fact]
+    public void Parses_npm_tarball_404_to_the_package_name()
+    {
+        const string tgz =
+            "10.0.0.5 - - [10/Jul/2026:07:15:02 +0000] \"GET /repository/npm-approved/lodash/-/lodash-4.17.21.tgz HTTP/1.1\" 404 - 0 3 \"npm/10\" [q]";
+        Assert.True(RequestLogParser.TryParseMiss(tgz, out var pkg));
+        Assert.Equal(Ecosystem.npm, pkg!.Ecosystem);
+        Assert.Equal("lodash", pkg.Name);
+    }
+
+    [Fact]
+    public void Parses_npm_scoped_metadata_url_encoded_slash()
+    {
+        // npm requests scoped-package metadata with the slash URL-encoded: @org%2fpkg
+        const string scoped =
+            "10.0.0.5 - - [10/Jul/2026:07:15:03 +0000] \"GET /repository/npm-approved/@babel%2fcore HTTP/1.1\" 404 - 0 3 \"npm/10\" [q]";
+        Assert.True(RequestLogParser.TryParseMiss(scoped, out var pkg));
+        Assert.Equal(Ecosystem.npm, pkg!.Ecosystem);
+        Assert.Equal("@babel/core", pkg.Name);
+    }
+
+    [Fact]
+    public void Parses_npm_scoped_tarball()
+    {
+        // scoped tarball: /@org/pkg/-/pkg-1.2.3.tgz  (slash NOT encoded in the tarball path form)
+        const string scopedTgz =
+            "10.0.0.5 - - [10/Jul/2026:07:15:04 +0000] \"GET /repository/npm-approved/@babel/core/-/core-7.24.0.tgz HTTP/1.1\" 404 - 0 3 \"npm/10\" [q]";
+        Assert.True(RequestLogParser.TryParseMiss(scopedTgz, out var pkg));
+        Assert.Equal(Ecosystem.npm, pkg!.Ecosystem);
+        Assert.Equal("@babel/core", pkg.Name);
+    }
+
+    [Fact]
     public void Ignores_non_404_lines()
     {
         const string ok =

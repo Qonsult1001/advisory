@@ -58,7 +58,10 @@ public static class RequestLogParser
         {
             // pip: index "simple/<name>/" OR wheel "packages/<name>/<ver>/<file>" — both → <name>.
             Ecosystem.PyPI => PyName(rest),
-            _ => null, // other ecosystems added in their own slices (#164 npm, then NuGet/Cargo/Go).
+            // npm: metadata "<name>" or scoped "@org%2fpkg"; tarball "<name>/-/<file>.tgz" or
+            // scoped "@org/pkg/-/<file>.tgz". All → the package name (scoped incl. the @org/ part).
+            Ecosystem.npm => NpmName(rest),
+            _ => null, // other ecosystems added in their own slices (NuGet/Cargo/Go next).
         };
     }
 
@@ -69,5 +72,21 @@ public static class RequestLogParser
         if (segs.Length >= 2 && (segs[0] == "simple" || segs[0] == "packages"))
             return Uri.UnescapeDataString(segs[1]);
         return null;
+    }
+
+    private static string? NpmName(string rest)
+    {
+        if (string.IsNullOrEmpty(rest)) return null;
+        // Decode first so scoped metadata "@org%2fpkg" becomes "@org/pkg".
+        var path = Uri.UnescapeDataString(rest);
+        // Tarball form ".../-/<file>.tgz" — the name is everything before "/-/".
+        var dash = path.IndexOf("/-/", StringComparison.Ordinal);
+        if (dash >= 0) path = path[..dash];
+        // Now: "name"  or  "@org/pkg". Scoped keeps two segments; unscoped is one.
+        var segs = path.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        if (segs.Length == 0) return null;
+        if (segs[0].StartsWith('@'))
+            return segs.Length >= 2 ? $"{segs[0]}/{segs[1]}" : null;   // @org/pkg
+        return segs[0];
     }
 }
