@@ -63,6 +63,10 @@ services:
       # requested that aren't approved yet (they 404), and gates them on demand. Path is inside the
       # read-only nexus-data mount below. Blank disables the tailer.
       - NEXUS_REQUEST_LOG=${NEXUS_REQUEST_LOG:-/nexus-data/log/request.log}
+      # Off by default: verified that Nexus CE hosted "approved" repos serve dynamically and don't
+      # negatively-cache a miss, so a promoted package is served on the next pull with no invalidation.
+      # Turn on only if you front Nexus with a caching proxy that could hold a stale 404.
+      - NEXUS_INVALIDATE_ON_PROMOTE=${NEXUS_INVALIDATE_ON_PROMOTE:-false}
       # On-prem scanner sidecars.
       - PRIVACY_FILTER_URL=http://privacy-filter:8071
       - VSIX_SCANNER_URL=http://vsix-scanner:8099

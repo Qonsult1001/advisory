@@ -75,6 +75,11 @@ public class NexusClient : INexusClient
     private readonly string _quarantineSuffix;
     private readonly string _approvedSuffix;
     private readonly bool _deleteOnHold;
+    // Off by default: verified that Nexus 3.93 CE hosted (approved) repos serve dynamically and do NOT
+    // negatively-cache a miss, so a promoted package is served on the very next pull with no invalidation
+    // (the 24h negative-cache lives only on the quarantine PROXY, which developers never hit). Kept as a
+    // defensive switch for a future Nexus version or a proxy-fronted deployment where 404s could stick.
+    private readonly bool _invalidateOnPromote;
 
     // Per-ecosystem repo names follow the convention "<eco>-<suffix>". The prefix comes from the
     // single source of truth (NexusEcosystems, ADR 0001) — no per-ecosystem switch, no PyPI fallback.
@@ -91,6 +96,7 @@ public class NexusClient : INexusClient
         _quarantineSuffix = cfg["NEXUS_QUARANTINE_SUFFIX"] ?? "quarantine";
         _approvedSuffix = cfg["NEXUS_APPROVED_SUFFIX"] ?? "approved";
         _deleteOnHold = cfg.GetValue("NEXUS_DELETE_ON_HOLD", false);
+        _invalidateOnPromote = cfg.GetValue("NEXUS_INVALIDATE_ON_PROMOTE", false);
 
         var user = cfg["NEXUS_USER"]; var pass = cfg["NEXUS_PASS"];
         if (!string.IsNullOrWhiteSpace(user))
@@ -206,6 +212,18 @@ public class NexusClient : INexusClient
         var url = $"{_baseUrl}/service/rest/v1/components?repository={ApprovedRepo(c.Ecosystem)}";
         using var resp = await _http.PostAsync(url, form, ct);
         _log.LogInformation("Promote {Pkg} -> {Repo}: {Status}", c.Name, ApprovedRepo(c.Ecosystem), (int)resp.StatusCode);
+
+        // Defensive (off by default — hosted 404s are not sticky on Nexus 3.93 CE): if enabled, bust any
+        // negative cache on the approved repo so a developer's retry sees the freshly-uploaded package.
+        if (_invalidateOnPromote && resp.IsSuccessStatusCode)
+        {
+            try
+            {
+                using var inv = await _http.PostAsync(
+                    $"{_baseUrl}/service/rest/v1/repositories/{ApprovedRepo(c.Ecosystem)}/invalidate-cache", null, ct);
+            }
+            catch { /* best-effort */ }
+        }
     }
 
     public async Task HoldAsync(NexusComponent c, string reason, CancellationToken ct)
