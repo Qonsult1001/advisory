@@ -27,8 +27,10 @@ public class FirewallPolicy
     public List<string> LicenseBlocklist { get; set; } = new() { "GPL-3.0", "AGPL-3.0" };
 
     // --- Supply-chain freshness gate (control: SEC-SC-01) — JFrog Curation's "immature version"
-    //     condition: a version younger than this is blocked (typosquat / hijacked-release window). ---
-    public int MinPackageAgeDays { get; set; } = 14;
+    //     condition: a version younger than this is blocked (typosquat / hijacked-release window).
+    //     7 days balances typosquat protection against blocking legitimate fresh releases (14 was
+    //     strict enough to block common packages within a week of a normal release). ---
+    public int MinPackageAgeDays { get; set; } = 7;
 
     // --- Operational risk gate (control: SEC-OPR-01) — JFrog Xray operational-risk model:
     //     EOL/deprecated, version age, # newer versions, release cadence → High/Medium/Low/None.
@@ -80,8 +82,18 @@ public class FirewallPolicy
             Packages = new() { "PyPI:numpy", "PyPI:pandas", "HuggingFace:sentence-transformers/all-MiniLM-L6-v2" } },
     };
 
-    // --- Time-boxed approved exceptions (replaces the ticket queue) ---
-    public List<PolicyException> Exceptions { get; set; } = new();
+    // --- Time-boxed approved exceptions (replaces the ticket queue). Ships with the universal Python
+    //     BUILD BACKENDS pre-approved: pip needs setuptools/wheel/pip/build to install ANY sdist, they're
+    //     ubiquitous and trivially trusted, and blocking them (e.g. on new-version cooling-off or a
+    //     scorecard dip) breaks essentially every real `pip install`. No expiry (permanent allow); an
+    //     operator can remove them for a locked-down org. ---
+    public List<PolicyException> Exceptions { get; set; } = new()
+    {
+        new PolicyException { Package = "setuptools", Ecosystem = Ecosystem.PyPI, Reason = "Universal Python build backend — required to install any sdist.", ApprovedBy = "system" },
+        new PolicyException { Package = "wheel",      Ecosystem = Ecosystem.PyPI, Reason = "Universal Python build backend — required to build wheels.",     ApprovedBy = "system" },
+        new PolicyException { Package = "pip",        Ecosystem = Ecosystem.PyPI, Reason = "The installer itself — bootstrap dependency.",                  ApprovedBy = "system" },
+        new PolicyException { Package = "build",      Ecosystem = Ecosystem.PyPI, Reason = "PEP 517 build front-end — required for source builds.",         ApprovedBy = "system" },
+    };
 
     // --- Enabled intel plugins, in priority order (pluggable org platform) ---
     public List<string> EnabledSources { get; set; } = new() { "osv", "kev", "epss", "malware", "artifactory", "vsix-scanner" };

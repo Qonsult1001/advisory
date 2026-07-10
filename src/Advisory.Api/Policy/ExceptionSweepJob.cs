@@ -22,7 +22,10 @@ public class ExceptionSweepJob : BackgroundService
             try
             {
                 var p = _store.Current;
-                var expired = p.Exceptions.Where(e => e.Expires < DateTimeOffset.UtcNow).ToList();
+                // Only purge exceptions with a SET expiry that has passed. An unset expiry (year <= 1)
+                // means "permanent" (matches PolicyException.Matches) — e.g. the built-in build-backend
+                // allow-list — and must never be swept, or a fresh install loses them on the first tick.
+                var expired = p.Exceptions.Where(e => e.Expires.Year > 1 && e.Expires < DateTimeOffset.UtcNow).ToList();
                 if (expired.Count > 0)
                 {
                     foreach (var e in expired)
@@ -35,7 +38,7 @@ public class ExceptionSweepJob : BackgroundService
                     // the content-scan/reachability flags every time an exception expired.
                     var kept = System.Text.Json.JsonSerializer.Deserialize<FirewallPolicy>(
                         System.Text.Json.JsonSerializer.Serialize(p))!;
-                    kept.Exceptions = kept.Exceptions.Where(e => e.Expires >= DateTimeOffset.UtcNow).ToList();
+                    kept.Exceptions = kept.Exceptions.Where(e => !(e.Expires.Year > 1 && e.Expires < DateTimeOffset.UtcNow)).ToList();
                     await _store.UpdateAsync(kept, "exception-sweep");
                 }
             }
