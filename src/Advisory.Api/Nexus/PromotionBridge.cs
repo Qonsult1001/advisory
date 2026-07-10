@@ -116,10 +116,18 @@ public class PromotionBridge : BackgroundService
 
                     if (result.Decision == GateDecision.Allow && !revoked)
                     {
-                        if (bytes.Length == 0) bytes = await _nexus.DownloadAsync(c.DownloadUrl, ct);
-                        await _nexus.PromoteAsync(c, bytes, ct);
+                        // Promote ALL of the version's distribution files (every platform wheel + sdist)
+                        // so a developer on any OS/Python gets a matching artifact. For PyPI this lists the
+                        // version's files; if it promotes nothing (other ecosystems), fall back to the
+                        // single scanned artifact.
+                        var count = await _nexus.PromoteAllFilesAsync(c, ct);
+                        if (count == 0)
+                        {
+                            if (bytes.Length == 0) bytes = await _nexus.DownloadAsync(c.DownloadUrl, ct);
+                            await _nexus.PromoteAsync(c, bytes, ct);
+                        }
                         _processed.Add(c.ComponentId);   // promoted — don't re-promote next cycle
-                        _log.LogInformation("PROMOTED {Pkg}@{Ver}", c.Name, c.Version);
+                        _log.LogInformation("PROMOTED {Pkg}@{Ver} ({Count} files)", c.Name, c.Version, count);
                     }
                     else
                     {

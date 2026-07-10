@@ -55,6 +55,7 @@ public class NexusProvisionTests
             => Task.FromResult<IReadOnlyList<NexusComponent>>(Array.Empty<NexusComponent>());
         public Task<byte[]> DownloadAsync(string url, CancellationToken ct) => Task.FromResult(Array.Empty<byte>());
         public Task PromoteAsync(NexusComponent c, byte[] b, CancellationToken ct) => Task.CompletedTask;
+        public Task<int> PromoteAllFilesAsync(NexusComponent c, CancellationToken ct) => Task.FromResult(0);
         public Task HoldAsync(NexusComponent c, string reason, CancellationToken ct) => Task.CompletedTask;
     }
 

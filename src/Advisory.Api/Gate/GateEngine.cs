@@ -72,9 +72,17 @@ public class GateEngine : IGateEngine
 
         int hits = 0;
 
-        // SEC-SC-01 — immature version (JFrog Curation "package version is immature").
-        if (p.MinPackageAgeDays > 0 && OpRiskService.VersionAgeDays(risk) is double ageDays && ageDays < p.MinPackageAgeDays)
-        { decision.Value = GateDecision.Block; triggered.Add($"SEC-SC-01:IMMATURE:{ageDays:0}d<{p.MinPackageAgeDays}d"); hits++; }
+        // SEC-SC-01 — immature version (JFrog Curation "package version is immature"). By default this
+        // NOTIFIES (flags but allows) — a fresh release of a mainstream package shouldn't block real work;
+        // the hard blocks (CVE/malware/KEV) still apply. Set PackageAgeAction=Block to enforce a hard stop.
+        if (p.MinPackageAgeDays > 0 && !string.Equals(p.PackageAgeAction, "Disabled", StringComparison.OrdinalIgnoreCase)
+            && OpRiskService.VersionAgeDays(risk) is double ageDays && ageDays < p.MinPackageAgeDays)
+        {
+            if (string.Equals(p.PackageAgeAction, "Block", StringComparison.OrdinalIgnoreCase))
+            { decision.Value = GateDecision.Block; triggered.Add($"SEC-SC-01:IMMATURE:{ageDays:0}d<{p.MinPackageAgeDays}d"); hits++; }
+            else
+                triggered.Add($"SEC-SC-01:IMMATURE-NOTIFY:{ageDays:0}d<{p.MinPackageAgeDays}d");   // flagged, not blocked
+        }
 
         // LEG-LIC-01 — prohibited license (was a declared-but-unenforced policy field).
         if (risk.License is { Length: > 0 } lic &&

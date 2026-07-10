@@ -29,6 +29,7 @@ public interface INexusClient
     Task<IReadOnlyList<NexusComponent>> ListQuarantineAsync(CancellationToken ct);
     Task<byte[]> DownloadAsync(string url, CancellationToken ct);
     Task PromoteAsync(NexusComponent c, byte[] bytes, CancellationToken ct);
+    Task<int> PromoteAllFilesAsync(NexusComponent c, CancellationToken ct);
     Task HoldAsync(NexusComponent c, string reason, CancellationToken ct);
 
     /// <summary>Idempotently create the quarantine proxy + approved hosted pair for an ecosystem
@@ -224,6 +225,51 @@ public class NexusClient : INexusClient
             }
             catch { /* best-effort */ }
         }
+    }
+
+    /// <summary>Promote EVERY distribution file for an approved package VERSION — all platform wheels
+    /// plus the sdist — not just the single artifact the gate happened to scan. pip on a given OS/Python
+    /// needs its matching wheel (e.g. a Windows cp312 wheel), so promoting only one file (which may be a
+    /// macOS wheel) leaves the developer's install 404-ing. Best-effort per file; returns how many landed.
+    /// Currently implemented for PyPI (the simple index lists all files for the version); other ecosystems
+    /// fall back to the single-file PromoteAsync via the bridge.</summary>
+    public async Task<int> PromoteAllFilesAsync(NexusComponent c, CancellationToken ct)
+    {
+        if (!IsConfigured || c.Ecosystem != Ecosystem.PyPI) return 0;
+        var quarantineBase = $"{_baseUrl}/repository/{QuarantineRepo(c.Ecosystem)}";
+        var indexUrl = $"{quarantineBase}/simple/{Uri.EscapeDataString(c.Name.ToLowerInvariant())}/";
+        int promoted = 0;
+        try
+        {
+            var body = await _http.GetStringAsync(indexUrl, ct);
+            // Every file link whose version token matches this component's version.
+            var files = System.Text.RegularExpressions.Regex.Matches(body, "href=\"([^\"]+\\.(?:whl|tar\\.gz))")
+                .Select(m => m.Groups[1].Value.Split('#')[0])
+                .Where(href => PyVersionOf(href, c.Name) == c.Version)
+                .Distinct()
+                .ToList();
+            foreach (var rel in files)
+            {
+                var fileUrl = new Uri(new Uri(indexUrl), rel).ToString();
+                var fileName = rel.Substring(rel.LastIndexOf('/') + 1);
+                try
+                {
+                    var bytes = await DownloadAsync(fileUrl, ct);
+                    if (bytes.Length == 0) continue;
+                    using var form = new MultipartFormDataContent();
+                    var fc = new ByteArrayContent(bytes);
+                    fc.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+                    form.Add(fc, "pypi.asset", fileName);
+                    using var resp = await _http.PostAsync(
+                        $"{_baseUrl}/service/rest/v1/components?repository={ApprovedRepo(c.Ecosystem)}", form, ct);
+                    if (resp.IsSuccessStatusCode) promoted++;
+                }
+                catch (Exception ex) { _log.LogDebug("promote file {File} failed: {Err}", fileName, ex.Message); }
+            }
+            _log.LogInformation("Promoted {Count} file(s) for {Pkg}@{Ver} -> {Repo}", promoted, c.Name, c.Version, ApprovedRepo(c.Ecosystem));
+        }
+        catch (Exception ex) { _log.LogWarning(ex, "PromoteAllFiles {Pkg}@{Ver} failed", c.Name, c.Version); }
+        return promoted;
     }
 
     public async Task HoldAsync(NexusComponent c, string reason, CancellationToken ct)

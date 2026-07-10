@@ -42,6 +42,7 @@ public class NexusDiscoveryTests
 
         public Task<byte[]> DownloadAsync(string url, CancellationToken ct) => Task.FromResult(Array.Empty<byte>());
         public Task PromoteAsync(NexusComponent c, byte[] b, CancellationToken ct) => Task.CompletedTask;
+        public Task<int> PromoteAllFilesAsync(NexusComponent c, CancellationToken ct) => Task.FromResult(0);
         public Task HoldAsync(NexusComponent c, string reason, CancellationToken ct) => Task.CompletedTask;
         public Task<ProvisionResult> ProvisionAsync(Ecosystem eco, CancellationToken ct) => Task.FromResult(new ProvisionResult(true, false, null));
         public Task<int> DeprovisionAsync(Ecosystem eco, CancellationToken ct) => Task.FromResult(0);

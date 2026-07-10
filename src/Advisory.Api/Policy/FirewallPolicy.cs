@@ -27,10 +27,13 @@ public class FirewallPolicy
     public List<string> LicenseBlocklist { get; set; } = new() { "GPL-3.0", "AGPL-3.0" };
 
     // --- Supply-chain freshness gate (control: SEC-SC-01) — JFrog Curation's "immature version"
-    //     condition: a version younger than this is blocked (typosquat / hijacked-release window).
-    //     7 days balances typosquat protection against blocking legitimate fresh releases (14 was
-    //     strict enough to block common packages within a week of a normal release). ---
+    //     condition: a version younger than this is flagged (typosquat / hijacked-release window). ---
     public int MinPackageAgeDays { get; set; } = 7;
+    // What to do with a version younger than MinPackageAgeDays. "Notify" (default) FLAGS it but still
+    // allows the install — a brand-new release of a mainstream package (millions of downloads) shouldn't
+    // block real work, and the hard blocks that matter (CVE, malware, KEV) still apply. "Block" enforces
+    // the cooling-off as a hard stop (locked-down orgs). "Disabled" turns the check off entirely.
+    public string PackageAgeAction { get; set; } = "Notify";   // Notify | Block | Disabled
 
     // --- Operational risk gate (control: SEC-OPR-01) — JFrog Xray operational-risk model:
     //     EOL/deprecated, version age, # newer versions, release cadence → High/Medium/Low/None.
