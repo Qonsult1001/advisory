@@ -59,6 +59,10 @@ services:
       - NEXUS_PASS=${NEXUS_PASS:-admin123}
       - NEXUS_POLL_SECONDS=${NEXUS_POLL_SECONDS:-30}
       - NEXUS_DELETE_ON_HOLD=false
+      # Auto-gate-on-pull: the API tails Nexus's inbound request log to discover packages a developer
+      # requested that aren't approved yet (they 404), and gates them on demand. Path is inside the
+      # read-only nexus-data mount below. Blank disables the tailer.
+      - NEXUS_REQUEST_LOG=${NEXUS_REQUEST_LOG:-/nexus-data/log/request.log}
       # On-prem scanner sidecars.
       - PRIVACY_FILTER_URL=http://privacy-filter:8071
       - VSIX_SCANNER_URL=http://vsix-scanner:8099
@@ -75,6 +79,9 @@ services:
       # All runtime data lives in THIS bundle's ./data — isolated from the dev stack's data dir.
       # ":z" relabels for SELinux (Podman / RHEL / Fedora); harmless on Docker / non-SELinux hosts.
       - "./data:/data:z"
+      # Read-only view of Nexus's data dir so the API can tail request.log (auto-gate-on-pull).
+      # ":ro,z" — read-only + SELinux relabel. The API never writes here.
+      - "nexus-data:/nexus-data:ro,z"
 
   # NOTE: the optional on-prem scanners (privacy-filter, vsix-scanner) live in a SEPARATE overlay file
   # (docker-compose.scanners.yml) instead of a Compose "profile" — profiles are unreliable on older
