@@ -69,3 +69,6 @@ advisory-rollout-*.tar.gz
 
 # IT handoff bundle (contains live keys — never commit)
 handoff/
+
+# local archive / build artifact (33 MB) — not versioned
+Advisory.zip
