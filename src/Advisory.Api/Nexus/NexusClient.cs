@@ -371,14 +371,16 @@ public class NexusClient : INexusClient
             {
                 case Ecosystem.PyPI:
                 {
-                    // simple-index HTML: first wheel/sdist link (prefer one matching the version).
+                    // simple-index HTML lists wheels/sdists in ASCENDING version order. If a version is
+                    // pinned, take the one that matches; otherwise take the LAST link (the newest release —
+                    // what `pip install <name>` with no version resolves to), never the first (oldest).
                     var matches = System.Text.RegularExpressions.Regex.Matches(body, "href=\"([^\"]+\\.(?:whl|tar\\.gz))");
                     string? rel = null;
                     foreach (System.Text.RegularExpressions.Match m in matches)
                     {
                         var href = m.Groups[1].Value.Split('#')[0];
-                        if (!string.IsNullOrEmpty(version) && href.Contains(version)) { rel = href; break; }
-                        rel ??= href;
+                        if (!string.IsNullOrEmpty(version)) { if (href.Contains(version)) { rel = href; break; } }
+                        else rel = href;   // keep the last one seen = newest
                     }
                     return rel is null ? null : new Uri(new Uri(indexUrl.EndsWith('/') ? indexUrl : indexUrl + "/"), rel).ToString();
                 }
