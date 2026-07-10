@@ -79,6 +79,67 @@ public class RequestLogParserTests
     }
 
     [Fact]
+    public void Parses_nuget_flat_container_404()
+    {
+        const string nuget =
+            "10.0.0.5 - - [10/Jul/2026:07:15:05 +0000] \"GET /repository/nuget-approved/v3/content/0/newtonsoft.json/index.json HTTP/1.1\" 404 - 0 3 \"NuGet\" [q]";
+        Assert.True(RequestLogParser.TryParseMiss(nuget, out var pkg));
+        Assert.Equal(Ecosystem.NuGet, pkg!.Ecosystem);
+        Assert.Equal("newtonsoft.json", pkg.Name);
+    }
+
+    [Fact]
+    public void Parses_nuget_nupkg_download_404()
+    {
+        const string nupkg =
+            "10.0.0.5 - - [10/Jul/2026:07:15:06 +0000] \"GET /repository/nuget-approved/v3/content/0/serilog/3.1.1/serilog.3.1.1.nupkg HTTP/1.1\" 404 - 0 3 \"NuGet\" [q]";
+        Assert.True(RequestLogParser.TryParseMiss(nupkg, out var pkg));
+        Assert.Equal(Ecosystem.NuGet, pkg!.Ecosystem);
+        Assert.Equal("serilog", pkg.Name);
+    }
+
+    [Fact]
+    public void Parses_cargo_crate_download_404()
+    {
+        const string cargo =
+            "10.0.0.5 - - [10/Jul/2026:07:15:07 +0000] \"GET /repository/cargo-approved/api/v1/crates/serde/1.0.197/download HTTP/1.1\" 404 - 0 3 \"cargo\" [q]";
+        Assert.True(RequestLogParser.TryParseMiss(cargo, out var pkg));
+        Assert.Equal(Ecosystem.Cargo, pkg!.Ecosystem);
+        Assert.Equal("serde", pkg.Name);
+    }
+
+    [Fact]
+    public void Parses_cargo_metadata_404()
+    {
+        const string cargo =
+            "10.0.0.5 - - [10/Jul/2026:07:15:08 +0000] \"GET /repository/cargo-approved/api/v1/crates/tokio HTTP/1.1\" 404 - 0 3 \"cargo\" [q]";
+        Assert.True(RequestLogParser.TryParseMiss(cargo, out var pkg));
+        Assert.Equal(Ecosystem.Cargo, pkg!.Ecosystem);
+        Assert.Equal("tokio", pkg.Name);
+    }
+
+    [Fact]
+    public void Parses_go_module_proxy_404_with_slashed_module_path()
+    {
+        // Go module path contains slashes; the name is everything before /@v/.
+        const string go =
+            "10.0.0.5 - - [10/Jul/2026:07:15:09 +0000] \"GET /repository/go-approved/github.com/gorilla/mux/@v/v1.8.1.info HTTP/1.1\" 404 - 0 3 \"Go-http-client\" [q]";
+        Assert.True(RequestLogParser.TryParseMiss(go, out var pkg));
+        Assert.Equal(Ecosystem.Go, pkg!.Ecosystem);
+        Assert.Equal("github.com/gorilla/mux", pkg.Name);
+    }
+
+    [Fact]
+    public void Parses_go_at_latest_404()
+    {
+        const string go =
+            "10.0.0.5 - - [10/Jul/2026:07:15:10 +0000] \"GET /repository/go-approved/golang.org/x/text/@latest HTTP/1.1\" 404 - 0 3 \"Go-http-client\" [q]";
+        Assert.True(RequestLogParser.TryParseMiss(go, out var pkg));
+        Assert.Equal(Ecosystem.Go, pkg!.Ecosystem);
+        Assert.Equal("golang.org/x/text", pkg.Name);
+    }
+
+    [Fact]
     public void Ignores_non_404_lines()
     {
         const string ok =

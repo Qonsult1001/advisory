@@ -332,6 +332,11 @@ public class NexusClient : INexusClient
             Ecosystem.RubyGems=> $"{repoBase}/gems/{Uri.EscapeDataString(name)}-{Uri.EscapeDataString(version)}.gem",
             Ecosystem.Composer=> $"{repoBase}/p2/{Uri.EscapeDataString(name)}.json",
             Ecosystem.Maven   => $"{repoBase}/{name.Replace('.', '/').Replace(':', '/')}/",
+            // Go module proxy: the module path keeps its slashes (NOT url-encoded). With a version, hit the
+            // .zip directly; without one, ask @latest to discover the version (resolved in ResolveArtifactUrl).
+            Ecosystem.Go      => string.IsNullOrEmpty(version)
+                ? $"{repoBase}/{GoEscape(name)}/@latest"
+                : $"{repoBase}/{GoEscape(name)}/@v/{Uri.EscapeDataString(version)}.zip",
             _                 => $"{repoBase}/{Uri.EscapeDataString(name)}",
         };
         try
@@ -356,6 +361,18 @@ public class NexusClient : INexusClient
             return resp.IsSuccessStatusCode;
         }
         catch (Exception ex) { _log.LogWarning(ex, "Fetch {Pkg} into quarantine failed.", name); return false; }
+    }
+
+    /// <summary>Escape a Go module path for the module proxy: keep '/' separators, but the Go proxy
+    /// lowercases the path by encoding each uppercase letter X as "!x". Most module paths are already
+    /// lowercase; this handles the occasional uppercase (e.g. github.com/BurntSushi/toml).</summary>
+    private static string GoEscape(string module)
+    {
+        var sb = new System.Text.StringBuilder(module.Length);
+        foreach (var c in module)
+            if (char.IsUpper(c)) { sb.Append('!'); sb.Append(char.ToLowerInvariant(c)); }
+            else sb.Append(c);
+        return sb.ToString();
     }
 
     /// <summary>
@@ -409,6 +426,16 @@ public class NexusClient : INexusClient
                     var verLower = ver.ToLowerInvariant();
                     return $"{repoBase}/v3/content/0/{nameLower}/{verLower}/{nameLower}.{verLower}.nupkg";
                 }
+                case Ecosystem.Go:
+                    // With a known version we already requested the .zip (index URL was the artifact).
+                    // For @latest, the response is {"Version":"vX.Y.Z",...}; resolve its .zip.
+                    if (!string.IsNullOrEmpty(version)) return null;
+                    using (var doc = System.Text.Json.JsonDocument.Parse(body))
+                    {
+                        if (doc.RootElement.TryGetProperty("Version", out var gv) && gv.GetString() is { Length: > 0 } gver)
+                            return $"{repoBase}/{GoEscape(name)}/@v/{Uri.EscapeDataString(gver)}.zip";
+                    }
+                    return null;
                 case Ecosystem.RubyGems:
                     // The index URL IS the .gem download — the first fetch already cached it; nothing more to pull.
                     return null;

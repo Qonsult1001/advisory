@@ -68,7 +68,14 @@ public static class RequestLogParser
             // npm: metadata "<name>" or scoped "@org%2fpkg"; tarball "<name>/-/<file>.tgz" or
             // scoped "@org/pkg/-/<file>.tgz". All → the package name (scoped incl. the @org/ part).
             Ecosystem.npm => NpmName(rest),
-            _ => null, // other ecosystems added in their own slices (NuGet/Cargo/Go next).
+            // NuGet flat-container: "v3/content/0/<name>/index.json" or ".../<name>/<ver>/<file>.nupkg".
+            Ecosystem.NuGet => NuGetName(rest),
+            // Cargo: "api/v1/crates/<name>" (metadata) or ".../<name>/<ver>/download".
+            Ecosystem.Cargo => CargoName(rest),
+            // Go module proxy: "<module-path>/@v/<ver>.<ext>" or "<module-path>/@latest" — module path
+            // itself has slashes; the name is everything before "/@v/" or "/@latest".
+            Ecosystem.Go => GoName(rest),
+            _ => null, // remaining ecosystems (Maven/Ruby/etc.) lack a resolver — not gated on pull yet.
         };
     }
 
@@ -78,6 +85,34 @@ public static class RequestLogParser
         var segs = rest.Split('/', StringSplitOptions.RemoveEmptyEntries);
         if (segs.Length >= 2 && (segs[0] == "simple" || segs[0] == "packages"))
             return Uri.UnescapeDataString(segs[1]);
+        return null;
+    }
+
+    private static string? NuGetName(string rest)
+    {
+        // v3/content/0/<name>/...
+        var segs = rest.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        var i = Array.FindIndex(segs, s => s == "0");   // ".../content/0/<name>/..."
+        if (i >= 0 && i + 1 < segs.Length) return Uri.UnescapeDataString(segs[i + 1]);
+        return null;
+    }
+
+    private static string? CargoName(string rest)
+    {
+        // api/v1/crates/<name>[/<ver>/download]
+        var segs = rest.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        var i = Array.FindIndex(segs, s => s == "crates");
+        if (i >= 0 && i + 1 < segs.Length) return Uri.UnescapeDataString(segs[i + 1]);
+        return null;
+    }
+
+    private static string? GoName(string rest)
+    {
+        // <module-path>/@v/<ver>.<ext>  or  <module-path>/@latest — name is everything before the marker.
+        var v = rest.IndexOf("/@v/", StringComparison.Ordinal);
+        if (v > 0) return Uri.UnescapeDataString(rest[..v]);
+        var latest = rest.IndexOf("/@latest", StringComparison.Ordinal);
+        if (latest > 0) return Uri.UnescapeDataString(rest[..latest]);
         return null;
     }
 
