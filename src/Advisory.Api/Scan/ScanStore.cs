@@ -86,6 +86,20 @@ public class ScanStore
     public (string? Nearest, string? Latest) GetSafeVersions(Ecosystem eco, string name, string version)
         => _safeVersions.TryGetValue(RevKey(eco, name, version), out var v) ? v : (null, null);
 
+    // Recent developer requests discovered by the log tailer (auto-gate-on-pull): who asked for what,
+    // when. Latest-per-{eco,name} so the console can show a developer the fate of what their install
+    // pulled in. In-memory, bounded — pure observability.
+    public record DevRequest(Ecosystem Ecosystem, string Name, string? User, DateTimeOffset RequestedAt);
+    private readonly ConcurrentDictionary<string, DevRequest> _requests = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Record that a developer requested a not-yet-approved package (from the request log).</summary>
+    public void RecordRequest(Ecosystem eco, string name, string? user, DateTimeOffset at)
+        => _requests[$"{eco}|{name}"] = new DevRequest(eco, name, user, at);
+
+    /// <summary>Recent developer requests, newest first (for the console "recent requests" view).</summary>
+    public IReadOnlyList<DevRequest> RecentRequests(int max = 100)
+        => _requests.Values.OrderByDescending(r => r.RequestedAt).Take(max).ToList();
+
     /// <summary>Wipe all scan history AND revocations (the operator "reset demo data" action).</summary>
     public void ClearAll()
     {

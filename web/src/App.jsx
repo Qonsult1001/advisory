@@ -40,6 +40,7 @@ const api = {
   getRepoArtifacts: (repo) => fetch(`${API}/scans/repository/${encodeURIComponent(repo)}/artifacts`).then((r) => r.json()),
   getArtifactScan: (repo, eco, name, version, rescan) => fetch(`${API}/scans/artifact?repo=${encodeURIComponent(repo)}&ecosystem=${eco}&name=${encodeURIComponent(name)}&version=${encodeURIComponent(version)}${rescan ? "&rescan=true" : ""}`).then((r) => r.json()),
   getQuarantine: () => fetch(`${API}/quarantine`).then((r) => r.json()),
+  getRequests: () => fetch(`${API}/quarantine/requests`).then((r) => r.json()),
   getReport: (type) => fetch(`${API}/reports/${type}`).then((r) => r.json()),
   reportCsvUrl: (type) => `${API}/reports/${type}?format=csv`,
   getViolationsDetailed: (watch) => fetch(`${API}/violations/detailed${watch ? `?watch=${encodeURIComponent(watch)}` : ""}`).then((r) => r.json()),
@@ -695,6 +696,7 @@ export default function App() {
 
           {tab === "waivers" && <Waivers policy={policy} setPolicy={setPolicy} />}
 
+          {tab === "requests" && <DevRequests />}
           {tab === "queue" && <IntakeQueue setTab={setTab} />}
 
           {tab === "scans" && <ScansList setTab={setTab} />}
@@ -1020,7 +1022,7 @@ const NAV = [
     ["controls", "Policy controls"], ["sources", "Intelligence sources"], ["kev", "Known-exploited (KEV)"],
   ]},
   { type: "group", key: "pipeline", label: "Pipeline", icon: "⇄", children: [
-    ["queue", "Intake queue"], ["quarantine", "Quarantine"], ["approved", "Approved packages"],
+    ["requests", "Developer requests"], ["queue", "Intake queue"], ["quarantine", "Quarantine"], ["approved", "Approved packages"],
     ["exceptions", "Approved exceptions"], ["audit", "Decision ledger"], ["reports", "Reports"],
   ]},
 ];
@@ -3337,6 +3339,50 @@ function CvePanel({ cve, onClose, pkgName }) {
 }
 
 // Quarantine — what's physically held in the Nexus quarantine repo right now.
+// Developer requests — packages a developer's pip/npm install pulled that weren't approved yet
+// (auto-gate-on-pull, discovered from Nexus's request log). Shows each request's fate so a developer
+// can tell "still gating, retry shortly" from "blocked — use this version instead".
+function DevRequests() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const refresh = () => api.getRequests().then(setData).catch(() => setData({ count: 0, requests: [] }));
+  useEffect(() => { refresh().finally(() => setLoading(false)); const t = setInterval(refresh, 5000); return () => clearInterval(t); }, []);
+  const reqs = data?.requests || [];
+  return (
+    <div style={{ animation: "fwfade .2s ease" }}>
+      <div style={s.crumb}><span style={{ color: C.accent }}>Pipeline</span><span style={{ color: C.dim }}>›</span><span>Developer requests</span></div>
+      <div style={{ fontSize: 22, fontWeight: 700, letterSpacing: -0.4, margin: "4px 0 14px" }}>Developer requests</div>
+      <Card title="Packages your developers asked for"
+        desc="When a developer runs pip/npm install for a package that isn't approved yet, the firewall picks it up automatically and gates it. Approved = install it now (retry your command). Blocked = won't appear; use the recommended safe version instead. Processing/Pending = still gating, retry in a minute.">
+        <Table cols={["Package", "Ecosystem", "Requested by", "When", "Status", "Use instead"]}>
+          {reqs.length === 0 && <tr><td style={s.td} colSpan={6}>{loading ? "Loading…" : "No developer requests yet. When someone installs an un-gated package, it appears here."}</td></tr>}
+          {reqs.map((r, i) => {
+            const tone = r.status === "approved" ? C.accent : r.status === "blocked" ? "#c0392b" : C.dim;
+            return (
+              <tr key={i} style={s.tr}>
+                <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11.5 }}>{r.name}</td>
+                <td style={s.td}><Tag tone={C.accent}>{r.ecosystem}</Tag></td>
+                <td style={{ ...s.td, fontSize: 11, color: C.sub }}>{r.user || "—"}</td>
+                <td style={{ ...s.td, fontSize: 11, color: C.sub }}>{r.requestedAt ? new Date(r.requestedAt).toLocaleTimeString() : "—"}</td>
+                <td style={s.td}>
+                  <span style={{ display: "inline-block", padding: "2px 9px", borderRadius: 20, fontSize: 10.5, fontWeight: 600,
+                    color: tone, background: `${tone}1a`, textTransform: "capitalize" }}>{r.status}</span>
+                </td>
+                <td style={{ ...s.td, fontSize: 11 }}>
+                  {r.status === "blocked" && (r.safeNearest || r.safeLatest)
+                    ? <span style={{ color: C.accentDim }}>{[r.safeNearest, r.safeLatest].filter((v, j, a) => v && a.indexOf(v) === j).join(" · ")}</span>
+                    : r.status === "approved" ? <span style={{ color: C.accentDim }}>ready — retry install</span>
+                    : <span style={{ color: C.dim }}>—</span>}
+                </td>
+              </tr>
+            );
+          })}
+        </Table>
+      </Card>
+    </div>
+  );
+}
+
 function Quarantine() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -3384,7 +3430,18 @@ function Quarantine() {
                         color: tone, background: `${tone}1a`, textTransform: "capitalize" }}>{label}</span>
                       {(h.critical > 0 || h.high > 0) && <span style={{ marginLeft: 6, fontSize: 10, color: "#c0392b" }}>{h.critical}C/{h.high}H</span>}
                     </td>
-                    <td style={{ ...s.td, color: C.sub, fontSize: 11, maxWidth: 380 }}>{h.reason || "—"}</td>
+                    <td style={{ ...s.td, color: C.sub, fontSize: 11, maxWidth: 380 }}>
+                      {h.reason || "—"}
+                      {h.status === "blocked" && (h.safeNearest || h.safeLatest) && (
+                        <div style={{ marginTop: 4, color: C.accentDim, fontSize: 10.5 }}>
+                          ✓ Use instead:{" "}
+                          {h.safeNearest && <b style={{ fontFamily: C.mono }}>{h.safeNearest}</b>}
+                          {h.safeNearest && h.safeLatest && h.safeNearest !== h.safeLatest && " (nearest safe) · "}
+                          {h.safeLatest && h.safeLatest !== h.safeNearest && <b style={{ fontFamily: C.mono }}>{h.safeLatest}</b>}
+                          {h.safeLatest && h.safeLatest !== h.safeNearest && " (latest safe)"}
+                        </div>
+                      )}
+                    </td>
                     <td style={{ ...s.td, textAlign: "right" }}>
                       {canPromote && (
                         <button disabled={!!busy[key]} onClick={() => promote(h)}

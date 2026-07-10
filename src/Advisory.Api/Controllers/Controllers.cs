@@ -827,16 +827,57 @@ public class QuarantineController : ControllerBase
                 reason = scan.Verdict ?? scan.Decision;
             }
             else { status = "pending"; reason = "Awaiting the next gate cycle."; }
+            // For a blocked version, surface the gate-verified safe alternatives so the console can say
+            // "blocked — use this version instead" rather than a dead end (auto-gate-on-pull remediation).
+            var (safeNearest, safeLatest) = status == "blocked"
+                ? _scans.GetSafeVersions(h.Ecosystem, h.Name, h.Version)
+                : (null, null);
             return new
             {
                 h.Name, ecosystem = h.Ecosystem.ToString(), h.Version, h.FileName,
                 status, reason,
                 decision = scan?.Decision,
                 critical = scan?.Critical ?? 0, high = scan?.High ?? 0,
+                safeNearest, safeLatest,
             };
         }).ToList();
 
         return Ok(new { configured = true, count = rows.Count, held = rows });
+    }
+
+    /// <summary>Recent packages developers requested that weren't approved yet (discovered by the log
+    /// tailer, auto-gate-on-pull), each joined to its current pipeline state + any safe-version advice —
+    /// so a developer can see the fate of what their pip/npm install pulled in.</summary>
+    [HttpGet("requests")]
+    public async Task<ActionResult> Requests(CancellationToken ct)
+    {
+        var reqs = _scans.RecentRequests();
+        // Build the approved set once so we can label each request promoted/blocked/pending.
+        var approvedNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (_nexus.IsConfigured)
+            foreach (var eco in NexusEcosystems.Gateable)
+                if (NexusEcosystems.TryGet(eco, out var def))
+                    foreach (var a in await _nexus.ListComponentsAsync($"{def.Prefix}-approved", ct))
+                        approvedNames.Add($"{eco}|{a.Name}");
+        var rows = reqs.Select(r =>
+        {
+            var prefix = NexusEcosystems.TryGet(r.Ecosystem, out var d) ? d.Prefix : "";
+            // Latest stored scan for this package name (any version) tells us blocked vs pending.
+            var scan = _scans.ForRepository($"{prefix}-quarantine")
+                .Where(s => s.Name.Equals(r.Name, StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(s => s.ScannedAt).FirstOrDefault();
+            string status = approvedNames.Contains($"{r.Ecosystem}|{r.Name}") ? "approved"
+                : scan?.Decision == "Block" ? "blocked"
+                : scan is not null ? "processing" : "pending";
+            var (near, latest) = scan is not null && scan.Decision == "Block"
+                ? _scans.GetSafeVersions(r.Ecosystem, r.Name, scan.Version) : (null, null);
+            return new
+            {
+                r.Name, ecosystem = r.Ecosystem.ToString(), user = r.User, requestedAt = r.RequestedAt,
+                status, safeNearest = near, safeLatest = latest,
+            };
+        }).ToList();
+        return Ok(new { count = rows.Count, requests = rows });
     }
 
     /// <summary>Everything currently in the approved repos — the vetted packages developers can pull.</summary>

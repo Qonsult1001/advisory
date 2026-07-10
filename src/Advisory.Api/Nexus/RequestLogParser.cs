@@ -17,17 +17,22 @@ namespace Advisory.Api.Nexus;
 /// </summary>
 public static class RequestLogParser
 {
-    // "GET /repository/<repo>/<rest> HTTP/1.1" ... <status>
+    // IP - user [ts] "GET /repository/<repo>/<rest> HTTP/1.1" <status>
     private static readonly Regex Line = new(
-        @"""(?<method>GET|HEAD)\s+/repository/(?<repo>[^/]+)/(?<rest>\S*)\s+HTTP/[\d.]+""\s+(?<status>\d{3})",
+        @"^\S+\s+\S+\s+(?<user>\S+)\s+\[[^\]]*\]\s+""(?<method>GET|HEAD)\s+/repository/(?<repo>[^/]+)/(?<rest>\S*)\s+HTTP/[\d.]+""\s+(?<status>\d{3})",
         RegexOptions.Compiled);
 
     /// <summary>True when the line is a 404 for a developer-facing approved repo and we can extract the
     /// package. <paramref name="pkg"/> carries the ecosystem + name (version left empty — the tailer only
     /// needs coordinates; the fetch step resolves the concrete version, as the manual flow already does).</summary>
     public static bool TryParseMiss(string? line, out PackageRef? pkg)
+        => TryParseMiss(line, out pkg, out _);
+
+    /// <summary>As <see cref="TryParseMiss(string?, out PackageRef?)"/>, also returning the requesting
+    /// user from the log line ("-" for anonymous) so requests can be attributed to a developer.</summary>
+    public static bool TryParseMiss(string? line, out PackageRef? pkg, out string? user)
     {
-        pkg = null;
+        pkg = null; user = null;
         if (string.IsNullOrEmpty(line)) return false;
 
         var m = Line.Match(line);
@@ -42,6 +47,8 @@ public static class RequestLogParser
         var name = ExtractName(eco, m.Groups["rest"].Value);
         if (string.IsNullOrWhiteSpace(name)) return false;
 
+        var u = m.Groups["user"].Value;
+        user = (u == "-" || string.IsNullOrWhiteSpace(u)) ? null : u;
         pkg = new PackageRef(eco, name, "");
         return true;
     }

@@ -21,6 +21,7 @@ namespace Advisory.Api.Nexus;
 public class LogTailer : BackgroundService
 {
     private readonly IIntakeQueue _queue;
+    private readonly Advisory.Api.Scan.ScanStore _scans;
     private readonly ILogger<LogTailer> _log;
     private readonly string? _path;
     private readonly TimeSpan _dedupTtl;
@@ -30,9 +31,9 @@ public class LogTailer : BackgroundService
     // from EOF, so we only ever re-enqueue live misses — and the bridge dedups those anyway.
     private readonly Dictionary<string, DateTimeOffset> _recent = new(StringComparer.OrdinalIgnoreCase);
 
-    public LogTailer(IIntakeQueue queue, IConfiguration cfg, ILogger<LogTailer> log)
+    public LogTailer(IIntakeQueue queue, Advisory.Api.Scan.ScanStore scans, IConfiguration cfg, ILogger<LogTailer> log)
     {
-        _queue = queue; _log = log;
+        _queue = queue; _scans = scans; _log = log;
         _path = cfg["NEXUS_REQUEST_LOG"];
         _dedupTtl = TimeSpan.FromSeconds(cfg.GetValue("NEXUS_TAIL_DEDUP_SECONDS", 300));
     }
@@ -86,13 +87,16 @@ public class LogTailer : BackgroundService
 
     private async Task HandleLineAsync(string line, CancellationToken ct)
     {
-        if (!RequestLogParser.TryParseMiss(line, out var pkg) || pkg is null) return;
+        if (!RequestLogParser.TryParseMiss(line, out var pkg, out var user) || pkg is null) return;
 
         var key = $"{pkg.Ecosystem}:{pkg.Name}";
         var now = DateTimeOffset.UtcNow;
         if (_recent.TryGetValue(key, out var last) && now - last < _dedupTtl) return;   // seen recently — skip.
         Sweep(now);
         _recent[key] = now;
+
+        // Attribute the request to the developer (for the console "recent requests" view).
+        try { _scans.RecordRequest(pkg.Ecosystem, pkg.Name, user, now); } catch { /* observability only */ }
 
         try
         {

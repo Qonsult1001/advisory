@@ -33,8 +33,10 @@ public class LogTailerTests
         {
             ["NEXUS_REQUEST_LOG"] = path,
             ["NEXUS_TAIL_DEDUP_SECONDS"] = "300",
+            ["ScanIndexPath"] = Path.Combine(Path.GetTempPath(), $"scans-{Guid.NewGuid():N}.json"),
         }).Build();
-        return new LogTailer(q, cfg, NullLogger<LogTailer>.Instance);
+        var scans = new Advisory.Api.Scan.ScanStore(cfg, null!, Array.Empty<Advisory.Api.Resolve.IDependencyResolver>());
+        return new LogTailer(q, scans, cfg, NullLogger<LogTailer>.Instance);
     }
 
     private static string Miss(string name) =>
