@@ -42,6 +42,8 @@ services:
       - NEXUS_PASS=admin123          # change after first Nexus login
       - NEXUS_POLL_SECONDS=30
       - NEXUS_DELETE_ON_HOLD=false   # true => purge held packages instead of leaving them
+      # --- Auto-gate-on-pull: tail Nexus's request.log to gate dev pulls of not-yet-approved packages ---
+      - NEXUS_REQUEST_LOG=/nexus-data/log/request.log
       # --- Entra ID (Azure AD) auth + RBAC. Unset => dev fallback (all roles, local only) ---
       # - AzureAd__Instance=https://login.microsoftonline.com/
       # - AzureAd__TenantId=<tenant-guid>
@@ -77,6 +79,8 @@ services:
       - "./data:/data"
       # The repo itself, mounted READ-ONLY, so the API can see + run scripts/mutate-claude.sh directly.
       - "./:/workspace:ro"
+      # Read-only view of Nexus's data dir so the API can tail request.log (auto-gate-on-pull).
+      - "nexus-data:/nexus-data:ro"
 
   # OpenAI Privacy Filter (openai/privacy-filter, Apache-2.0) running on-prem via transformers.js.
   # Detects + redacts PII in unstructured text; model cached in a volume after first download.
