@@ -73,11 +73,25 @@ public class ScanStore
     public bool IsRevoked(Ecosystem eco, string name, string version)
         => _revoked.ContainsKey(RevKey(eco, name, version));
 
+    // Safe-version advice for a BLOCKED package (auto-gate-on-pull): "nearest safe" + "latest safe"
+    // versions that actually passed the gate. In-memory observability — the console reads it to turn a
+    // blocked verdict into "use this version instead".
+    private readonly ConcurrentDictionary<string, (string? Nearest, string? Latest)> _safeVersions = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Record the gate-verified safe alternatives for a blocked package version.</summary>
+    public void SetSafeVersions(Ecosystem eco, string name, string version, string? nearest, string? latest)
+        => _safeVersions[RevKey(eco, name, version)] = (nearest, latest);
+
+    /// <summary>The recommended safe versions for a blocked package, or (null,null) if none recorded.</summary>
+    public (string? Nearest, string? Latest) GetSafeVersions(Ecosystem eco, string name, string version)
+        => _safeVersions.TryGetValue(RevKey(eco, name, version), out var v) ? v : (null, null);
+
     /// <summary>Wipe all scan history AND revocations (the operator "reset demo data" action).</summary>
     public void ClearAll()
     {
         _scans.Clear();
         _revoked.Clear();
+        _safeVersions.Clear();
         Persist();
     }
 

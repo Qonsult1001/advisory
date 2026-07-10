@@ -128,6 +128,23 @@ public class PromotionBridge : BackgroundService
                         _processed.Remove(c.ComponentId);
                         await _nexus.HoldAsync(c, string.Join("; ", result.TriggeredRules), ct);
                         _log.LogWarning("HELD {Pkg}@{Ver}: {Decision}{Rev}", c.Name, c.Version, result.Decision, revoked ? " (revoked)" : "");
+
+                        // Turn "blocked" into "use this instead": find gate-verified nearest/latest safe
+                        // versions and record them so the console can advise the developer. Best-effort,
+                        // policy-blocks only (skip operator revokes — those aren't a version problem).
+                        if (!revoked && result.Decision != GateDecision.Allow)
+                        {
+                            try
+                            {
+                                var recommender = scope.ServiceProvider.GetRequiredService<SafeVersionRecommender>();
+                                var safe = await recommender.RecommendAsync(pkg, result, ct);
+                                scans.SetSafeVersions(c.Ecosystem, c.Name, c.Version, safe.Nearest, safe.Latest);
+                                if (safe.Nearest is not null || safe.Latest is not null)
+                                    _log.LogInformation("SAFE-VERSION for blocked {Pkg}@{Ver}: nearest={Near} latest={Latest}",
+                                        c.Name, c.Version, safe.Nearest ?? "-", safe.Latest ?? "-");
+                            }
+                            catch (Exception ex) { _log.LogWarning(ex, "safe-version recommendation failed for {Pkg}@{Ver}", c.Name, c.Version); }
+                        }
                     }
                 }
             }

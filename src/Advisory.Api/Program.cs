@@ -133,6 +133,16 @@ builder.Services.AddHostedService<IntakeConsumer>();
 builder.Services.AddSingleton<INexusClient, NexusClient>();
 builder.Services.AddSingleton<Advisory.Api.Nexus.BridgeResetSignal>();
 builder.Services.AddSingleton<Advisory.Api.Integrations.IGitRepoClient, Advisory.Api.Integrations.GitHubRepoClient>();
+// Safe-version recommender (auto-gate-on-pull): on a blocked package, find gate-verified nearest/latest
+// safe versions. Version list comes from the catalog; each candidate is re-gated before it's recommended.
+builder.Services.AddScoped<Advisory.Api.Nexus.SafeVersionRecommender>(sp =>
+{
+    var catalog = sp.GetRequiredService<Advisory.Api.Catalog.CatalogService>();
+    var gate = sp.GetRequiredService<IGateEngine>();
+    return new Advisory.Api.Nexus.SafeVersionRecommender(
+        async (eco, name, ct) => (await catalog.OverviewAsync(eco, name, null, ct)).AllVersions,
+        gate);
+});
 builder.Services.AddHostedService<PromotionBridge>();
 builder.Services.AddHostedService<NexusAutoProvisioner>();   // seeds the default ecosystems on first boot
 builder.Services.AddHostedService<Advisory.Api.Nexus.LogTailer>();   // auto-gate-on-pull: tail request.log, enqueue dev misses
