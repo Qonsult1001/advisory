@@ -363,6 +363,32 @@ public class NexusClient : INexusClient
         catch (Exception ex) { _log.LogWarning(ex, "Fetch {Pkg} into quarantine failed.", name); return false; }
     }
 
+    /// <summary>True if a PyPI artifact filename is a pre-release (alpha/beta/rc/dev/preview), which
+    /// `pip install <name>` skips by default (PEP 440). We look for a pre-release marker attached to the
+    /// numeric version, e.g. "wrapt-2.3.0rc1.tar.gz", "foo-1.0b2-py3...", "bar-2.0.dev3-...". A plain
+    /// stable version like "wrapt-1.16.0-cp312...whl" returns false.</summary>
+    /// <summary>Extract the version token from a PyPI artifact filename given the package name — the
+    /// segment right after "&lt;name&gt;-". "idna-3.18-py3-none-any.whl"→"3.18"; "idna-3.18.tar.gz"→"3.18".
+    /// PyPI normalises the name (─/. → -) in filenames, so we match case-insensitively on the leading
+    /// "&lt;name&gt;-" and read up to the next "-" (wheel) or ".tar.gz"/".zip" (sdist).</summary>
+    public static string? PyVersionOf(string fileName, string name)
+    {
+        // Take just the file part (strip any leading path).
+        var f = fileName.Substring(fileName.LastIndexOf('/') + 1);
+        var m = System.Text.RegularExpressions.Regex.Match(f,
+            @"^.+?-(?<ver>[^-]+?)(?:-.*)?\.(?:whl|tar\.gz|zip)$",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        return m.Success ? m.Groups["ver"].Value : null;
+    }
+
+    public static bool IsPyPreRelease(string fileName) =>
+        // A pre-release marker (a/b/c/rc/alpha/beta/dev/pre/preview) sits on the numeric version, either
+        // attached ("2.3.0rc1", "1.0b2") or dot-separated (".dev3", ".pre2"), followed by a number. The
+        // preceding "\d[.]?" anchors it to the version so build tags like "cp312" don't false-positive.
+        System.Text.RegularExpressions.Regex.IsMatch(fileName,
+            @"\d\.?(?:a|b|c|rc|alpha|beta|dev|pre|preview)\d",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
     /// <summary>Escape a Go module path for the module proxy: keep '/' separators, but the Go proxy
     /// lowercases the path by encoding each uppercase letter X as "!x". Most module paths are already
     /// lowercase; this handles the occasional uppercase (e.g. github.com/BurntSushi/toml).</summary>
@@ -388,16 +414,32 @@ public class NexusClient : INexusClient
             {
                 case Ecosystem.PyPI:
                 {
-                    // simple-index HTML lists wheels/sdists in ASCENDING version order. If a version is
-                    // pinned, take the one that matches; otherwise take the LAST link (the newest release —
-                    // what `pip install <name>` with no version resolves to), never the first (oldest).
-                    var matches = System.Text.RegularExpressions.Regex.Matches(body, "href=\"([^\"]+\\.(?:whl|tar\\.gz))");
-                    string? rel = null;
-                    foreach (System.Text.RegularExpressions.Match m in matches)
+                    // simple-index HTML lists all files (wheels + sdists) in ASCENDING version order. Choose
+                    // the file `pip install <name>` would install: newest STABLE version (pip skips
+                    // pre-releases by default), and for that version PREFER the wheel (.whl) over the sdist
+                    // (.tar.gz) — a wheel installs with no build step, so we don't drag in build backends
+                    // (setuptools/wheel) that would also need gating. If a version is pinned, match it.
+                    var hrefs = System.Text.RegularExpressions.Regex.Matches(body, "href=\"([^\"]+\\.(?:whl|tar\\.gz))")
+                        .Select(m => m.Groups[1].Value.Split('#')[0]).ToList();
+                    string? Pick(IEnumerable<string> files)
                     {
-                        var href = m.Groups[1].Value.Split('#')[0];
-                        if (!string.IsNullOrEmpty(version)) { if (href.Contains(version)) { rel = href; break; } }
-                        else rel = href;   // keep the last one seen = newest
+                        // Among files for the chosen version, prefer a .whl; else the sdist.
+                        string? whl = null, sdist = null;
+                        foreach (var f in files)
+                            if (f.EndsWith(".whl")) whl ??= f; else sdist ??= f;
+                        return whl ?? sdist;
+                    }
+                    string? rel;
+                    if (!string.IsNullOrEmpty(version))
+                        rel = Pick(hrefs.Where(h => h.Contains(version)));
+                    else
+                    {
+                        // Newest stable = the version of the LAST non-pre-release file; group by that token.
+                        var stable = hrefs.Where(h => !IsPyPreRelease(h)).ToList();
+                        var pool = stable.Count > 0 ? stable : hrefs;   // fall back to pre-releases only if nothing stable
+                        var newest = pool.LastOrDefault();
+                        var ver = newest is null ? null : PyVersionOf(newest, name);
+                        rel = ver is null ? newest : Pick(pool.Where(h => PyVersionOf(h, name) == ver));
                     }
                     return rel is null ? null : new Uri(new Uri(indexUrl.EndsWith('/') ? indexUrl : indexUrl + "/"), rel).ToString();
                 }
