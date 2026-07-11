@@ -4,7 +4,9 @@ Each guide gets one real goal done. They assume you've signed in to the console 
 know the basics — if you're brand new, do *Tutorial — Gate your first package* first. Guides branch
 where the real world forks ("if X, then…").
 
-> `<CONSOLE_URL>` / `<NEXUS_URL>` are the addresses your administrator configured for this install.
+> `<CONSOLE_URL>` (curation console), `<PROXY_URL>` (the package firewall developers point pip/npm at,
+> e.g. `:8090`), and `<NEXUS_URL>` (the internal repository) are the addresses your administrator
+> configured for this install.
 
 **Guides in this document**
 
@@ -182,10 +184,11 @@ prohibited licences, etc.), then **Commit & sign policy**.
 `pip install` / `npm install` you already use — nothing about your commands changes. A **one-time
 registry setting** silently redirects them through the Advisory proxy, so every package you get is one
 the firewall has vetted.
-**Start:** your administrator has given you the proxy address — call it `<NEXUS_URL>` (for example
-`http://advisory.mycompany.local:8081`). You have `pip` / `npm` installed.
+**Start:** your administrator has given you the firewall proxy address — call it `<PROXY_URL>` (for
+example `http://advisory.mycompany.local:8090`). You have `pip` / `npm` installed.
 **End:** plain `pip install <anything>` / `npm install <anything>` are transparently served through the
-firewall — same commands, safe source.
+firewall — same commands, safe source, **works first try** (the firewall vets each package inline as you
+pull it; you don't have to run the command twice).
 
 > **The idea:** you don't type a new URL and you don't learn a new command. You set the redirect **once**
 > (below), then use pip/npm exactly as before. In many organisations **IT sets this for you** (via a
@@ -197,18 +200,20 @@ firewall — same commands, safe source.
 
 **Set the redirect once:**
 ```
-pip config set global.index-url <NEXUS_URL>/repository/pypi-approved/simple/
+pip config set global.index-url <PROXY_URL>/pypi/simple/
 ```
-*(If `<NEXUS_URL>` is plain `http://`, also run:*
-`pip config set global.trusted-host <host part of NEXUS_URL, e.g. advisory.mycompany.local>`*)*
+*(If `<PROXY_URL>` is plain `http://`, also run:*
+`pip config set global.trusted-host <host part of PROXY_URL, e.g. advisory.mycompany.local>`*)*
 
 **Use it normally — same command you always run:**
 ```
 pip install requests
 ```
 
-**You should see:** `Successfully installed requests-…`. You didn't type any Nexus URL — pip picked up
-the redirect from its config and pulled through the firewall.
+**You should see:** `Successfully installed requests-…` on the **first** run. A package the firewall
+hasn't vetted before is fetched, scanned, and served inline (a few extra seconds the first time); after
+that it's instant. You didn't type any URL — pip picked up the redirect from its config and pulled
+through the firewall.
 
 > **Prefer not to run a command?** The same setting lives in a file pip reads
 > (`%APPDATA%\pip\pip.ini` on Windows, `~/.config/pip/pip.conf` on macOS/Linux) under
@@ -293,8 +298,8 @@ from the sections above; you're just delivering it as a **managed file or enviro
 
 | Ecosystem | What IT pushes (machine-wide) |
 |-----------|-------------------------------|
-| **pip** | A global `pip.conf` / `pip.ini` with `[global]` `index-url = <NEXUS_URL>/repository/pypi-approved/simple/`. Machine-wide locations: Linux `/etc/pip.conf`, Windows `C:\ProgramData\pip\pip.ini`. (Or set the `PIP_INDEX_URL` environment variable for all users.) |
-| **npm** | A global `.npmrc` with `registry=<NEXUS_URL>/repository/npm-approved/`. Machine-wide: the file at npm's global prefix `etc/npmrc`, or set the `NPM_CONFIG_REGISTRY` environment variable for all users. |
+| **pip** | A global `pip.conf` / `pip.ini` with `[global]` `index-url = <PROXY_URL>/pypi/simple/` (the firewall proxy — installs work **first try**). Machine-wide locations: Linux `/etc/pip.conf`, Windows `C:\ProgramData\pip\pip.ini`. (Or set the `PIP_INDEX_URL` environment variable for all users.) |
+| **npm** | A global `.npmrc` with `registry=<NEXUS_URL>/repository/npm-approved/`. Machine-wide: the file at npm's global prefix `etc/npmrc`, or set the `NPM_CONFIG_REGISTRY` environment variable for all users. *(npm uses the repository directly for now; its first-try proxy is a fast-follow.)* |
 | **NuGet** | A machine-wide `NuGet.Config` with **only** the `<NEXUS_URL>/repository/nuget-approved/index.json` source (remove `nuget.org`). Location: Windows `%ProgramFiles(x86)%\NuGet\Config\`, Linux `/etc/NuGet/NuGet.Config`. |
 | **Cargo** | A shared `~/.cargo/config.toml` (or `$CARGO_HOME/config.toml` baked into the image) that replaces the crates-io source with `<NEXUS_URL>/repository/cargo-approved/`. |
 | **Go** | The `GOPROXY` environment variable set for all users to `<NEXUS_URL>/repository/go-approved/`, plus `GONOSUMDB`/`GOFLAGS` as your policy needs. |
