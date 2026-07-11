@@ -100,35 +100,65 @@ public class ScanStore
     public IReadOnlyList<DevRequest> RecentRequests(int max = 100)
         => _requests.Values.OrderByDescending(r => r.RequestedAt).Take(max).ToList();
 
-    // ─────────────────────────── exposure ledger (recall list) ───────────────────────────
-    // Every artifact the proxy SERVES to a developer is recorded here as an "exposure": that developer
-    // now has that exact version on their machine. If the package is LATER revoked (a fresh CVE caught by
-    // the per-request re-gate), the matching exposures flip to Recall=true — the org-wide worklist of
-    // "installed copies that must be removed", attributed to the developer (by IT-issued token) who pulled
-    // it. This is what makes retroactive revocation actionable instead of silent. Persisted so a restart
-    // doesn't lose an open recall.
-    public record Exposure(Ecosystem Ecosystem, string Name, string Version, string User,
-        DateTimeOffset ServedAt, bool Recall, string? Cve, string? SafeVersion, bool Resolved);
+    // ─────────────────────────── exposure ledger (recall / asset tracking) ───────────────────────────
+    // Every artifact the proxy SERVES is recorded as an "exposure": a specific ASSET (developer machine)
+    // now has that exact version installed. Enterprise asset detail is captured at serve time — enough for
+    // a security team to LOCATE the machine (hostname/IP/MAC/OS), identify the OWNER (IT-issued developer,
+    // department, asset tag), and prove REMEDIATION (first/last seen, pull count, resolved-by/at). Network
+    // + request fields (IP, pip/python/os User-Agent) come from the HTTP request itself; the richer machine
+    // fields (hostname/MAC/OS/dept/assetTag) come from the X-Advisory-Asset header IT injects into its
+    // pushed pip config — absent header degrades gracefully to IP+token, missing fields render as unknown.
+    // When a version is LATER revoked, every asset holding it flips to Recall=true → the org-wide "installed
+    // copies that must be removed" worklist. Persisted so a restart never loses an open recall.
+
+    /// <summary>Enterprise asset detail for one endpoint that pulled a package. Every field is optional —
+    /// what's present depends on what IT injects; the proxy fills IP/UA fields itself.</summary>
+    public record AssetInfo(
+        string? Hostname, string? Ip, string? Mac, string? Os,
+        string? Department, string? AssetTag, string? OsUser,
+        string? PipVersion, string? PythonVersion, string? Platform);
+
+    public record Exposure(
+        Ecosystem Ecosystem, string Name, string Version,
+        string User,                      // IT-issued developer identity (token) or "unattributed:<ip>"
+        AssetInfo Asset,                  // enterprise machine detail
+        DateTimeOffset FirstSeen, DateTimeOffset LastSeen, int PullCount,
+        bool Recall, string? Cve, string? SafeVersion,
+        bool Resolved, string? ResolvedBy, DateTimeOffset? ResolvedAt);
 
     private readonly ConcurrentDictionary<string, Exposure> _exposure = new(StringComparer.OrdinalIgnoreCase);
     private string ExposurePath => _path + ".exposure.json";
-    private static string ExpKey(Ecosystem eco, string name, string version, string user)
-        => $"{eco}|{name}|{version}|{user}";
 
-    /// <summary>Record that we served this exact version to this developer (they now have it installed).
-    /// Idempotent per {eco,name,version,user}; refreshes the served-at time on a re-pull.</summary>
-    public void RecordServed(Ecosystem eco, string name, string version, string user)
+    // An exposure is keyed by the ASSET, not just the user — the same developer on two machines is two
+    // installed copies to recall. Prefer a stable machine id (hostname → MAC → asset tag → IP), fall back
+    // to the user identity so a tokenless/headerless pull still records a distinct row.
+    private static string AssetId(AssetInfo a, string user)
+        => a.Hostname ?? a.Mac ?? a.AssetTag ?? a.Ip ?? user;
+    private static string ExpKey(Ecosystem eco, string name, string version, string assetId)
+        => $"{eco}|{name}|{version}|{assetId}";
+
+    /// <summary>Record that we served this exact version to this asset (it now has it installed). Idempotent
+    /// per {eco,name,version,asset}; bumps last-seen + pull count and merges any newly-supplied asset fields
+    /// on a re-pull.</summary>
+    public void RecordServed(Ecosystem eco, string name, string version, string user, AssetInfo asset)
     {
-        var key = ExpKey(eco, name, version, user);
+        var key = ExpKey(eco, name, version, AssetId(asset, user));
         _exposure.AddOrUpdate(key,
-            _ => new Exposure(eco, name, version, user, DateTimeOffset.UtcNow, false, null, null, false),
-            (_, e) => e with { ServedAt = DateTimeOffset.UtcNow });
+            _ => new Exposure(eco, name, version, user, asset,
+                              DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, 1,
+                              false, null, null, false, null, null),
+            (_, e) => e with { LastSeen = DateTimeOffset.UtcNow, PullCount = e.PullCount + 1, Asset = MergeAsset(e.Asset, asset) });
         Persist();
     }
 
-    /// <summary>A package version was revoked — flag every developer who has it for recall, attaching the
-    /// CVE reason and the recommended safe version so the console can tell each of them exactly what to do.
-    /// Returns the number of developers now on the recall list for this version.</summary>
+    // Keep any field we already learned; fill blanks from the new pull (asset detail can arrive over time).
+    private static AssetInfo MergeAsset(AssetInfo old, AssetInfo now) => new(
+        old.Hostname ?? now.Hostname, old.Ip ?? now.Ip, old.Mac ?? now.Mac, old.Os ?? now.Os,
+        old.Department ?? now.Department, old.AssetTag ?? now.AssetTag, old.OsUser ?? now.OsUser,
+        now.PipVersion ?? old.PipVersion, now.PythonVersion ?? old.PythonVersion, now.Platform ?? old.Platform);
+
+    /// <summary>A package version was revoked — flag every asset that has it for recall, attaching the CVE
+    /// reason + recommended safe version. Returns the number of assets now on the recall list.</summary>
     public int FlagRecall(Ecosystem eco, string name, string version, string? cve, string? safeVersion)
     {
         int n = 0;
@@ -137,7 +167,8 @@ public class ScanStore
             var e = kv.Value;
             if (e.Ecosystem == eco && e.Name.Equals(name, StringComparison.OrdinalIgnoreCase) && e.Version == version)
             {
-                _exposure[kv.Key] = e with { Recall = true, Cve = cve ?? e.Cve, SafeVersion = safeVersion ?? e.SafeVersion, Resolved = false };
+                _exposure[kv.Key] = e with { Recall = true, Cve = cve ?? e.Cve, SafeVersion = safeVersion ?? e.SafeVersion,
+                                             Resolved = false, ResolvedBy = null, ResolvedAt = null };
                 n++;
             }
         }
@@ -145,19 +176,19 @@ public class ScanStore
         return n;
     }
 
-    /// <summary>Mark one developer's recall as handled (they uninstalled / moved to the safe version).</summary>
-    public void ResolveExposure(Ecosystem eco, string name, string version, string user)
+    /// <summary>Mark one asset's recall as handled (the vulnerable copy was removed / upgraded), recording
+    /// WHO cleared it and WHEN for the audit trail. Keyed by the asset id captured at serve time.</summary>
+    public void ResolveExposure(Ecosystem eco, string name, string version, string assetId, string resolvedBy)
     {
-        var key = ExpKey(eco, name, version, user);
-        if (_exposure.TryGetValue(key, out var e)) { _exposure[key] = e with { Resolved = true }; Persist(); }
+        var key = ExpKey(eco, name, version, assetId);
+        if (_exposure.TryGetValue(key, out var e))
+        { _exposure[key] = e with { Resolved = true, ResolvedBy = resolvedBy, ResolvedAt = DateTimeOffset.UtcNow }; Persist(); }
     }
 
-    /// <summary>The recall worklist: served-then-revoked copies still on machines, newest first. Only
-    /// exposures flagged for recall (a real revocation) appear; resolved ones are included so the console
-    /// can show progress, but callers can filter on Resolved.</summary>
+    /// <summary>The recall worklist: served-then-revoked copies still on machines, newest last-seen first.</summary>
     public IReadOnlyList<Exposure> Recalls(bool includeResolved = true)
         => _exposure.Values.Where(e => e.Recall && (includeResolved || !e.Resolved))
-                           .OrderByDescending(e => e.ServedAt).ToList();
+                           .OrderByDescending(e => e.LastSeen).ToList();
 
     /// <summary>Wipe all scan history AND revocations (the operator "reset demo data" action).</summary>
     public void ClearAll()
@@ -296,7 +327,14 @@ public class ScanStore
             if (File.Exists(ExposurePath))
             {
                 var exp = JsonSerializer.Deserialize<List<Exposure>>(File.ReadAllText(ExposurePath), Json);
-                if (exp is not null) foreach (var e in exp) _exposure[ExpKey(e.Ecosystem, e.Name, e.Version, e.User)] = e;
+                if (exp is not null)
+                    foreach (var e in exp)
+                    {
+                        // Skip records written before the asset model existed (Asset would be null) — they
+                        // can't be keyed or displayed; a fresh serve re-records them with full detail.
+                        if (e.Asset is null) continue;
+                        _exposure[ExpKey(e.Ecosystem, e.Name, e.Version, AssetId(e.Asset, e.User))] = e;
+                    }
             }
         }
         catch { /* ignore */ }

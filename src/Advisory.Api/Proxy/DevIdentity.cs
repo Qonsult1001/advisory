@@ -56,6 +56,57 @@ public sealed class DevIdentity
         return token is not null && _tokenToUser.ContainsKey(token);
     }
 
+    /// <summary>Capture the enterprise asset detail for this request. Network + request fields (IP, pip/
+    /// python/os) are read straight off the HTTP request; the richer machine fields (hostname/MAC/OS/dept/
+    /// asset-tag/os-user) come from the X-Advisory-Asset header IT injects into its pushed pip config
+    /// (format: "key=value; key=value", keys: host,mac,os,dept,tag,user). Everything is best-effort — a
+    /// request with no header still yields IP + parsed User-Agent, and missing fields stay null (unknown).</summary>
+    public Advisory.Api.Scan.ScanStore.AssetInfo CaptureAsset(HttpContext http)
+    {
+        var req = http.Request;
+        // Client IP: prefer the real source, then a forwarding header (proxy/LB in front).
+        var ip = http.Connection.RemoteIpAddress?.ToString();
+        if (string.IsNullOrEmpty(ip) || ip is "::1" or "127.0.0.1")
+            ip = req.Headers["X-Forwarded-For"].FirstOrDefault()?.Split(',')[0].Trim() ?? ip;
+
+        // pip sends a User-Agent like "pip/24.0 {"cpython":{"version":"3.12.1"},"system":{"name":"Linux"…}}".
+        var ua = req.Headers.UserAgent.FirstOrDefault() ?? "";
+        string? pip = null, py = null, platform = null;
+        var mPip = System.Text.RegularExpressions.Regex.Match(ua, @"pip/([\d.]+)");
+        if (mPip.Success) pip = mPip.Groups[1].Value;
+        var mPy = System.Text.RegularExpressions.Regex.Match(ua, @"""cpython""\s*:\s*\{\s*""version""\s*:\s*""([\d.]+)""");
+        if (mPy.Success) py = mPy.Groups[1].Value;
+        var mSys = System.Text.RegularExpressions.Regex.Match(ua, @"""name""\s*:\s*""([^""]+)""");
+        if (mSys.Success) platform = mSys.Groups[1].Value;
+
+        // IT-injected asset header (opt-in, world-class detail): "host=…; mac=…; os=…; dept=…; tag=…; user=…".
+        var kv = ParseAssetHeader(req.Headers["X-Advisory-Asset"].FirstOrDefault());
+        string? Get(params string[] keys) { foreach (var k in keys) if (kv.TryGetValue(k, out var v) && v.Length > 0) return v; return null; }
+
+        return new Advisory.Api.Scan.ScanStore.AssetInfo(
+            Hostname: Get("host", "hostname", "fqdn"),
+            Ip: ip,
+            Mac: Get("mac", "macaddr"),
+            Os: Get("os", "osversion") ?? platform,
+            Department: Get("dept", "department", "team"),
+            AssetTag: Get("tag", "assettag", "asset", "serial"),
+            OsUser: Get("user", "osuser", "loginuser"),
+            PipVersion: pip, PythonVersion: py, Platform: platform);
+    }
+
+    private static Dictionary<string, string> ParseAssetHeader(string? header)
+    {
+        var d = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (string.IsNullOrWhiteSpace(header)) return d;
+        foreach (var part in header.Split(new[] { ';', ',', '\n' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var eq = part.IndexOf('=');
+            if (eq <= 0) continue;
+            d[part[..eq].Trim()] = part[(eq + 1)..].Trim();
+        }
+        return d;
+    }
+
     // Pull the token from either HTTP Basic userinfo (pip sends the index-url creds as Basic) or a Bearer
     // header. For Basic, pip puts the token in the username (password blank) → we accept username as token,
     // OR "token:" form; we take whichever non-empty part looks like our token.

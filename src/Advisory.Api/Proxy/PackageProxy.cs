@@ -127,8 +127,8 @@ public sealed class PackageProxyController : ControllerBase
                     return await BlockedWithRemediationAsync(Ecosystem.PyPI, name, version!, "re-gate on current policy");
                 }
             }
-            // Cleared: record that this developer now has this exact version (exposure), then stream.
-            _scans.RecordServed(Ecosystem.PyPI, name ?? rest, version ?? "", _identity.Resolve(HttpContext));
+            // Cleared: record that this asset now has this exact version (exposure), then stream.
+            _scans.RecordServed(Ecosystem.PyPI, name ?? rest, version ?? "", _identity.Resolve(HttpContext), _identity.CaptureAsset(HttpContext));
             return await StreamAsync(approvedUrl, rest, ct);
         }
 
@@ -148,11 +148,12 @@ public sealed class PackageProxyController : ControllerBase
         // content-scanning the same bytes. pip sees data flowing (its read-timeout never fires, any size);
         // if the content scan finds a hidden payload mid-stream, the connection ABORTS (pip discards the
         // broken download — it never installs/executes it). Promotion + the full-tree deep scan run async.
-        // Capture WHO is pulling now; GatedStreamResult records the exposure only once the tail is released
-        // (i.e. the content scan cleared and the developer actually gets a usable artifact).
+        // Capture WHO + WHICH ASSET is pulling now; GatedStreamResult records the exposure only once the tail
+        // is released (i.e. the content scan cleared and the developer actually gets a usable artifact).
         var pulledBy = _identity.Resolve(HttpContext);
+        var asset = _identity.CaptureAsset(HttpContext);
         await _nexus.FetchIntoQuarantineAsync(Ecosystem.PyPI, name!, version!, ct);
-        return new GatedStreamResult(this, Ecosystem.PyPI, name!, version!, fileName!, quarantineUrl, pulledBy);
+        return new GatedStreamResult(this, Ecosystem.PyPI, name!, version!, fileName!, quarantineUrl, pulledBy, asset);
     }
 
     // ─────────────────────────── remediation ───────────────────────────
@@ -206,9 +207,9 @@ public sealed class PackageProxyController : ControllerBase
     }
 
     /// <summary>Called by GatedStreamResult once a developer receives a usable (clean) artifact — records
-    /// the exposure so this exact version can be recalled from that developer if it is later revoked.</summary>
-    internal void RecordExposure(Ecosystem eco, string name, string version, string user)
-        => _scans.RecordServed(eco, name, version, user);
+    /// the exposure so this exact version can be recalled from that asset if it is later revoked.</summary>
+    internal void RecordExposure(Ecosystem eco, string name, string version, string user, Advisory.Api.Scan.ScanStore.AssetInfo asset)
+        => _scans.RecordServed(eco, name, version, user, asset);
 
     // Best-effort background compute of gate-verified safe versions for a blocked package, cached for the
     // remediation payload + recall list. Fire-and-forget; failures are swallowed (the 403 still went out).

@@ -890,36 +890,88 @@ public class QuarantineController : ControllerBase
     public ActionResult Exposure([FromQuery] bool includeResolved = true)
     {
         var recalls = _scans.Recalls(includeResolved);
-        var rows = recalls.Select(e => new
+
+        // Per-asset rows with the full enterprise detail: locate (host/ip/mac/os), own (developer/dept/tag),
+        // prove (first/last seen, pull count, resolved-by/at) and remediate (exact commands).
+        object AssetRow(Advisory.Api.Scan.ScanStore.Exposure e)
         {
-            name = e.Name, ecosystem = e.Ecosystem.ToString(), version = e.Version,
-            user = e.User, attributed = !e.User.StartsWith("unattributed:", StringComparison.Ordinal),
-            servedAt = e.ServedAt, cve = e.Cve, safeVersion = e.SafeVersion, resolved = e.Resolved,
-            remediation = new
+            // Defensive: a record persisted before the asset model existed can deserialize with a null Asset.
+            var a = e.Asset ?? new Advisory.Api.Scan.ScanStore.AssetInfo(null, null, null, null, null, null, null, null, null, null);
+            var assetId = a.Hostname ?? a.Mac ?? a.AssetTag ?? a.Ip ?? e.User;
+            return new
             {
-                uninstall = e.Ecosystem == Ecosystem.npm ? $"npm uninstall {e.Name}" : $"pip uninstall -y {e.Name}",
-                install = e.SafeVersion is null ? null
-                    : (e.Ecosystem == Ecosystem.npm ? $"npm install {e.Name}@{e.SafeVersion}" : $"pip install {e.Name}=={e.SafeVersion}"),
-            },
-        }).ToList();
-        var open = rows.Count(r => !r.resolved);
-        return Ok(new { count = rows.Count, open, recalls = rows });
+                assetId,
+                name = e.Name, ecosystem = e.Ecosystem.ToString(), version = e.Version,
+                developer = e.User, attributed = !e.User.StartsWith("unattributed:", StringComparison.Ordinal),
+                asset = new
+                {
+                    hostname = a.Hostname, ip = a.Ip, mac = a.Mac, os = a.Os,
+                    department = a.Department, assetTag = a.AssetTag, osUser = a.OsUser,
+                    pipVersion = a.PipVersion, pythonVersion = a.PythonVersion, platform = a.Platform,
+                },
+                firstSeen = e.FirstSeen, lastSeen = e.LastSeen, pullCount = e.PullCount,
+                cve = e.Cve, safeVersion = e.SafeVersion,
+                resolved = e.Resolved, resolvedBy = e.ResolvedBy, resolvedAt = e.ResolvedAt,
+                remediation = new
+                {
+                    uninstall = e.Ecosystem == Ecosystem.npm ? $"npm uninstall {e.Name}" : $"pip uninstall -y {e.Name}",
+                    install = e.SafeVersion is null ? null
+                        : (e.Ecosystem == Ecosystem.npm ? $"npm install {e.Name}@{e.SafeVersion}" : $"pip install {e.Name}=={e.SafeVersion}"),
+                },
+            };
+        }
+
+        // Group into INCIDENTS by {package, version, cve} — one incident, N affected assets — the shape a
+        // security team triages by ("recall six 1.5.1: 3 machines, 1 remediated").
+        var incidents = recalls
+            .GroupBy(e => (e.Ecosystem, e.Name, e.Version))
+            .Select(g =>
+            {
+                var first = g.First();
+                var assets = g.Select(AssetRow).ToList();
+                return new
+                {
+                    ecosystem = first.Ecosystem.ToString(), name = first.Name, version = first.Version,
+                    cve = first.Cve, safeVersion = first.SafeVersion,
+                    affected = assets.Count,
+                    open = g.Count(e => !e.Resolved),
+                    firstSeen = g.Min(e => e.FirstSeen), lastSeen = g.Max(e => e.LastSeen),
+                    remediation = new
+                    {
+                        uninstall = first.Ecosystem == Ecosystem.npm ? $"npm uninstall {first.Name}" : $"pip uninstall -y {first.Name}",
+                        install = first.SafeVersion is null ? null
+                            : (first.Ecosystem == Ecosystem.npm ? $"npm install {first.Name}@{first.SafeVersion}" : $"pip install {first.Name}=={first.SafeVersion}"),
+                    },
+                    assets,
+                };
+            })
+            .OrderByDescending(i => i.lastSeen)
+            .ToList();
+
+        return Ok(new
+        {
+            incidentCount = incidents.Count,
+            assetCount = recalls.Count,
+            openAssets = recalls.Count(e => !e.Resolved),
+            incidents,
+        });
     }
 
-    public record ResolveExposureRequest(string Ecosystem, string Name, string Version, string User);
+    public record ResolveExposureRequest(string Ecosystem, string Name, string Version, string AssetId, string? Note);
 
-    /// <summary>Mark one developer's recall as handled (they removed the vulnerable version / moved to the
-    /// safe one). Admin — this is a remediation-tracking action.</summary>
+    /// <summary>Mark one ASSET's recall as handled (the vulnerable copy was removed / upgraded on that
+    /// machine). Records who cleared it + when for the audit trail. Admin.</summary>
     [HttpPost("exposure/resolve")]
     [Authorize(Policy = Policies.CanAdmin)]
     public ActionResult ResolveExposure([FromBody] ResolveExposureRequest req)
     {
-        if (req is null || string.IsNullOrWhiteSpace(req.Name) || string.IsNullOrWhiteSpace(req.User))
-            return BadRequest(new { error = "ecosystem, name, version and user are required" });
+        if (req is null || string.IsNullOrWhiteSpace(req.Name) || string.IsNullOrWhiteSpace(req.AssetId))
+            return BadRequest(new { error = "ecosystem, name, version and assetId are required" });
         if (!Enum.TryParse<Ecosystem>(req.Ecosystem, ignoreCase: true, out var eco))
             return BadRequest(new { error = $"Unknown ecosystem '{req.Ecosystem}'." });
-        _scans.ResolveExposure(eco, req.Name, req.Version ?? "", req.User);
-        return Ok(new { resolved = true, name = req.Name, version = req.Version, user = req.User });
+        var by = string.IsNullOrWhiteSpace(req.Note) ? _user.Name : $"{_user.Name} ({req.Note})";
+        _scans.ResolveExposure(eco, req.Name, req.Version ?? "", req.AssetId, by);
+        return Ok(new { resolved = true, name = req.Name, version = req.Version, assetId = req.AssetId, resolvedBy = by });
     }
 
     /// <summary>Live gate verdict for one package version — the detail behind a Developer-requests /

@@ -334,6 +334,55 @@ from the sections above; you're just delivering it as a **managed file or enviro
 > Bottom line: **config = the tools use the proxy; network block = the proxy is the only option.** Ship
 > both from IT and the firewall is enforced for every user, not just the ones who set it up themselves.
 
+### For IT — attribute installs to a developer and their machine (Recall / Exposure)
+
+> **Read this if you want the Recall / Exposure screen to name real people and machines.** When a package
+> a developer already installed is *later* found vulnerable, the firewall builds a **recall worklist** —
+> every endpoint that has the vulnerable copy, with the exact remove command. For that list to say
+> *"host `dev-laptop-07`, `alice`, 10.2.4.19"* instead of just an IP, IT gives the proxy two things. Both
+> are optional and the developer still types plain `pip install` — nothing changes for them.
+
+**1. A per-developer token (who).** Issue each developer a unique opaque token and record the mapping in
+the API's `PROXY_DEV_TOKENS` setting (server-side — the map never leaves IT):
+
+```
+PROXY_DEV_TOKENS=a1b2c3=alice, d4e5f6=bob, 9z8y7x=carol
+```
+
+Then bake the token into the same pushed pip config, as HTTP Basic userinfo on the index URL:
+
+```
+# /etc/pip.conf (or C:\ProgramData\pip\pip.ini) — pushed per machine/user by IT
+[global]
+index-url = https://a1b2c3:@<PROXY_URL>/pypi/simple/
+```
+
+pip sends the token automatically on every request; the proxy maps it back to `alice`. No token → the
+pull is recorded as `unattributed:<ip>` (still visible, just not tied to a person).
+
+**2. An asset header (which machine).** To capture hostname / MAC / OS / department / asset-tag, have IT's
+provisioning inject an `X-Advisory-Asset` header — a simple `key=value; …` string — from the values your
+MDM/asset system already holds. Deliver it however your channel supports request headers (a small pip
+wrapper, a proxy in front, or `PIP_*` tooling). Recognised keys:
+
+| Key | Meaning | Example |
+|-----|---------|---------|
+| `host` | Machine hostname / FQDN | `dev-laptop-07.corp.local` |
+| `mac` | MAC address | `a4:83:e7:2b:19:c0` |
+| `os` | OS + version | `Windows 11 23H2` |
+| `dept` | Department / team | `Payments` |
+| `tag` | Asset tag / serial | `CORP-004821` |
+| `user` | OS login user | `alice.dev` |
+
+```
+X-Advisory-Asset: host=dev-laptop-07.corp.local; mac=a4:83:e7:2b:19:c0; os=Windows 11 23H2; dept=Payments; tag=CORP-004821; user=alice.dev
+```
+
+Every field is best-effort: send what you have; anything omitted shows as “—” on the Recall / Exposure
+screen. The proxy always captures source IP and the pip/Python/OS reported in pip's own User-Agent, so
+even with no header you get IP + tooling versions. **MAC and hardware detail can only come from this
+header** — a MAC address never crosses an IP hop, so the proxy cannot read it from the request itself.
+
 ---
 
 ## 7. Read the audit ledger

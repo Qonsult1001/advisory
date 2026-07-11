@@ -42,7 +42,7 @@ const api = {
   getQuarantine: () => fetch(`${API}/quarantine`).then((r) => r.json()),
   getRequests: () => fetch(`${API}/quarantine/requests`).then((r) => r.json()),
   getExposure: (includeResolved = true) => fetch(`${API}/quarantine/exposure?includeResolved=${includeResolved}`).then((r) => r.json()),
-  resolveExposure: (ecosystem, name, version, user) => fetch(`${API}/quarantine/exposure/resolve`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ecosystem, name, version, user }) }).then((r) => r.json().then((j) => ({ ok: r.ok, ...j }))),
+  resolveExposure: (ecosystem, name, version, assetId, note) => fetch(`${API}/quarantine/exposure/resolve`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ecosystem, name, version, assetId, note }) }).then((r) => r.json().then((j) => ({ ok: r.ok, ...j }))),
   getPackageDetail: (ecosystem, name, version) => fetch(`${API}/quarantine/detail/${ecosystem}/${encodeURIComponent(name)}/${encodeURIComponent(version)}`).then((r) => r.json()),
   getReport: (type) => fetch(`${API}/reports/${type}`).then((r) => r.json()),
   reportCsvUrl: (type) => `${API}/reports/${type}?format=csv`,
@@ -3410,65 +3410,141 @@ function PackageDetailDrawer({ pkg, onClose }) {
   );
 }
 
-// Recall / Exposure — the org-wide worklist of installed copies that must be removed. When a package a
+// A copy-to-clipboard inline code chip.
+function CopyCmd({ cmd }) {
+  const [done, setDone] = useState(false);
+  if (!cmd) return null;
+  const copy = () => { try { navigator.clipboard.writeText(cmd); setDone(true); setTimeout(() => setDone(false), 1200); } catch {} };
+  return (
+    <span onClick={copy} title="Copy" style={{ display: "inline-flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
+      <code style={s.code}>{cmd}</code>
+      <span style={{ fontSize: 10, color: done ? C.accentDim : C.dim }}>{done ? "✓ copied" : "⧉"}</span>
+    </span>
+  );
+}
+
+// One labelled asset field; renders "—" (unknown) honestly when the value is absent.
+function AssetField({ label, value, mono }) {
+  return (
+    <div style={{ minWidth: 0 }}>
+      <div style={{ fontSize: 9.5, color: C.dim, textTransform: "uppercase", letterSpacing: 0.4 }}>{label}</div>
+      <div style={{ fontSize: 12, color: value ? C.ink : C.dim, fontFamily: mono ? C.mono : C.sans, wordBreak: "break-all" }}>{value || "—"}</div>
+    </div>
+  );
+}
+
+// Recall / Exposure — enterprise asset-tracking of installed copies that must be removed. When a package a
 // developer already pulled is later revoked (fresh CVE caught by the per-request re-gate, or an operator
-// revoke), every developer who has that exact version lands here with the exact remove/replace commands,
-// attributed by the IT-issued token. Mark each resolved as people remediate.
+// revoke), this becomes the security team's worklist: each INCIDENT (package+version+CVE) lists every
+// AFFECTED ASSET with the detail to LOCATE it (hostname / IP / MAC / OS), identify the OWNER (developer by
+// IT token, department, asset tag, OS user) and prove REMEDIATION (first/last seen, pull count, resolved
+// by/at). Asset detail is captured from the request + the X-Advisory-Asset header IT injects; anything not
+// supplied shows as "—". Expand an incident to see and clear each machine.
 function RecallExposure() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState({});
-  const [showResolved, setShowResolved] = useState(false);
+  const [expanded, setExpanded] = useState({});
   const [detail, setDetail] = useState(null);
-  const refresh = () => api.getExposure(true).then(setData).catch(() => setData({ count: 0, open: 0, recalls: [] }));
+  const refresh = () => api.getExposure(true).then(setData).catch(() => setData({ incidentCount: 0, assetCount: 0, openAssets: 0, incidents: [] }));
   useEffect(() => { refresh().finally(() => setLoading(false)); const t = setInterval(refresh, 5000); return () => clearInterval(t); }, []);
-  const resolve = (r) => {
-    const key = `${r.ecosystem}:${r.name}@${r.version}:${r.user}`;
+  const resolve = (inc, a) => {
+    const key = a.assetId;
     setBusy((b) => ({ ...b, [key]: true }));
-    api.resolveExposure(r.ecosystem, r.name, r.version, r.user).then(refresh).finally(() => setBusy((b) => ({ ...b, [key]: false })));
+    api.resolveExposure(inc.ecosystem, inc.name, inc.version, a.assetId).then(refresh).finally(() => setBusy((b) => ({ ...b, [key]: false })));
   };
-  const recalls = (data?.recalls || []).filter((r) => showResolved || !r.resolved);
+  const incidents = data?.incidents || [];
+  const toggle = (k) => setExpanded((e) => ({ ...e, [k]: !e[k] }));
   return (
     <div style={{ animation: "fwfade .2s ease" }}>
       <div style={s.crumb}><span style={{ color: C.accent }}>Pipeline</span><span style={{ color: C.dim }}>›</span><span>Recall / Exposure</span></div>
       <div style={{ fontSize: 22, fontWeight: 700, letterSpacing: -0.4, margin: "4px 0 14px" }}>Recall / Exposure</div>
       <PackageDetailDrawer pkg={detail} onClose={() => setDetail(null)} />
-      <Card title="Installed copies that must be removed"
-        desc="When a package a developer already installed is later blocked (a fresh CVE caught on the next pull, or an operator revoke), everyone who has that exact version is listed here — with the exact commands to remove it and install the safe version. Attributed to the developer by their IT-issued token. Mark each done as people remediate.">
-        <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 12 }}>
-          <div style={{ fontSize: 12.5, color: C.sub }}><b style={{ color: data?.open ? "#c0392b" : C.accentDim }}>{data?.open ?? 0}</b> open · {data?.count ?? 0} total</div>
-          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: C.sub, cursor: "pointer" }}>
-            <input type="checkbox" checked={showResolved} onChange={(e) => setShowResolved(e.target.checked)} /> show resolved
-          </label>
-        </div>
-        <Table cols={["Package", "Version", "Developer", "CVE", "Remediation", "When", ""]}>
-          {recalls.length === 0 && <tr><td style={s.td} colSpan={7}>{loading ? "Loading…" : "No recalls — nothing served has been revoked. This is the good state."}</td></tr>}
-          {recalls.map((r, i) => {
-            const key = `${r.ecosystem}:${r.name}@${r.version}:${r.user}`;
-            return (
-              <tr key={i} style={{ ...s.tr, opacity: r.resolved ? 0.5 : 1 }}>
-                <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11.5, cursor: "pointer" }} onClick={() => setDetail({ ecosystem: r.ecosystem, name: r.name, version: r.version })}>
-                  <span style={{ borderBottom: `1px dotted ${C.dim}` }}>{r.name}</span> <Tag tone={C.accent}>{r.ecosystem}</Tag></td>
-                <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11.5 }}>{r.version}</td>
-                <td style={{ ...s.td, fontSize: 11 }}>
-                  {r.attributed ? <b style={{ color: C.ink }}>{r.user}</b> : <span style={{ color: C.dim }} title="No IT token on this pull — best-effort host/IP">{r.user}</span>}
-                </td>
-                <td style={{ ...s.td, fontFamily: C.mono, fontSize: 10.5, color: "#c0392b" }}>{r.cve || "—"}</td>
-                <td style={{ ...s.td, fontSize: 10.5, color: C.sub }}>
-                  <div><code style={s.code}>{r.remediation?.uninstall}</code></div>
-                  {r.remediation?.install && <div style={{ marginTop: 3 }}><code style={s.code}>{r.remediation.install}</code></div>}
-                </td>
-                <td style={{ ...s.td, fontSize: 11, color: C.sub }}>{r.servedAt ? new Date(r.servedAt).toLocaleString() : "—"}</td>
-                <td style={{ ...s.td, textAlign: "right" }}>
-                  {r.resolved ? <span style={{ fontSize: 11, color: C.accentDim }}>✓ done</span>
-                    : <button disabled={!!busy[key]} onClick={() => resolve(r)}
-                        style={{ ...s.btn, background: C.accent, color: "#fff", border: "none", padding: "4px 12px", fontSize: 11, borderRadius: 6, cursor: busy[key] ? "default" : "pointer", opacity: busy[key] ? 0.5 : 1 }}>
-                        {busy[key] ? "…" : "Mark removed"}</button>}
-                </td>
-              </tr>
-            );
-          })}
-        </Table>
+
+      {/* Summary band */}
+      <div style={{ display: "flex", gap: 12, marginBottom: 16, flexWrap: "wrap" }}>
+        {[["Open incidents", incidents.filter((i) => i.open > 0).length, "#c0392b"],
+          ["Affected assets", data?.assetCount ?? 0, C.ink],
+          ["Awaiting removal", data?.openAssets ?? 0, (data?.openAssets ? "#c0392b" : C.accentDim)]].map(([k, v, col]) => (
+          <div key={k} style={{ border: `1px solid ${C.line}`, borderRadius: 10, padding: "12px 18px", minWidth: 150, background: C.surface }}>
+            <div style={{ fontSize: 10.5, color: C.dim, textTransform: "uppercase", letterSpacing: 0.5 }}>{k}</div>
+            <div style={{ fontSize: 24, fontWeight: 700, color: col }}>{v}</div>
+          </div>
+        ))}
+      </div>
+
+      <Card title="Vulnerable packages installed on endpoints — remove worklist"
+        desc="Each incident is a revoked package version and every machine that installed it before the block. Expand to locate the machine (hostname / IP / MAC / OS), find its owner, and mark it cleared once the vulnerable copy is removed. Machine detail comes from the request plus the X-Advisory-Asset header IT injects — fields IT hasn't supplied show as “—”.">
+        {incidents.length === 0 && <div style={{ padding: 20, color: C.sub, fontSize: 12.5 }}>{loading ? "Loading…" : "No recalls — nothing served has been revoked. This is the good state."}</div>}
+        {incidents.map((inc, i) => {
+          const k = `${inc.ecosystem}:${inc.name}@${inc.version}`;
+          const isOpen = expanded[k];
+          return (
+            <div key={i} style={{ border: `1px solid ${inc.open ? "#c0392b33" : C.line}`, borderRadius: 10, marginBottom: 10, overflow: "hidden" }}>
+              {/* Incident header */}
+              <div onClick={() => toggle(k)} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px", cursor: "pointer", background: inc.open ? "#c0392b08" : "transparent" }}>
+                <span style={{ fontSize: 11, color: C.dim, transform: isOpen ? "none" : "rotate(-90deg)", transition: "transform .12s" }}>▾</span>
+                <span style={{ fontFamily: C.mono, fontSize: 13, fontWeight: 700, color: C.ink, cursor: "pointer" }}
+                  onClick={(e) => { e.stopPropagation(); setDetail({ ecosystem: inc.ecosystem, name: inc.name, version: inc.version }); }}>
+                  <span style={{ borderBottom: `1px dotted ${C.dim}` }}>{inc.name}=={inc.version}</span></span>
+                <Tag tone={C.accent}>{inc.ecosystem}</Tag>
+                {inc.cve && <span style={{ fontFamily: C.mono, fontSize: 10.5, color: "#fff", background: "#c0392b", padding: "1px 8px", borderRadius: 10 }}>{inc.cve}</span>}
+                <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 14 }}>
+                  <span style={{ fontSize: 11.5, color: inc.open ? "#c0392b" : C.accentDim, fontWeight: 600 }}>
+                    {inc.open > 0 ? `${inc.open} / ${inc.affected} machines to clear` : `all ${inc.affected} cleared ✓`}</span>
+                  <span style={{ fontSize: 10.5, color: C.dim }}>last seen {inc.lastSeen ? new Date(inc.lastSeen).toLocaleString() : "—"}</span>
+                </span>
+              </div>
+
+              {isOpen && (
+                <div style={{ borderTop: `1px solid ${C.line}`, padding: "12px 16px", background: C.bg || "transparent" }}>
+                  {/* Remediation block for the whole incident */}
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 18, alignItems: "center", marginBottom: 14, fontSize: 11.5 }}>
+                    <span style={{ color: C.sub }}>Remediation:</span>
+                    <CopyCmd cmd={inc.remediation?.uninstall} />
+                    {inc.remediation?.install && <CopyCmd cmd={inc.remediation.install} />}
+                    {!inc.remediation?.install && <span style={{ color: C.dim, fontSize: 11 }}>no gate-verified safe version — contact security</span>}
+                  </div>
+
+                  {/* Per-asset cards */}
+                  {inc.assets.map((a, j) => (
+                    <div key={j} style={{ border: `1px solid ${C.line}`, borderRadius: 8, padding: 12, marginBottom: 8, opacity: a.resolved ? 0.6 : 1, background: C.surface }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+                        <span style={{ fontSize: 13, fontWeight: 700, color: C.ink, fontFamily: C.mono }}>
+                          {a.asset.hostname || a.asset.ip || a.developer}</span>
+                        {a.attributed
+                          ? <span style={{ fontSize: 10, color: "#fff", background: C.accent, padding: "1px 7px", borderRadius: 10 }}>{a.developer}</span>
+                          : <span style={{ fontSize: 10, color: C.dim, border: `1px solid ${C.line}`, padding: "1px 7px", borderRadius: 10 }} title="No IT token on this pull — best-effort host/IP">unattributed</span>}
+                        <span style={{ marginLeft: "auto" }}>
+                          {a.resolved
+                            ? <span style={{ fontSize: 11, color: C.accentDim }} title={a.resolvedAt ? `by ${a.resolvedBy} at ${new Date(a.resolvedAt).toLocaleString()}` : ""}>✓ removed {a.resolvedBy ? `by ${a.resolvedBy}` : ""}</span>
+                            : <button disabled={!!busy[a.assetId]} onClick={() => resolve(inc, a)}
+                                style={{ ...s.btn, background: C.accent, color: "#fff", border: "none", padding: "4px 12px", fontSize: 11, borderRadius: 6, cursor: busy[a.assetId] ? "default" : "pointer", opacity: busy[a.assetId] ? 0.5 : 1 }}>
+                                {busy[a.assetId] ? "…" : "Mark removed"}</button>}
+                        </span>
+                      </div>
+                      {/* Enterprise asset detail grid */}
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(130px, 1fr))", gap: "10px 16px" }}>
+                        <AssetField label="Hostname" value={a.asset.hostname} mono />
+                        <AssetField label="IP address" value={a.asset.ip} mono />
+                        <AssetField label="MAC address" value={a.asset.mac} mono />
+                        <AssetField label="Operating system" value={a.asset.os} />
+                        <AssetField label="Developer" value={a.attributed ? a.developer : null} />
+                        <AssetField label="OS login user" value={a.asset.osUser} />
+                        <AssetField label="Department" value={a.asset.department} />
+                        <AssetField label="Asset tag" value={a.asset.assetTag} mono />
+                        <AssetField label="Python / pip" value={[a.asset.pythonVersion && `py ${a.asset.pythonVersion}`, a.asset.pipVersion && `pip ${a.asset.pipVersion}`].filter(Boolean).join(" · ") || null} />
+                        <AssetField label="First seen" value={a.firstSeen ? new Date(a.firstSeen).toLocaleString() : null} />
+                        <AssetField label="Last seen" value={a.lastSeen ? new Date(a.lastSeen).toLocaleString() : null} />
+                        <AssetField label="Pulls" value={String(a.pullCount ?? 1)} />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
       </Card>
     </div>
   );
