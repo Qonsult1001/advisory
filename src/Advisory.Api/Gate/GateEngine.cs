@@ -309,8 +309,32 @@ public class GateEngine : IGateEngine
         var contentCov = ScanArtifactContent(root, p, triggered, ref decision);
 
         // Curation-style root-package conditions: immature version, license, operational risk, OpenSSF.
+        // These make slow network calls (deps.dev, OpenSSF scorecard, registry metadata). On the FAST
+        // (reverse-proxy) path we bound them tightly — if they don't return in a couple of seconds, skip
+        // them (recorded inconclusive) so the request stays under pip's read timeout. The CVE/malware
+        // hard-blocks already ran above; curation is defense-in-depth, and the async deep scan re-runs it
+        // in full. On the normal (async bridge) path there's no rush, so it runs unbounded.
         var decisionBox = new System.Runtime.CompilerServices.StrongBox<GateDecision>(decision);
-        var (curationCov, opRisk) = await EvaluateCuration(root, p, triggered, decisionBox, ct);
+        SourceCoverage curationCov; Catalog.OperationalRisk? opRisk;
+        if (fastRootOnly)
+        {
+            try
+            {
+                using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                cts.CancelAfter(TimeSpan.FromSeconds(3));
+                (curationCov, opRisk) = await EvaluateCuration(root, p, triggered, decisionBox, cts.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                curationCov = new SourceCoverage("package-intel", "Skipped", 0,
+                    "curation (op-risk/scorecard) skipped on the fast path — verified by the async deep scan", 0, false);
+                opRisk = null;
+            }
+        }
+        else
+        {
+            (curationCov, opRisk) = await EvaluateCuration(root, p, triggered, decisionBox, ct);
+        }
         decision = decisionBox.Value;
 
         // Build coverage report; decide if required sources were conclusive.
