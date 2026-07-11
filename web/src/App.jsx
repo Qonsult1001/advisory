@@ -7551,6 +7551,7 @@ const REPORT_TYPES = [
   { key: "violations", label: "Violations", icon: "⊘", desc: "Policy violations (Block / Quarantine) with triggered controls and waiver status." },
   { key: "licenses", label: "Legal · Licenses", icon: "§", desc: "Due-diligence license report for evaluated packages — declared license, prohibited matches, unknowns." },
   { key: "operational", label: "Operational Risk", icon: "⏲", desc: "EOL / deprecated, version age, newer versions, project health for evaluated packages." },
+  { key: "recall", label: "Recall / Exposure", icon: "⇤", desc: "Endpoints that installed a package later revoked — hostname, IP, MAC, OS, owner, CVE, remediation and status. The asset-recall worklist for audit." },
 ];
 // Executive summary for a report: a row of headline stat cards + a distribution bar chart, computed
 // from the live rows. Keeps the detail table below for drill-down + CSV. Per report type we pick the
@@ -7611,6 +7612,22 @@ function ReportSummary({ type, rows }) {
     ];
     chartTitle = "By risk level";
     chart = ["High", "Medium", "Low"].map((s) => ({ label: s, value: risk[s] || 0, color: s === "High" ? C.block : s === "Medium" ? C.warn : C.allow }));
+  } else if (type === "recall") {
+    const open = count((r) => String(r.status) === "Open");
+    const attributed = count((r) => r.developer);
+    const incidents = new Set(rows.map((r) => `${r.ecosystem}:${r.package}@${r.version}`)).size;
+    cards = [
+      { label: "Affected assets", value: rows.length },
+      { label: "Incidents", value: incidents, tone: C.info },
+      { label: "Awaiting removal", value: open, tone: open ? C.block : C.allow },
+      { label: "Removed", value: rows.length - open, tone: C.allow },
+      { label: "Attributed to a dev", value: attributed, tone: C.info },
+    ];
+    chartTitle = "By status";
+    chart = [
+      { label: "Open", value: open, color: C.block },
+      { label: "Removed", value: rows.length - open, color: C.allow },
+    ];
   }
   const max = Math.max(1, ...chart.map((c) => c.value));
   const hasChart = chart.some((c) => c.value > 0);

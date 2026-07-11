@@ -1230,8 +1230,9 @@ public class ReportsController : ControllerBase
     private readonly IAuditLog _audit;
     private readonly IPolicyStore _policy;
     private readonly Advisory.Api.Catalog.OpRiskService _opRisk;
-    public ReportsController(IAuditLog audit, IPolicyStore policy, Advisory.Api.Catalog.OpRiskService opRisk)
-    { _audit = audit; _policy = policy; _opRisk = opRisk; }
+    private readonly Advisory.Api.Scan.ScanStore _scans;
+    public ReportsController(IAuditLog audit, IPolicyStore policy, Advisory.Api.Catalog.OpRiskService opRisk, Advisory.Api.Scan.ScanStore scans)
+    { _audit = audit; _policy = policy; _opRisk = opRisk; _scans = scans; }
 
     [HttpGet("{type}")]
     public async Task<ActionResult> Get(string type, [FromQuery] string format = "json",
@@ -1243,9 +1244,10 @@ public class ReportsController : ControllerBase
             "violations" => Violations(limit),
             "licenses" or "legal" => await Legal(limit, ct),
             "operational" => await Operational(limit, ct),
+            "recall" or "exposure" => Recall(),
             _ => null,
         };
-        if (rows is null) return BadRequest(new { error = "type must be vulnerabilities | violations | licenses | operational" });
+        if (rows is null) return BadRequest(new { error = "type must be vulnerabilities | violations | licenses | operational | recall" });
 
         if (format.Equals("csv", StringComparison.OrdinalIgnoreCase))
             return File(System.Text.Encoding.UTF8.GetBytes(ToCsv(rows)), "text/csv", $"{type}-report.csv");
@@ -1287,6 +1289,37 @@ public class ReportsController : ControllerBase
                 ["policyControls"] = string.Join("; ", e.TriggeredRules),
                 ["status"] = ex is not null ? "Waived" : "Open",
                 ["waivedBy"] = ex?.Ticket, ["actor"] = e.Actor, ["detectedAt"] = e.Timestamp,
+            });
+        }
+        return rows;
+    }
+
+    /// <summary>Recall / Exposure report: one row PER AFFECTED ASSET — every endpoint that installed a
+    /// package later revoked, with the enterprise detail to locate the machine (hostname/IP/MAC/OS), its
+    /// owner (developer/dept/tag/os-user), the CVE, the exact remediation, and the removal status + who
+    /// cleared it and when. This is the auditable asset-recall worklist, CSV-exportable like the others.</summary>
+    private List<Dictionary<string, object?>> Recall()
+    {
+        var rows = new List<Dictionary<string, object?>>();
+        foreach (var e in _scans.Recalls(includeResolved: true))
+        {
+            var a = e.Asset;
+            var attributed = !e.User.StartsWith("unattributed:", StringComparison.Ordinal);
+            var uninstall = e.Ecosystem == Ecosystem.npm ? $"npm uninstall {e.Name}" : $"pip uninstall -y {e.Name}";
+            var install = e.SafeVersion is null ? null
+                : (e.Ecosystem == Ecosystem.npm ? $"npm install {e.Name}@{e.SafeVersion}" : $"pip install {e.Name}=={e.SafeVersion}");
+            rows.Add(new()
+            {
+                ["package"] = e.Name, ["version"] = e.Version, ["ecosystem"] = e.Ecosystem.ToString(),
+                ["cve"] = e.Cve, ["safeVersion"] = e.SafeVersion,
+                ["developer"] = attributed ? e.User : null,
+                ["hostname"] = a?.Hostname, ["ip"] = a?.Ip, ["mac"] = a?.Mac, ["os"] = a?.Os,
+                ["osUser"] = a?.OsUser, ["department"] = a?.Department, ["assetTag"] = a?.AssetTag,
+                ["pythonVersion"] = a?.PythonVersion, ["pipVersion"] = a?.PipVersion,
+                ["firstSeen"] = e.FirstSeen, ["lastSeen"] = e.LastSeen, ["pullCount"] = e.PullCount,
+                ["status"] = e.Resolved ? "Removed" : "Open",
+                ["resolvedBy"] = e.ResolvedBy, ["resolvedAt"] = e.ResolvedAt,
+                ["remediationRemove"] = uninstall, ["remediationInstall"] = install,
             });
         }
         return rows;
