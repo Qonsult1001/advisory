@@ -25,6 +25,10 @@ services:
     depends_on: [nexus, mssql]
     environment:
       - PROXY_PORT=8090
+      # Per-developer tokens for exposure attribution (IT maps opaque token → person). "token=identity"
+      # pairs, comma-separated. IT bakes each token into the pip config it pushes; the dev types nothing.
+      # Demo mapping so the console shows real names on the recall list; replace/extend in production.
+      - PROXY_DEV_TOKENS=demo-alice=alice, demo-bob=bob
       - PolicyPath=/data/policy.json
       - AuditPath=/data/audit.jsonl
       - WormPath=/data/audit.worm.jsonl

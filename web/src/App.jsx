@@ -41,6 +41,9 @@ const api = {
   getArtifactScan: (repo, eco, name, version, rescan) => fetch(`${API}/scans/artifact?repo=${encodeURIComponent(repo)}&ecosystem=${eco}&name=${encodeURIComponent(name)}&version=${encodeURIComponent(version)}${rescan ? "&rescan=true" : ""}`).then((r) => r.json()),
   getQuarantine: () => fetch(`${API}/quarantine`).then((r) => r.json()),
   getRequests: () => fetch(`${API}/quarantine/requests`).then((r) => r.json()),
+  getExposure: (includeResolved = true) => fetch(`${API}/quarantine/exposure?includeResolved=${includeResolved}`).then((r) => r.json()),
+  resolveExposure: (ecosystem, name, version, user) => fetch(`${API}/quarantine/exposure/resolve`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ecosystem, name, version, user }) }).then((r) => r.json().then((j) => ({ ok: r.ok, ...j }))),
+  getPackageDetail: (ecosystem, name, version) => fetch(`${API}/quarantine/detail/${ecosystem}/${encodeURIComponent(name)}/${encodeURIComponent(version)}`).then((r) => r.json()),
   getReport: (type) => fetch(`${API}/reports/${type}`).then((r) => r.json()),
   reportCsvUrl: (type) => `${API}/reports/${type}?format=csv`,
   getViolationsDetailed: (watch) => fetch(`${API}/violations/detailed${watch ? `?watch=${encodeURIComponent(watch)}` : ""}`).then((r) => r.json()),
@@ -704,6 +707,7 @@ export default function App() {
 
           {tab === "quarantine" && <Quarantine />}
           {tab === "approved" && <ApprovedPackages />}
+          {tab === "recall" && <RecallExposure />}
 
           {tab === "violations" && <WatchViolations policy={policy} setPolicy={setPolicy} rows={violations} />}
 
@@ -1023,7 +1027,7 @@ const NAV = [
   ]},
   { type: "group", key: "pipeline", label: "Pipeline", icon: "⇄", children: [
     ["requests", "Developer requests"], ["queue", "Intake queue"], ["quarantine", "Quarantine"], ["approved", "Approved packages"],
-    ["exceptions", "Approved exceptions"], ["audit", "Decision ledger"], ["reports", "Reports"],
+    ["recall", "Recall / Exposure"], ["exceptions", "Approved exceptions"], ["audit", "Decision ledger"], ["reports", "Reports"],
   ]},
 ];
 const NAV_PARENT = (() => { const m = {}; NAV.forEach(g => g.children?.forEach(([k]) => m[k] = g.key)); return m; })();
@@ -3339,12 +3343,144 @@ function CvePanel({ cve, onClose, pkgName }) {
 }
 
 // Quarantine — what's physically held in the Nexus quarantine repo right now.
+// A slide-in drawer showing the LIVE gate verdict for one package version — every triggered CVE with
+// CVSS + KEV, the safe-version advice, and the SBOM. Opened by clicking any package row. Fetches on open.
+function PackageDetailDrawer({ pkg, onClose }) {
+  const [d, setD] = useState(null);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    if (!pkg) return;
+    setLoading(true); setD(null);
+    api.getPackageDetail(pkg.ecosystem, pkg.name, pkg.version).then(setD).catch(() => setD(null)).finally(() => setLoading(false));
+  }, [pkg]);
+  if (!pkg) return null;
+  const sevColor = (s) => s === "Critical" ? "#c0392b" : s === "High" ? "#e07b00" : s === "Medium" ? "#c9a800" : C.dim;
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(20,22,25,0.45)", zIndex: 60, display: "flex", justifyContent: "flex-end" }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ width: "min(620px,96vw)", height: "100%", background: C.surface, borderLeft: `1px solid ${C.line}`, boxShadow: "-12px 0 40px rgba(0,0,0,0.18)", overflowY: "auto", padding: 24, animation: "fwfade .15s ease" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+          <div>
+            <div style={{ fontSize: 18, fontWeight: 700, fontFamily: C.mono, color: C.ink }}>{pkg.name}<span style={{ color: C.dim }}> @ {pkg.version}</span></div>
+            <div style={{ marginTop: 4 }}><Tag tone={C.accent}>{pkg.ecosystem}</Tag></div>
+          </div>
+          <button onClick={onClose} style={{ ...s.btn, background: "transparent", color: C.sub, border: `1px solid ${C.line}`, padding: "4px 10px", fontSize: 12, borderRadius: 6, cursor: "pointer" }}>Close ✕</button>
+        </div>
+        {loading ? <div style={{ padding: "24px 0", color: C.sub, fontSize: 13 }}>Loading live verdict…</div>
+          : !d ? <div style={{ padding: "24px 0", color: C.sub, fontSize: 13 }}>No scan detail available for this package.</div>
+          : <>
+            <div style={{ display: "flex", gap: 10, margin: "18px 0", flexWrap: "wrap" }}>
+              {[["Verdict", d.verdict || d.decision || "—", d.decision === "Block" || d.revoked ? "#c0392b" : C.accent],
+                ["Critical", d.critical, d.critical ? "#c0392b" : C.dim], ["High", d.high, d.high ? "#e07b00" : C.dim],
+                ["Components", d.componentsScanned, C.sub]].map(([k, v, col]) => (
+                <div key={k} style={{ border: `1px solid ${C.line}`, borderRadius: 8, padding: "8px 14px", minWidth: 88 }}>
+                  <div style={{ fontSize: 10, color: C.dim, textTransform: "uppercase", letterSpacing: .4 }}>{k}</div>
+                  <div style={{ fontSize: 15, fontWeight: 700, color: col }}>{v}</div>
+                </div>
+              ))}
+            </div>
+            {d.revoked && <div style={{ background: "#c0392b12", border: "1px solid #c0392b40", borderRadius: 8, padding: "10px 12px", fontSize: 12.5, color: "#c0392b", marginBottom: 14 }}>⛔ Revoked — will not be re-promoted. Developers who already installed it appear on the Recall / Exposure screen.</div>}
+            {(d.safeNearest || d.safeLatest) && (
+              <div style={{ background: `${C.accent}0f`, border: `1px solid ${C.accent}30`, borderRadius: 8, padding: "10px 12px", fontSize: 12.5, color: C.accentDim, marginBottom: 14 }}>
+                ✓ Gate-verified safe version: <b style={{ fontFamily: C.mono }}>{d.safeNearest || d.safeLatest}</b>
+                {" · "}<code style={s.code}>{d.ecosystem === "npm" ? `npm install ${d.name}@${d.safeNearest || d.safeLatest}` : `pip install ${d.name}==${d.safeNearest || d.safeLatest}`}</code>
+              </div>
+            )}
+            <div style={{ fontSize: 13, fontWeight: 700, color: C.ink, margin: "16px 0 8px" }}>Vulnerabilities ({d.vulnerabilities?.length || 0})</div>
+            {(!d.vulnerabilities || d.vulnerabilities.length === 0) ? <div style={{ color: C.sub, fontSize: 12.5 }}>None found.</div>
+              : d.vulnerabilities.map((v, i) => (
+                <div key={i} style={{ border: `1px solid ${C.line}`, borderRadius: 8, padding: 12, marginBottom: 8 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+                    <span style={{ fontFamily: C.mono, fontSize: 12.5, fontWeight: 700, color: C.ink }}>{v.id}</span>
+                    <span style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                      {v.knownExploited && <span style={{ fontSize: 10, fontWeight: 700, color: "#fff", background: "#c0392b", padding: "1px 7px", borderRadius: 10 }}>KEV</span>}
+                      <span style={{ fontSize: 11, fontWeight: 700, color: sevColor(v.severity) }}>{v.severity}{v.cvss ? ` · ${v.cvss}` : ""}</span>
+                    </span>
+                  </div>
+                  {v.summary && <div style={{ fontSize: 12, color: C.sub, marginTop: 6, lineHeight: 1.5 }}>{v.summary}</div>}
+                  <div style={{ fontSize: 11, color: C.dim, marginTop: 6 }}>
+                    {v.component && <span>in <code style={s.code}>{v.component}</code></span>}
+                    {v.fixedVersion && <span> · fixed in <b style={{ color: C.accentDim }}>{v.fixedVersion}</b></span>}
+                    {v.impactPath?.length > 1 && <span> · path: {v.impactPath.join(" → ")}</span>}
+                  </div>
+                </div>
+              ))}
+          </>}
+      </div>
+    </div>
+  );
+}
+
+// Recall / Exposure — the org-wide worklist of installed copies that must be removed. When a package a
+// developer already pulled is later revoked (fresh CVE caught by the per-request re-gate, or an operator
+// revoke), every developer who has that exact version lands here with the exact remove/replace commands,
+// attributed by the IT-issued token. Mark each resolved as people remediate.
+function RecallExposure() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState({});
+  const [showResolved, setShowResolved] = useState(false);
+  const [detail, setDetail] = useState(null);
+  const refresh = () => api.getExposure(true).then(setData).catch(() => setData({ count: 0, open: 0, recalls: [] }));
+  useEffect(() => { refresh().finally(() => setLoading(false)); const t = setInterval(refresh, 5000); return () => clearInterval(t); }, []);
+  const resolve = (r) => {
+    const key = `${r.ecosystem}:${r.name}@${r.version}:${r.user}`;
+    setBusy((b) => ({ ...b, [key]: true }));
+    api.resolveExposure(r.ecosystem, r.name, r.version, r.user).then(refresh).finally(() => setBusy((b) => ({ ...b, [key]: false })));
+  };
+  const recalls = (data?.recalls || []).filter((r) => showResolved || !r.resolved);
+  return (
+    <div style={{ animation: "fwfade .2s ease" }}>
+      <div style={s.crumb}><span style={{ color: C.accent }}>Pipeline</span><span style={{ color: C.dim }}>›</span><span>Recall / Exposure</span></div>
+      <div style={{ fontSize: 22, fontWeight: 700, letterSpacing: -0.4, margin: "4px 0 14px" }}>Recall / Exposure</div>
+      <PackageDetailDrawer pkg={detail} onClose={() => setDetail(null)} />
+      <Card title="Installed copies that must be removed"
+        desc="When a package a developer already installed is later blocked (a fresh CVE caught on the next pull, or an operator revoke), everyone who has that exact version is listed here — with the exact commands to remove it and install the safe version. Attributed to the developer by their IT-issued token. Mark each done as people remediate.">
+        <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 12 }}>
+          <div style={{ fontSize: 12.5, color: C.sub }}><b style={{ color: data?.open ? "#c0392b" : C.accentDim }}>{data?.open ?? 0}</b> open · {data?.count ?? 0} total</div>
+          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: C.sub, cursor: "pointer" }}>
+            <input type="checkbox" checked={showResolved} onChange={(e) => setShowResolved(e.target.checked)} /> show resolved
+          </label>
+        </div>
+        <Table cols={["Package", "Version", "Developer", "CVE", "Remediation", "When", ""]}>
+          {recalls.length === 0 && <tr><td style={s.td} colSpan={7}>{loading ? "Loading…" : "No recalls — nothing served has been revoked. This is the good state."}</td></tr>}
+          {recalls.map((r, i) => {
+            const key = `${r.ecosystem}:${r.name}@${r.version}:${r.user}`;
+            return (
+              <tr key={i} style={{ ...s.tr, opacity: r.resolved ? 0.5 : 1 }}>
+                <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11.5, cursor: "pointer" }} onClick={() => setDetail({ ecosystem: r.ecosystem, name: r.name, version: r.version })}>
+                  <span style={{ borderBottom: `1px dotted ${C.dim}` }}>{r.name}</span> <Tag tone={C.accent}>{r.ecosystem}</Tag></td>
+                <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11.5 }}>{r.version}</td>
+                <td style={{ ...s.td, fontSize: 11 }}>
+                  {r.attributed ? <b style={{ color: C.ink }}>{r.user}</b> : <span style={{ color: C.dim }} title="No IT token on this pull — best-effort host/IP">{r.user}</span>}
+                </td>
+                <td style={{ ...s.td, fontFamily: C.mono, fontSize: 10.5, color: "#c0392b" }}>{r.cve || "—"}</td>
+                <td style={{ ...s.td, fontSize: 10.5, color: C.sub }}>
+                  <div><code style={s.code}>{r.remediation?.uninstall}</code></div>
+                  {r.remediation?.install && <div style={{ marginTop: 3 }}><code style={s.code}>{r.remediation.install}</code></div>}
+                </td>
+                <td style={{ ...s.td, fontSize: 11, color: C.sub }}>{r.servedAt ? new Date(r.servedAt).toLocaleString() : "—"}</td>
+                <td style={{ ...s.td, textAlign: "right" }}>
+                  {r.resolved ? <span style={{ fontSize: 11, color: C.accentDim }}>✓ done</span>
+                    : <button disabled={!!busy[key]} onClick={() => resolve(r)}
+                        style={{ ...s.btn, background: C.accent, color: "#fff", border: "none", padding: "4px 12px", fontSize: 11, borderRadius: 6, cursor: busy[key] ? "default" : "pointer", opacity: busy[key] ? 0.5 : 1 }}>
+                        {busy[key] ? "…" : "Mark removed"}</button>}
+                </td>
+              </tr>
+            );
+          })}
+        </Table>
+      </Card>
+    </div>
+  );
+}
+
 // Developer requests — packages a developer's pip/npm install pulled that weren't approved yet
 // (auto-gate-on-pull, discovered from Nexus's request log). Shows each request's fate so a developer
 // can tell "still gating, retry shortly" from "blocked — use this version instead".
 function DevRequests() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [detail, setDetail] = useState(null);
   const refresh = () => api.getRequests().then(setData).catch(() => setData({ count: 0, requests: [] }));
   useEffect(() => { refresh().finally(() => setLoading(false)); const t = setInterval(refresh, 5000); return () => clearInterval(t); }, []);
   const reqs = data?.requests || [];
@@ -3352,15 +3488,19 @@ function DevRequests() {
     <div style={{ animation: "fwfade .2s ease" }}>
       <div style={s.crumb}><span style={{ color: C.accent }}>Pipeline</span><span style={{ color: C.dim }}>›</span><span>Developer requests</span></div>
       <div style={{ fontSize: 22, fontWeight: 700, letterSpacing: -0.4, margin: "4px 0 14px" }}>Developer requests</div>
+      <PackageDetailDrawer pkg={detail} onClose={() => setDetail(null)} />
       <Card title="Packages your developers asked for"
-        desc="When a developer runs pip/npm install for a package that isn't approved yet, the firewall picks it up automatically and gates it. Approved = install it now (retry your command). Blocked = won't appear; use the recommended safe version instead. Processing/Pending = still gating, retry in a minute.">
+        desc="When a developer runs pip/npm install for a package that isn't approved yet, the firewall picks it up automatically and gates it. Approved = install it now (retry your command). Blocked = won't appear; use the recommended safe version instead. Processing/Pending = still gating, retry in a minute. Click a row to see the live gate verdict for that file.">
         <Table cols={["Package", "Ecosystem", "Requested by", "When", "Status", "Use instead"]}>
           {reqs.length === 0 && <tr><td style={s.td} colSpan={6}>{loading ? "Loading…" : "No developer requests yet. When someone installs an un-gated package, it appears here."}</td></tr>}
           {reqs.map((r, i) => {
             const tone = r.status === "approved" ? C.accent : r.status === "blocked" ? "#c0392b" : C.dim;
+            const canOpen = !!r.version;
             return (
               <tr key={i} style={s.tr}>
-                <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11.5 }}>{r.name}</td>
+                <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11.5, cursor: canOpen ? "pointer" : "default" }}
+                  onClick={() => canOpen && setDetail({ ecosystem: r.ecosystem, name: r.name, version: r.version })}>
+                  <span style={canOpen ? { borderBottom: `1px dotted ${C.dim}` } : undefined}>{r.name}</span></td>
                 <td style={s.td}><Tag tone={C.accent}>{r.ecosystem}</Tag></td>
                 <td style={{ ...s.td, fontSize: 11, color: C.sub }}>{r.user || "—"}</td>
                 <td style={{ ...s.td, fontSize: 11, color: C.sub }}>{r.requestedAt ? new Date(r.requestedAt).toLocaleTimeString() : "—"}</td>
@@ -3388,9 +3528,12 @@ function Quarantine() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState({});
   const [msg, setMsg] = useState(null);
+  const [detail, setDetail] = useState(null);
+  const [override, setOverride] = useState(null); // {h} pending override of a vulnerable package
+  const [reason, setReason] = useState("");
   const refresh = () => api.getQuarantine().then(setData).catch(() => setData({ configured: false, held: [] }));
   useEffect(() => { refresh().finally(() => setLoading(false)); }, []);
-  const promote = (h) => {
+  const doPromote = (h) => {
     const key = `${h.ecosystem}:${h.name}@${h.version}`;
     setBusy((b) => ({ ...b, [key]: true })); setMsg(null);
     api.promoteHeld(h.ecosystem, h.name, h.version).then((r) => {
@@ -3400,13 +3543,46 @@ function Quarantine() {
     }).catch(() => setMsg({ tone: "err", text: `Could not promote ${h.name}.` }))
       .finally(() => setBusy((b) => ({ ...b, [key]: false })));
   };
+  // A vulnerable package (real CVE) can only be overridden through a logged exception with a reason —
+  // no bare one-click push. A merely-held package (no CVE) keeps the plain Promote.
+  const confirmOverride = () => {
+    const h = override.h; setOverride(null);
+    // Log the override as a policy exception (package = "name==version"), then push it through. This is
+    // the ONLY way a vulnerable package reaches approved — it leaves an audit trail with the reason.
+    const expires = new Date(Date.now() + 90 * 864e5).toISOString(); // 90-day exception
+    api.grantException({ package: `${h.name}==${h.version}`, reason: reason || "operator override", ticket: `OVR-${h.name}-${h.version}`, expires })
+      .catch(() => {}).finally(() => { setReason(""); doPromote(h); });
+  };
   const held = data?.held || [];
   return (
     <div style={{ animation: "fwfade .2s ease" }}>
       <div style={s.crumb}><span style={{ color: C.accent }}>Pipeline</span><span style={{ color: C.dim }}>›</span><span>Quarantine</span></div>
       <div style={{ fontSize: 22, fontWeight: 700, letterSpacing: -0.4, margin: "4px 0 14px" }}>Quarantine</div>
+      <PackageDetailDrawer pkg={detail} onClose={() => setDetail(null)} />
+      {override && (
+        <div onClick={() => { setOverride(null); setReason(""); }}
+          style={{ position: "fixed", inset: 0, background: "rgba(20,22,25,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50 }}>
+          <div onClick={(e) => e.stopPropagation()}
+            style={{ background: C.surface, border: `1px solid ${C.line}`, borderRadius: 12, padding: 22, width: "min(480px,94vw)", boxShadow: "0 12px 40px rgba(0,0,0,0.18)" }}>
+            <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 8, color: "#c0392b" }}>⚠ Override a vulnerable package</div>
+            <div style={{ fontSize: 13, color: C.sub, lineHeight: 1.6, marginBottom: 12 }}>
+              <code style={s.code}>{override.h.name}@{override.h.version}</code> was blocked because it has a known vulnerability
+              ({override.h.critical}C/{override.h.high}H). Pushing it to approved lets developers install it anyway. This is
+              logged as an exception with your reason. Prefer the safe version if one is offered.
+            </div>
+            <input autoFocus value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Reason for the exception (required for audit)"
+              style={{ width: "100%", boxSizing: "border-box", border: `1px solid ${C.line}`, borderRadius: 6, padding: "8px 10px", fontSize: 12.5, fontFamily: C.sans, marginBottom: 16 }} />
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+              <button onClick={() => { setOverride(null); setReason(""); }}
+                style={{ ...s.btn, background: "transparent", color: C.sub, border: `1px solid ${C.line}`, padding: "8px 14px", fontSize: 12.5, borderRadius: 6, cursor: "pointer" }}>Cancel</button>
+              <button disabled={!reason.trim()} onClick={confirmOverride}
+                style={{ ...s.btn, background: reason.trim() ? "#c0392b" : C.line, color: "#fff", border: "none", padding: "8px 14px", fontSize: 12.5, borderRadius: 6, cursor: reason.trim() ? "pointer" : "default" }}>Override &amp; promote</button>
+            </div>
+          </div>
+        </div>
+      )}
       <Card title="Pipeline — packages in the proxy"
-        desc="Every package the firewall is currently handling. Promoted = cleared to approved; Blocked/Held = stopped (Promote to override and push it through); Pending = awaiting the next gate cycle.">
+        desc="Every package the firewall is currently handling. Promoted = cleared to approved; Held (no CVE) = Promote to push through; Blocked (has a CVE) = override only via a logged exception with a reason; Pending = awaiting the next gate cycle. Click a row for the live verdict.">
         {msg && <div style={{ padding: "8px 0 4px", fontSize: 12.5, color: msg.tone === "ok" ? C.accentDim : "#c0392b" }}>{msg.text}</div>}
         {!loading && data && !data.configured
           ? <div style={{ padding: 22, color: C.sub, fontSize: 12.5, lineHeight: 1.6 }}>Nexus not connected (<code style={s.code}>NEXUS_URL</code> unset). When connected, packages awaiting promotion appear here.</div>
@@ -3418,11 +3594,17 @@ function Quarantine() {
                   : h.status === "held" ? "#d98a00"
                   : h.status === "promoting" ? C.accent : C.dim;
                 const label = h.status === "promoting" ? "promoting…" : h.status;
-                const canPromote = h.status === "blocked" || h.status === "held";
                 const key = `${h.ecosystem}:${h.name}@${h.version}`;
+                // Vulnerable = a real CVE (critical/high). Those get the guarded override; a plain held
+                // package (no CVE) keeps the one-click Promote.
+                const vulnerable = (h.critical > 0 || h.high > 0) || h.status === "blocked";
+                const canPromotePlain = h.status === "held" && !vulnerable;
+                const canOverride = (h.status === "blocked" || h.status === "held") && vulnerable && h.status !== "revoked";
                 return (
                   <tr key={i} style={s.tr}>
-                    <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11.5 }}>{h.name}</td>
+                    <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11.5, cursor: "pointer" }}
+                      onClick={() => setDetail({ ecosystem: h.ecosystem, name: h.name, version: h.version })}>
+                      <span style={{ borderBottom: `1px dotted ${C.dim}` }}>{h.name}</span></td>
                     <td style={s.td}><Tag tone={C.accent}>{h.ecosystem}</Tag></td>
                     <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11.5 }}>{h.version}</td>
                     <td style={s.td}>
@@ -3443,11 +3625,18 @@ function Quarantine() {
                       )}
                     </td>
                     <td style={{ ...s.td, textAlign: "right" }}>
-                      {canPromote && (
-                        <button disabled={!!busy[key]} onClick={() => promote(h)}
-                          title="Override the gate and push this package to approved"
+                      {canPromotePlain && (
+                        <button disabled={!!busy[key]} onClick={() => doPromote(h)}
+                          title="Push this held package to approved"
                           style={{ ...s.btn, background: C.accent, color: "#fff", border: "none", padding: "4px 12px", fontSize: 11, borderRadius: 6, cursor: busy[key] ? "default" : "pointer", opacity: busy[key] ? 0.5 : 1 }}>
                           {busy[key] ? "…" : "Promote"}
+                        </button>
+                      )}
+                      {canOverride && (
+                        <button disabled={!!busy[key]} onClick={() => { setReason(""); setOverride({ h }); }}
+                          title="This package has a known vulnerability — overriding requires a logged reason"
+                          style={{ ...s.btn, background: "transparent", color: "#c0392b", border: `1px solid #c0392b55`, padding: "4px 12px", fontSize: 11, borderRadius: 6, cursor: busy[key] ? "default" : "pointer", opacity: busy[key] ? 0.5 : 1 }}>
+                          Override…
                         </button>
                       )}
                     </td>

@@ -100,12 +100,72 @@ public class ScanStore
     public IReadOnlyList<DevRequest> RecentRequests(int max = 100)
         => _requests.Values.OrderByDescending(r => r.RequestedAt).Take(max).ToList();
 
+    // ─────────────────────────── exposure ledger (recall list) ───────────────────────────
+    // Every artifact the proxy SERVES to a developer is recorded here as an "exposure": that developer
+    // now has that exact version on their machine. If the package is LATER revoked (a fresh CVE caught by
+    // the per-request re-gate), the matching exposures flip to Recall=true — the org-wide worklist of
+    // "installed copies that must be removed", attributed to the developer (by IT-issued token) who pulled
+    // it. This is what makes retroactive revocation actionable instead of silent. Persisted so a restart
+    // doesn't lose an open recall.
+    public record Exposure(Ecosystem Ecosystem, string Name, string Version, string User,
+        DateTimeOffset ServedAt, bool Recall, string? Cve, string? SafeVersion, bool Resolved);
+
+    private readonly ConcurrentDictionary<string, Exposure> _exposure = new(StringComparer.OrdinalIgnoreCase);
+    private string ExposurePath => _path + ".exposure.json";
+    private static string ExpKey(Ecosystem eco, string name, string version, string user)
+        => $"{eco}|{name}|{version}|{user}";
+
+    /// <summary>Record that we served this exact version to this developer (they now have it installed).
+    /// Idempotent per {eco,name,version,user}; refreshes the served-at time on a re-pull.</summary>
+    public void RecordServed(Ecosystem eco, string name, string version, string user)
+    {
+        var key = ExpKey(eco, name, version, user);
+        _exposure.AddOrUpdate(key,
+            _ => new Exposure(eco, name, version, user, DateTimeOffset.UtcNow, false, null, null, false),
+            (_, e) => e with { ServedAt = DateTimeOffset.UtcNow });
+        Persist();
+    }
+
+    /// <summary>A package version was revoked — flag every developer who has it for recall, attaching the
+    /// CVE reason and the recommended safe version so the console can tell each of them exactly what to do.
+    /// Returns the number of developers now on the recall list for this version.</summary>
+    public int FlagRecall(Ecosystem eco, string name, string version, string? cve, string? safeVersion)
+    {
+        int n = 0;
+        foreach (var kv in _exposure)
+        {
+            var e = kv.Value;
+            if (e.Ecosystem == eco && e.Name.Equals(name, StringComparison.OrdinalIgnoreCase) && e.Version == version)
+            {
+                _exposure[kv.Key] = e with { Recall = true, Cve = cve ?? e.Cve, SafeVersion = safeVersion ?? e.SafeVersion, Resolved = false };
+                n++;
+            }
+        }
+        if (n > 0) Persist();
+        return n;
+    }
+
+    /// <summary>Mark one developer's recall as handled (they uninstalled / moved to the safe version).</summary>
+    public void ResolveExposure(Ecosystem eco, string name, string version, string user)
+    {
+        var key = ExpKey(eco, name, version, user);
+        if (_exposure.TryGetValue(key, out var e)) { _exposure[key] = e with { Resolved = true }; Persist(); }
+    }
+
+    /// <summary>The recall worklist: served-then-revoked copies still on machines, newest first. Only
+    /// exposures flagged for recall (a real revocation) appear; resolved ones are included so the console
+    /// can show progress, but callers can filter on Resolved.</summary>
+    public IReadOnlyList<Exposure> Recalls(bool includeResolved = true)
+        => _exposure.Values.Where(e => e.Recall && (includeResolved || !e.Resolved))
+                           .OrderByDescending(e => e.ServedAt).ToList();
+
     /// <summary>Wipe all scan history AND revocations (the operator "reset demo data" action).</summary>
     public void ClearAll()
     {
         _scans.Clear();
         _revoked.Clear();
         _safeVersions.Clear();
+        _exposure.Clear();
         Persist();
     }
 
@@ -231,6 +291,15 @@ public class ScanStore
             }
         }
         catch { /* ignore */ }
+        try
+        {
+            if (File.Exists(ExposurePath))
+            {
+                var exp = JsonSerializer.Deserialize<List<Exposure>>(File.ReadAllText(ExposurePath), Json);
+                if (exp is not null) foreach (var e in exp) _exposure[ExpKey(e.Ecosystem, e.Name, e.Version, e.User)] = e;
+            }
+        }
+        catch { /* ignore */ }
     }
 
     private void Persist()
@@ -240,6 +309,8 @@ public class ScanStore
             try { File.WriteAllText(_path, JsonSerializer.Serialize(_scans.Values.ToList(), Json)); }
             catch { /* best-effort persistence */ }
             try { File.WriteAllText(RevokedPath, JsonSerializer.Serialize(_revoked.Keys.ToList(), Json)); }
+            catch { /* best-effort persistence */ }
+            try { File.WriteAllText(ExposurePath, JsonSerializer.Serialize(_exposure.Values.ToList(), Json)); }
             catch { /* best-effort persistence */ }
         }
     }

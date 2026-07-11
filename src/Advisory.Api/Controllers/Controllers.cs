@@ -874,10 +874,88 @@ public class QuarantineController : ControllerBase
             return new
             {
                 r.Name, ecosystem = r.Ecosystem.ToString(), user = r.User, requestedAt = r.RequestedAt,
+                version = scan?.Version,   // the version we last scanned (drives the detail drawer)
                 status, safeNearest = near, safeLatest = latest,
             };
         }).ToList();
         return Ok(new { count = rows.Count, requests = rows });
+    }
+
+    /// <summary>The RECALL worklist: packages that were served to developers and LATER revoked (a fresh CVE
+    /// caught by the per-request re-gate, or an operator revoke). Each row = a developer who has a now-
+    /// vulnerable version installed and must remove it, with the CVE and the gate-verified safe version so
+    /// the console can tell them exactly what to run. This is the org-wide "installed copies out on machines
+    /// that must be pulled" view — the actionable side of retroactive revocation.</summary>
+    [HttpGet("exposure")]
+    public ActionResult Exposure([FromQuery] bool includeResolved = true)
+    {
+        var recalls = _scans.Recalls(includeResolved);
+        var rows = recalls.Select(e => new
+        {
+            name = e.Name, ecosystem = e.Ecosystem.ToString(), version = e.Version,
+            user = e.User, attributed = !e.User.StartsWith("unattributed:", StringComparison.Ordinal),
+            servedAt = e.ServedAt, cve = e.Cve, safeVersion = e.SafeVersion, resolved = e.Resolved,
+            remediation = new
+            {
+                uninstall = e.Ecosystem == Ecosystem.npm ? $"npm uninstall {e.Name}" : $"pip uninstall -y {e.Name}",
+                install = e.SafeVersion is null ? null
+                    : (e.Ecosystem == Ecosystem.npm ? $"npm install {e.Name}@{e.SafeVersion}" : $"pip install {e.Name}=={e.SafeVersion}"),
+            },
+        }).ToList();
+        var open = rows.Count(r => !r.resolved);
+        return Ok(new { count = rows.Count, open, recalls = rows });
+    }
+
+    public record ResolveExposureRequest(string Ecosystem, string Name, string Version, string User);
+
+    /// <summary>Mark one developer's recall as handled (they removed the vulnerable version / moved to the
+    /// safe one). Admin — this is a remediation-tracking action.</summary>
+    [HttpPost("exposure/resolve")]
+    [Authorize(Policy = Policies.CanAdmin)]
+    public ActionResult ResolveExposure([FromBody] ResolveExposureRequest req)
+    {
+        if (req is null || string.IsNullOrWhiteSpace(req.Name) || string.IsNullOrWhiteSpace(req.User))
+            return BadRequest(new { error = "ecosystem, name, version and user are required" });
+        if (!Enum.TryParse<Ecosystem>(req.Ecosystem, ignoreCase: true, out var eco))
+            return BadRequest(new { error = $"Unknown ecosystem '{req.Ecosystem}'." });
+        _scans.ResolveExposure(eco, req.Name, req.Version ?? "", req.User);
+        return Ok(new { resolved = true, name = req.Name, version = req.Version, user = req.User });
+    }
+
+    /// <summary>Live gate verdict for one package version — the detail behind a Developer-requests /
+    /// Quarantine row: every triggered CVE/rule with CVSS + KEV, the SBOM, and safe-version advice. Reads
+    /// the stored scan; runs+indexes one on the fly if we don't have it yet (so the drawer is never empty).</summary>
+    [HttpGet("detail/{ecosystem}/{name}/{version}")]
+    public async Task<ActionResult> Detail(string ecosystem, string name, string version, CancellationToken ct)
+    {
+        if (!Enum.TryParse<Ecosystem>(ecosystem, ignoreCase: true, out var eco))
+            return BadRequest(new { error = $"Unknown ecosystem '{ecosystem}'." });
+        var prefix = NexusEcosystems.TryGet(eco, out var d) ? d.Prefix : "";
+        var scan = _scans.Get($"{prefix}-quarantine", name, version)
+                 ?? _scans.Get($"{prefix}-approved", name, version);
+        if (scan is null)
+        {
+            try { scan = await _scans.GetOrScanAsync($"{prefix}-quarantine", new PackageRef(eco, name, version), ct); }
+            catch { /* fall through to a minimal shape */ }
+        }
+        var (near, latest) = _scans.GetSafeVersions(eco, name, version);
+        var revoked = _scans.IsRevoked(eco, name, version);
+        return Ok(new
+        {
+            name, ecosystem = eco.ToString(), version,
+            decision = scan?.Decision, verdict = scan?.Verdict,
+            componentsScanned = scan?.ComponentsScanned ?? 0,
+            critical = scan?.Critical ?? 0, high = scan?.High ?? 0, medium = scan?.Medium ?? 0, low = scan?.Low ?? 0,
+            scannedAt = scan?.ScannedAt,
+            revoked, safeNearest = near, safeLatest = latest,
+            vulnerabilities = (scan?.Vulnerabilities ?? Array.Empty<Advisory.Api.Scan.ScanVuln>()).Select(v => new
+            {
+                v.Id, v.Severity, cvss = v.Cvss, v.Summary, fixedVersion = v.FixedVersion,
+                knownExploited = v.KnownExploited, component = v.Component, impactPath = v.ImpactPath,
+                aliases = v.Aliases, references = v.References,
+            }),
+            sbom = (scan?.Sbom ?? Array.Empty<Advisory.Api.Scan.ScanComponent>()).Select(c => new { c.Name, c.Version, c.Depth, c.Parent, c.Relation }),
+        });
     }
 
     /// <summary>Everything currently in the approved repos — the vetted packages developers can pull.</summary>
@@ -929,10 +1007,14 @@ public class QuarantineController : ControllerBase
         {
             // Denylist it so the bridge does not re-promote it next cycle — revoke is an explicit "no".
             _scans.MarkRevoked(eco, req.Name, req.Version ?? "");
+            // Flag every developer who already installed this version for recall (so an operator revoke of a
+            // vulnerable package produces the same "must be removed" worklist as an automatic re-gate block).
+            var (near, latest) = _scans.GetSafeVersions(eco, req.Name, req.Version ?? "");
+            var affected = _scans.FlagRecall(eco, req.Name, req.Version ?? "", null, near ?? latest);
             // Revoke WINS over any existing exception: remove a matching exception so it can't bounce
             // back to approved. To allow it again, grant a NEW exception after the revoke.
             var removed = await RemoveMatchingExceptionsAsync(req.Name, req.Version ?? "");
-            return Ok(new { revoked = true, name = req.Name, version = req.Version, exceptionsRemoved = removed });
+            return Ok(new { revoked = true, name = req.Name, version = req.Version, exceptionsRemoved = removed, recallFlagged = affected });
         }
         return NotFound(new { error = $"'{req.Name}' not found in {eco} approved repo." });
     }

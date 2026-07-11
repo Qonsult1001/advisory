@@ -23,7 +23,7 @@ public sealed class GatedStreamResult : IActionResult
 {
     private readonly PackageProxyController _ctl;
     private readonly Ecosystem _eco;
-    private readonly string _name, _version, _fileName, _quarantineUrl;
+    private readonly string _name, _version, _fileName, _quarantineUrl, _pulledBy;
 
     // How much of the tail to withhold until the scan clears. Must be enough to invalidate the archive's
     // trailing structure (zip EOCD / gzip footer). 64 KB is comfortably more than any EOCD/footer and is
@@ -31,8 +31,8 @@ public sealed class GatedStreamResult : IActionResult
     private const int WithholdTailBytes = 64 * 1024;
 
     public GatedStreamResult(PackageProxyController ctl, Ecosystem eco, string name, string version,
-        string fileName, string quarantineUrl)
-    { _ctl = ctl; _eco = eco; _name = name; _version = version; _fileName = fileName; _quarantineUrl = quarantineUrl; }
+        string fileName, string quarantineUrl, string pulledBy)
+    { _ctl = ctl; _eco = eco; _name = name; _version = version; _fileName = fileName; _quarantineUrl = quarantineUrl; _pulledBy = pulledBy; }
 
     public async Task ExecuteResultAsync(ActionContext context)
     {
@@ -88,6 +88,9 @@ public sealed class GatedStreamResult : IActionResult
                 await http.Response.Body.WriteAsync(tail, ct);
             }
             await http.Response.Body.FlushAsync(ct);   // final bytes → pip completes a VALID archive
+            // The developer now has a usable copy of this exact version — record the exposure so it can be
+            // recalled if this version is later revoked.
+            _ctl.RecordExposure(_eco, _name, _version, _pulledBy);
         }
         else
         {

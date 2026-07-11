@@ -27,6 +27,8 @@ public sealed class PackageProxyController : ControllerBase
     private readonly INexusClient _nexus;
     private readonly IConfiguration _cfg;
     private readonly ILogger<PackageProxyController> _log;
+    private readonly DevIdentity _identity;
+    private readonly Advisory.Api.Scan.ScanStore _scans;
 
     // Single-flight: one gate+promote per {repo|file} in flight; concurrent requests share the Task.
     private static readonly ConcurrentDictionary<string, Lazy<Task<bool>>> _inflight = new(StringComparer.OrdinalIgnoreCase);
@@ -40,9 +42,11 @@ public sealed class PackageProxyController : ControllerBase
     private static readonly object _gateInit = new();
 
     public PackageProxyController(IHttpClientFactory httpFactory, IServiceScopeFactory scopes,
-        INexusClient nexus, IConfiguration cfg, ILogger<PackageProxyController> log)
+        INexusClient nexus, IConfiguration cfg, ILogger<PackageProxyController> log,
+        DevIdentity identity, Advisory.Api.Scan.ScanStore scans)
     {
         _httpFactory = httpFactory; _scopes = scopes; _nexus = nexus; _cfg = cfg; _log = log;
+        _identity = identity; _scans = scans;
         if (_gate is null)
             lock (_gateInit)
                 _gate ??= new SemaphoreSlim(Math.Max(1, cfg.GetValue("PROXY_GATE_CONCURRENCY", 6)));
@@ -116,16 +120,15 @@ public sealed class PackageProxyController : ControllerBase
                 var stillOk = await CoordinateGateOnceAsync(Ecosystem.PyPI, name, version!, fileName!, ct);
                 if (!stillOk)
                 {
-                    // Fresh block on a previously-approved package → pull it from approved and 403. The gate
-                    // logs the triggering rules; belt-and-suspenders record so it is never re-promoted.
+                    // Fresh block on a previously-approved package → pull it from approved, flag everyone who
+                    // already installed it for RECALL, and return 403 WITH remediation instructions.
                     try { await _nexus.RevokeApprovedAsync(Ecosystem.PyPI, name, version!, ct); } catch { }
-                    using (var scope = _scopes.CreateScope())
-                        scope.ServiceProvider.GetRequiredService<Advisory.Api.Scan.ScanStore>()
-                             .MarkRevoked(Ecosystem.PyPI, name, version!);
-                    _log.LogWarning("proxy RE-GATE blocked approved {Name}@{Ver} on new policy — revoked, 403", name, version);
-                    return StatusCode(403);
+                    _scans.MarkRevoked(Ecosystem.PyPI, name, version!);
+                    return await BlockedWithRemediationAsync(Ecosystem.PyPI, name, version!, "re-gate on current policy");
                 }
             }
+            // Cleared: record that this developer now has this exact version (exposure), then stream.
+            _scans.RecordServed(Ecosystem.PyPI, name ?? rest, version ?? "", _identity.Resolve(HttpContext));
             return await StreamAsync(approvedUrl, rest, ct);
         }
 
@@ -137,16 +140,104 @@ public sealed class PackageProxyController : ControllerBase
         }
 
         // STAGE 1 — coordinate gate (OSV/malware/KEV/cooling-off) on metadata only, NO bytes fetched yet.
-        // Single-flight so a burst for the same file gates once. Known-bad → 403 with ZERO bytes to pip.
+        // Single-flight so a burst for the same file gates once. Known-bad → 403 WITH remediation, 0 bytes.
         var coordOk = await CoordinateGateOnceAsync(Ecosystem.PyPI, name, version!, fileName!, ct);
-        if (!coordOk) return StatusCode(403);
+        if (!coordOk) return await BlockedWithRemediationAsync(Ecosystem.PyPI, name, version!, "known-vulnerable at gate");
 
         // STAGE 2 — clean on coordinates: fetch into quarantine, then STREAM the bytes to pip WHILE
         // content-scanning the same bytes. pip sees data flowing (its read-timeout never fires, any size);
         // if the content scan finds a hidden payload mid-stream, the connection ABORTS (pip discards the
         // broken download — it never installs/executes it). Promotion + the full-tree deep scan run async.
+        // Capture WHO is pulling now; GatedStreamResult records the exposure only once the tail is released
+        // (i.e. the content scan cleared and the developer actually gets a usable artifact).
+        var pulledBy = _identity.Resolve(HttpContext);
         await _nexus.FetchIntoQuarantineAsync(Ecosystem.PyPI, name!, version!, ct);
-        return new GatedStreamResult(this, Ecosystem.PyPI, name!, version!, fileName!, quarantineUrl);
+        return new GatedStreamResult(this, Ecosystem.PyPI, name!, version!, fileName!, quarantineUrl, pulledBy);
+    }
+
+    // ─────────────────────────── remediation ───────────────────────────
+
+    // Build the 403 for a blocked package, carrying REMEDIATION a developer can act on: the exact commands
+    // to remove the bad version and install a gate-verified safe one. Also flags every developer who already
+    // installed this exact version for RECALL (retroactive: a package approved before a CVE was disclosed).
+    internal Task<IActionResult> BlockedWithRemediationAsync(Ecosystem eco, string name, string version, string why)
+    {
+        // Safe versions are computed + cached by the gate pipeline (SetSafeVersions) when a package is
+        // blocked; read them here. If not yet present, the async deep-scan/recommend fills them shortly —
+        // we never block the 403 (and the recall list) on that compute. Kick a best-effort compute so the
+        // next fetch of this 403 (pip retries, or the console) has the safe version.
+        var (nearest, latest) = _scans.GetSafeVersions(eco, name, version);
+        if (nearest is null && latest is null)
+            _ = ComputeSafeVersionsAsync(eco, name, version);
+        var safeVersion = nearest ?? latest;
+        var cve = FirstCve(eco, name, version);
+
+        // Flag recall for anyone who already has this version (attribute CVE + safe version so the console
+        // can tell each of them exactly what to do). Returns how many developers are affected.
+        var affected = _scans.FlagRecall(eco, name, version, cve, safeVersion);
+        if (affected > 0)
+            _log.LogWarning("proxy RECALL — {Name}@{Ver} revoked; {N} developer(s) have it installed and must remove it", name, version, affected);
+        _log.LogWarning("proxy BLOCKED {Name}@{Ver} ({Why}); remediation → {Safe}", name, version, why, safeVersion ?? "no safe version found");
+
+        var tool = eco == Ecosystem.npm ? "npm" : "pip";
+        var uninstall = eco == Ecosystem.npm ? $"npm uninstall {name}" : $"pip uninstall -y {name}";
+        var install = safeVersion is not null
+            ? (eco == Ecosystem.npm ? $"npm install {name}@{safeVersion}" : $"pip install {name}=={safeVersion}")
+            : null;
+        var detail = install is not null
+            ? $"{name}=={version} is blocked ({why}). Remove it and install the gate-verified safe version:\n  {uninstall}\n  {install}"
+            : $"{name}=={version} is blocked ({why}). Remove it: {uninstall}. No gate-verified safe version was found — contact your security team.";
+
+        Response.StatusCode = 403;
+        return Task.FromResult<IActionResult>(new JsonResult(new
+        {
+            type = "https://advisory/blocked",
+            title = "Package blocked by policy",
+            status = 403,
+            detail,
+            package = name,
+            version,
+            ecosystem = eco.ToString(),
+            reason = why,
+            cve,
+            remediation = new { tool, uninstall, install, safeNearest = nearest, safeLatest = latest },
+        })
+        { ContentType = "application/problem+json" });
+    }
+
+    /// <summary>Called by GatedStreamResult once a developer receives a usable (clean) artifact — records
+    /// the exposure so this exact version can be recalled from that developer if it is later revoked.</summary>
+    internal void RecordExposure(Ecosystem eco, string name, string version, string user)
+        => _scans.RecordServed(eco, name, version, user);
+
+    // Best-effort background compute of gate-verified safe versions for a blocked package, cached for the
+    // remediation payload + recall list. Fire-and-forget; failures are swallowed (the 403 still went out).
+    private async Task ComputeSafeVersionsAsync(Ecosystem eco, string name, string version)
+    {
+        try
+        {
+            using var scope = _scopes.CreateScope();
+            var gate = scope.ServiceProvider.GetRequiredService<IGateEngine>();
+            var rec = scope.ServiceProvider.GetRequiredService<Advisory.Api.Nexus.SafeVersionRecommender>();
+            var pkg = new PackageRef(eco, name, version);
+            var blocked = await gate.EvaluateFastAsync(pkg, default);
+            var safe = await rec.RecommendAsync(pkg, blocked, default);
+            if (safe.Nearest is not null || safe.Latest is not null)
+                _scans.SetSafeVersions(eco, name, version, safe.Nearest, safe.Latest);
+        }
+        catch { /* best-effort */ }
+    }
+
+    // The primary CVE id recorded for this version (for the remediation payload), if we have a stored scan.
+    private string? FirstCve(Ecosystem eco, string name, string version)
+    {
+        foreach (var repo in new[] { "pypi-quarantine", "pypi-approved", "npm-quarantine", "npm-approved" })
+        {
+            var s = _scans.Get(repo, name, version);
+            var v = s?.Vulnerabilities?.FirstOrDefault();
+            if (v is not null) return v.Id;
+        }
+        return null;
     }
 
     // Coordinate-only gate (no artifact bytes). Single-flight per file. Content threats are caught later,
@@ -233,6 +324,11 @@ public sealed class PackageProxyController : ControllerBase
             {
                 var scans = scope.ServiceProvider.GetRequiredService<Advisory.Api.Scan.ScanStore>();
                 scans.MarkRevoked(eco, name, version);                       // never re-promote
+                // Flag recall for anyone who already received this version (the deep tree scan found a
+                // problem AFTER we served it) — the retroactive "remove it" worklist.
+                var (near, latest) = scans.GetSafeVersions(eco, name, version);
+                var cve = result.TreeFindings?.FirstOrDefault()?.Finding?.Id;
+                scans.FlagRecall(eco, name, version, cve, near ?? latest);
                 try { await _nexus.RevokeApprovedAsync(eco, name, version, default); } catch { }  // pull it from approved
                 _log.LogWarning("proxy DEEP-SCAN (full tree) flagged {Name}@{Ver} AFTER serve — revoked from approved: {Rules}",
                     name, version, string.Join("; ", result.TriggeredRules));

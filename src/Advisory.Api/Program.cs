@@ -133,6 +133,8 @@ builder.Services.AddSingleton<Advisory.Api.Scan.ReachabilityAnalyzer>();
 builder.Services.AddSingleton<Advisory.Api.Catalog.CatalogService>();
 builder.Services.AddSingleton<Advisory.Api.Catalog.OpRiskService>();
 builder.Services.AddSingleton<Advisory.Api.Scan.ScanStore>();
+// Resolves the developer behind a proxy request (IT-issued token → identity) for exposure attribution.
+builder.Services.AddSingleton<Advisory.Api.Proxy.DevIdentity>();
 
 builder.Services.AddScoped<IGateEngine, GateEngine>();
 builder.Services.AddHostedService<ExceptionSweepJob>();
