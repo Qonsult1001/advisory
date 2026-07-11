@@ -20,9 +20,11 @@ services:
 
   api:
     build: { context: ., dockerfile: Dockerfile }
-    ports: ["5000:5000"]
+    # 5000 = admin API/console; 8090 = the package firewall reverse proxy developers point pip/npm at.
+    ports: ["5000:5000", "8090:8090"]
     depends_on: [nexus, mssql]
     environment:
+      - PROXY_PORT=8090
       - PolicyPath=/data/policy.json
       - AuditPath=/data/audit.jsonl
       - WormPath=/data/audit.worm.jsonl

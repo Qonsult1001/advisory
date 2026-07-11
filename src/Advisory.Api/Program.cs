@@ -14,6 +14,18 @@ using Advisory.Api.VulnSources;
 var appUptime = System.Diagnostics.Stopwatch.StartNew();
 var builder = WebApplication.CreateBuilder(args);
 
+// Reverse proxy (auto-gate first-try pip install) listens on its OWN port, separate from the admin API
+// on 5000 — different audience/trust (dev pip traffic vs SecOps control plane). Same process, no new
+// container. Default 8090; set PROXY_PORT=0 to disable the extra listener. We listen explicitly on both
+// the API port and the proxy port (ConfigureKestrel replaces ASPNETCORE_URLS, so re-add the API port).
+var _proxyPort = builder.Configuration.GetValue("PROXY_PORT", 8090);
+var _apiPort = builder.Configuration.GetValue("API_LISTEN_PORT", 5000);
+builder.WebHost.ConfigureKestrel(k =>
+{
+    k.ListenAnyIP(_apiPort);
+    if (_proxyPort > 0 && _proxyPort != _apiPort) k.ListenAnyIP(_proxyPort);
+});
+
 builder.Services.AddControllers()
     .AddJsonOptions(o => o.JsonSerializerOptions.Converters.Add(
         new System.Text.Json.Serialization.JsonStringEnumConverter()));

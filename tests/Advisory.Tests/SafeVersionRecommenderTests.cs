@@ -25,6 +25,7 @@ public class SafeVersionRecommenderTests
             return Task.FromResult(new GateResult(pkg, decision, Array.Empty<Finding>(),
                 Array.Empty<string>(), null, DateTimeOffset.UnixEpoch));
         }
+        public Task<GateResult> EvaluateFastAsync(PackageRef pkg, CancellationToken ct) => EvaluateAsync(pkg, ct);
     }
 
     private static GateResult Blocked(PackageRef p, string? fixHint) =>

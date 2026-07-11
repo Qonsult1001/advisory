@@ -14,6 +14,12 @@ namespace Advisory.Api.Gate;
 public interface IGateEngine
 {
     Task<GateResult> EvaluateAsync(PackageRef pkg, CancellationToken ct);
+    /// <summary>Fast root-only gate for the synchronous reverse-proxy path: runs the per-artifact
+    /// coordinate checks (OSV/malware/KEV/cooling-off) + the content scan of the supplied bytes
+    /// (secrets/IaC/pickle) on the ROOT package only — NO transitive-tree resolution (that's the slow
+    /// part, ~10-30s; it runs async afterwards). Catches known-bad AND hidden-payload threats in ~1-3s so
+    /// pip doesn't time out. Provide pkg.LocalPath pointing at the downloaded artifact for the content scan.</summary>
+    Task<GateResult> EvaluateFastAsync(PackageRef pkg, CancellationToken ct);
 }
 
 /// <summary>
@@ -183,7 +189,13 @@ public class GateEngine : IGateEngine
             $"contextual analysis: {reachable} reachable, {notReachable} not-reachable of {collected.Count} findings", 0, false);
     }
 
-    public async Task<GateResult> EvaluateAsync(PackageRef root, CancellationToken ct)
+    public Task<GateResult> EvaluateAsync(PackageRef root, CancellationToken ct)
+        => EvaluateInternalAsync(root, fastRootOnly: false, ct);
+
+    public Task<GateResult> EvaluateFastAsync(PackageRef root, CancellationToken ct)
+        => EvaluateInternalAsync(root, fastRootOnly: true, ct);
+
+    private async Task<GateResult> EvaluateInternalAsync(PackageRef root, bool fastRootOnly, CancellationToken ct)
     {
         var p = _policy.Current;
         var triggered = new List<string>();
@@ -196,8 +208,10 @@ public class GateEngine : IGateEngine
         if (root.Ecosystem == Ecosystem.HuggingFace)
             return await Finish(EvaluateWeights(root, p, triggered), p, ct);
 
-        // Resolve full tree.
-        var resolver = _resolvers.FirstOrDefault(r => r.Ecosystem == root.Ecosystem);
+        // Resolve the tree — UNLESS this is the fast (proxy) path, which evaluates the ROOT only and skips
+        // the slow transitive resolution + per-node OSV walk (that runs async afterwards; each transitive
+        // dep is gated when pip pulls it anyway). The root's own coordinate checks + content scan still run.
+        var resolver = fastRootOnly ? null : _resolvers.FirstOrDefault(r => r.Ecosystem == root.Ecosystem);
         var tree = resolver is not null
             ? await resolver.ResolveAsync(root, p.MaxTreeDepth, ct)
             : new List<DepNode> { new(root, 0, null) };
