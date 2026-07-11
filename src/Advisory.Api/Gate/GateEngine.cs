@@ -237,12 +237,23 @@ public class GateEngine : IGateEngine
         foreach (var node in tree)
         {
             var nodeFindings = new List<Finding>();
-            foreach (var src in _sources.Where(s => p.EnabledSources.Contains(s.Key)))
+            // Query all enabled sources for this node CONCURRENTLY — they're independent network calls
+            // (OSV, malware, artifactory, …). Sequential was a needless multiplier on the gate latency
+            // that the reverse proxy holds pip's connection through. (Enrichment sources kev/epss/vulncheck
+            // are per-CVE and handled below.)
+            var queryable = _sources
+                .Where(s => p.EnabledSources.Contains(s.Key) && s.Key is not ("kev" or "epss" or "vulncheck"))
+                .ToList();
+            var tasks = queryable.Select(async s =>
             {
-                if (!src.IsAvailable) { Merge(src.Key, SourceStatus.NotConfigured, 0, "source not configured", 0); continue; }
-                if (src.Key is "kev" or "epss" or "vulncheck") continue; // enrichment, handled separately (per-CVE)
-                var res = await src.QueryAsync(node.Package, ct);
-                Merge(src.Key, res.Status, res.Findings.Count, res.Detail, res.ElapsedMs);
+                if (!s.IsAvailable) return (s.Key, (SourceResult?)null);
+                var r = await s.QueryAsync(node.Package, ct);
+                return (s.Key, (SourceResult?)r);
+            }).ToList();
+            foreach (var (key, res) in await Task.WhenAll(tasks))
+            {
+                if (res is null) { Merge(key, SourceStatus.NotConfigured, 0, "source not configured", 0); continue; }
+                Merge(key, res.Status, res.Findings.Count, res.Detail, res.ElapsedMs);
                 nodeFindings.AddRange(res.Findings);
             }
 
@@ -309,32 +320,13 @@ public class GateEngine : IGateEngine
         var contentCov = ScanArtifactContent(root, p, triggered, ref decision);
 
         // Curation-style root-package conditions: immature version, license, operational risk, OpenSSF.
-        // These make slow network calls (deps.dev, OpenSSF scorecard, registry metadata). On the FAST
-        // (reverse-proxy) path we bound them tightly — if they don't return in a couple of seconds, skip
-        // them (recorded inconclusive) so the request stays under pip's read timeout. The CVE/malware
-        // hard-blocks already ran above; curation is defense-in-depth, and the async deep scan re-runs it
-        // in full. On the normal (async bridge) path there's no rush, so it runs unbounded.
+        // No artificial timeout here (we moved away from hard-coded time frames — fragile under
+        // congestion). Latency is kept in check structurally instead: sources run in parallel (above),
+        // the promote is deferred off the request path, and the reverse proxy bounds concurrent fetches
+        // with a semaphore + relies on pip's (IT-raised) client timeout — so the request completes when
+        // the work honestly finishes, however long congestion makes that.
         var decisionBox = new System.Runtime.CompilerServices.StrongBox<GateDecision>(decision);
-        SourceCoverage curationCov; Catalog.OperationalRisk? opRisk;
-        if (fastRootOnly)
-        {
-            try
-            {
-                using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                cts.CancelAfter(TimeSpan.FromSeconds(3));
-                (curationCov, opRisk) = await EvaluateCuration(root, p, triggered, decisionBox, cts.Token);
-            }
-            catch (OperationCanceledException)
-            {
-                curationCov = new SourceCoverage("package-intel", "Skipped", 0,
-                    "curation (op-risk/scorecard) skipped on the fast path — verified by the async deep scan", 0, false);
-                opRisk = null;
-            }
-        }
-        else
-        {
-            (curationCov, opRisk) = await EvaluateCuration(root, p, triggered, decisionBox, ct);
-        }
+        var (curationCov, opRisk) = await EvaluateCuration(root, p, triggered, decisionBox, ct);
         decision = decisionBox.Value;
 
         // Build coverage report; decide if required sources were conclusive.

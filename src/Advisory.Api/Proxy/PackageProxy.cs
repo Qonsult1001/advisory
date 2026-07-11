@@ -31,9 +31,22 @@ public sealed class PackageProxyController : ControllerBase
     // Single-flight: one gate+promote per {repo|file} in flight; concurrent requests share the Task.
     private static readonly ConcurrentDictionary<string, Lazy<Task<bool>>> _inflight = new(StringComparer.OrdinalIgnoreCase);
 
+    // Concurrency gate: bound how many cold fetch+gate operations run against Nexus/upstream at once.
+    // This is the "queue" — under congestion, extra requests wait IN LINE for a slot and release on the
+    // real completion of the work ahead of them, with NO hard-coded timeout. Sized from PROXY_GATE_CONCURRENCY
+    // (default 6). A held pip request that's waiting for a slot is kept alive by the raised client timeout
+    // (IT pushes pip `timeout`); it never sits silent past pip's window because work drains in order.
+    private static SemaphoreSlim? _gate;
+    private static readonly object _gateInit = new();
+
     public PackageProxyController(IHttpClientFactory httpFactory, IServiceScopeFactory scopes,
         INexusClient nexus, IConfiguration cfg, ILogger<PackageProxyController> log)
-    { _httpFactory = httpFactory; _scopes = scopes; _nexus = nexus; _cfg = cfg; _log = log; }
+    {
+        _httpFactory = httpFactory; _scopes = scopes; _nexus = nexus; _cfg = cfg; _log = log;
+        if (_gate is null)
+            lock (_gateInit)
+                _gate ??= new SemaphoreSlim(Math.Max(1, cfg.GetValue("PROXY_GATE_CONCURRENCY", 6)));
+    }
 
     private string NexusBase => (_cfg["NEXUS_URL"] ?? "http://nexus:8081").TrimEnd('/');
     private HttpClient Http() => _httpFactory.CreateClient("nexus");
@@ -96,66 +109,90 @@ public sealed class PackageProxyController : ControllerBase
             return await ExistsAsync(quarantineUrl, ct) ? await StreamAsync(quarantineUrl, rest, ct) : NotFound();
         }
 
-        var ok = await GateOnceAsync(Ecosystem.PyPI, name, version!, fileName!, quarantineUrl, ct);
-        if (!ok) return StatusCode(403);   // blocked by the fast gate
+        // STAGE 1 — coordinate gate (OSV/malware/KEV/cooling-off) on metadata only, NO bytes fetched yet.
+        // Single-flight so a burst for the same file gates once. Known-bad → 403 with ZERO bytes to pip.
+        var coordOk = await CoordinateGateOnceAsync(Ecosystem.PyPI, name, version!, fileName!, ct);
+        if (!coordOk) return StatusCode(403);
 
-        // Gated clean — the bytes are cached in quarantine (Nexus fetched them during the gate). Serve
-        // straight from there; the approved copy fills in async but we don't wait for that round-trip.
-        return await StreamAsync(quarantineUrl, rest, ct);
+        // STAGE 2 — clean on coordinates: fetch into quarantine, then STREAM the bytes to pip WHILE
+        // content-scanning the same bytes. pip sees data flowing (its read-timeout never fires, any size);
+        // if the content scan finds a hidden payload mid-stream, the connection ABORTS (pip discards the
+        // broken download — it never installs/executes it). Promotion + the full-tree deep scan run async.
+        await _nexus.FetchIntoQuarantineAsync(Ecosystem.PyPI, name!, version!, ct);
+        return new GatedStreamResult(this, Ecosystem.PyPI, name!, version!, fileName!, quarantineUrl);
     }
 
-    // Single-flight the gate+promote for one artifact file. Returns true if allowed (now in approved).
-    private Task<bool> GateOnceAsync(Ecosystem eco, string name, string version, string fileName, string quarantineUrl, CancellationToken ct)
+    // Coordinate-only gate (no artifact bytes). Single-flight per file. Content threats are caught later,
+    // while streaming (Stage 2). Returns true if the coordinate checks allow it.
+    private Task<bool> CoordinateGateOnceAsync(Ecosystem eco, string name, string version, string fileName, CancellationToken ct)
     {
-        var key = $"{eco}|{name}|{version}|{fileName}";
-        var lazy = _inflight.GetOrAdd(key, _ => new Lazy<Task<bool>>(() => DoGateAsync(eco, name, version, fileName, quarantineUrl, ct)));
+        var key = $"coord|{eco}|{name}|{version}|{fileName}";
+        var lazy = _inflight.GetOrAdd(key, _ => new Lazy<Task<bool>>(() => DoCoordinateGateAsync(eco, name, version, fileName, ct)));
         var task = lazy.Value;
-        // Remove from the in-flight map once done so a later (post-revoke) request re-gates.
         _ = task.ContinueWith(_ => _inflight.TryRemove(new KeyValuePair<string, Lazy<Task<bool>>>(key, lazy)), TaskScheduler.Default);
         return task;
     }
 
-    private async Task<bool> DoGateAsync(Ecosystem eco, string name, string version, string fileName, string quarantineUrl, CancellationToken ct)
+    private async Task<bool> DoCoordinateGateAsync(Ecosystem eco, string name, string version, string fileName, CancellationToken ct)
+    {
+        await _gate!.WaitAsync(ct);
+        try
+        {
+            using var scope = _scopes.CreateScope();
+            var gate = scope.ServiceProvider.GetRequiredService<IGateEngine>();
+            // No LocalPath ⇒ coordinate-only (content-scan recorded Skipped; it's not a required source,
+            // so this doesn't force Quarantine). CVE/malware/KEV/cooling-off decide here.
+            var pkg = new PackageRef(eco, name, version, Sha256: null, FileName: fileName, LocalPath: null);
+            var result = await gate.EvaluateFastAsync(pkg, ct);
+            if (result.Decision != GateDecision.Allow)
+            {
+                _log.LogWarning("proxy BLOCKED (coordinates) {Name}@{Ver}: {Rules}", name, version, string.Join("; ", result.TriggeredRules));
+                return false;
+            }
+            return true;
+        }
+        catch (Exception ex) { _log.LogWarning(ex, "proxy coordinate gate failed for {Name}@{Ver}", name, version); return false; }
+        finally { _gate!.Release(); }
+    }
+
+    // Content-scan the COMPLETE artifact bytes (secrets/IaC/pickle). Called by GatedStreamResult once the
+    // whole artifact has been received but BEFORE its final chunk is released to pip. Returns true = clean
+    // (release the tail) / false = content threat (withhold the tail → uninstallable). On clean, promote so
+    // the next pull is an instant cache hit + kick the async full-tree deep scan.
+    internal async Task<bool> ContentScanAndPromoteAsync(Ecosystem eco, string name, string version, string fileName, string quarantineUrl, byte[] bytes)
     {
         string? temp = null;
         try
         {
-            // Make Nexus fetch the package into quarantine (proxies from pypi.org), then download the bytes.
-            await _nexus.FetchIntoQuarantineAsync(eco, name, version, ct);
-            var bytes = await _nexus.DownloadAsync(quarantineUrl, ct);
-            if (bytes.Length == 0) { _log.LogWarning("proxy: no bytes for {Name}@{Ver} ({File})", name, version, fileName); return false; }
-
-            // Write bytes to a temp file so the content scan (secrets/IaC/pickle) can run on them.
             temp = Path.Combine(Path.GetTempPath(), $"advproxy-{Guid.NewGuid():N}-{fileName}");
-            await System.IO.File.WriteAllBytesAsync(temp, bytes, ct);
-
+            await System.IO.File.WriteAllBytesAsync(temp, bytes);
             using var scope = _scopes.CreateScope();
             var gate = scope.ServiceProvider.GetRequiredService<IGateEngine>();
             var pkg = new PackageRef(eco, name, version, Sha256: null, FileName: fileName, LocalPath: temp);
-            var result = await gate.EvaluateFastAsync(pkg, ct);
-
-            if (result.Decision != GateDecision.Allow)
+            var result = await gate.EvaluateFastAsync(pkg, default);
+            var clean = result.Decision == GateDecision.Allow;
+            if (clean)
             {
-                _log.LogWarning("proxy BLOCKED {Name}@{Ver}: {Rules}", name, version, string.Join("; ", result.TriggeredRules));
-                return false;
+                var comp = new NexusComponent("", eco, name, version, fileName, null, quarantineUrl);
+                _ = Task.Run(async () =>
+                {
+                    try { await _nexus.PromoteAsync(comp, bytes, default); } catch { }
+                    try { await _nexus.PromoteAllFilesAsync(comp, default); } catch { }
+                });
+                _ = DeepScanAsync(eco, name, version);
             }
-
-            // Allow. Promote ONLY the file pip asked for, synchronously — that's all it needs right now,
-            // and it keeps the request well under pip's read timeout even for packages with dozens of
-            // platform wheels (charset-normalizer has ~50). Every OTHER distribution file for the version
-            // promotes ASYNC in the background so the next dev/platform hits the fast approved path.
-            var comp = new NexusComponent("", eco, name, version, fileName, null, quarantineUrl);
-            await _nexus.PromoteAsync(comp, bytes, ct);
-            _log.LogInformation("proxy PROMOTED {Name}@{Ver} [{File}] via fast gate", name, version, fileName);
-
-            // Background: promote the version's other platform files + the slow transitive-tree CVE scan.
-            _ = Task.Run(async () => { try { await _nexus.PromoteAllFilesAsync(comp, default); } catch { } });
-            _ = DeepScanAsync(eco, name, version);
-            return true;
+            else
+                _log.LogWarning("proxy CONTENT-THREAT {Name}@{Ver} [{File}] — withholding tail (uninstallable): {Rules}",
+                    name, version, fileName, string.Join("; ", result.TriggeredRules));
+            return clean;
         }
-        catch (Exception ex) { _log.LogWarning(ex, "proxy gate failed for {Name}@{Ver}", name, version); return false; }
+        catch (Exception ex) { _log.LogWarning(ex, "content scan failed for {Name}@{Ver} — withholding tail (fail-closed)", name, version); return false; }
         finally { if (temp is not null) try { System.IO.File.Delete(temp); } catch { } }
     }
+
+    internal HttpClient NexusHttp() => Http();
+    internal string NexusBaseUrl => NexusBase;
+
 
     // Async defense-in-depth: full transitive gate. On a block, revoke from approved + record a violation.
     private async Task DeepScanAsync(Ecosystem eco, string name, string version)
@@ -168,10 +205,12 @@ public sealed class PackageProxyController : ControllerBase
             if (result.Decision != GateDecision.Allow)
             {
                 var scans = scope.ServiceProvider.GetRequiredService<Advisory.Api.Scan.ScanStore>();
-                scans.MarkRevoked(eco, name, version);
-                _log.LogWarning("proxy DEEP-SCAN flagged {Name}@{Ver} AFTER serve — revoked from approved: {Rules}",
+                scans.MarkRevoked(eco, name, version);                       // never re-promote
+                try { await _nexus.RevokeApprovedAsync(eco, name, version, default); } catch { }  // pull it from approved
+                _log.LogWarning("proxy DEEP-SCAN (full tree) flagged {Name}@{Ver} AFTER serve — revoked from approved: {Rules}",
                     name, version, string.Join("; ", result.TriggeredRules));
-                // The bridge/next pull won't re-promote it; the already-served copy is flagged for follow-up.
+                // The already-served copy on the first developer's machine is flagged for follow-up; no
+                // future dev can pull it. This is defense-in-depth; the fast gate is the real boundary.
             }
         }
         catch (Exception ex) { _log.LogDebug("deep scan {Name}@{Ver} error: {Err}", name, version, ex.Message); }
