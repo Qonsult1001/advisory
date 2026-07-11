@@ -99,7 +99,10 @@ public class FirewallPolicy
     };
 
     // --- Enabled intel plugins, in priority order (pluggable org platform) ---
-    public List<string> EnabledSources { get; set; } = new() { "osv", "kev", "epss", "malware", "artifactory", "vsix-scanner" };
+    // NOTE: "artifactory" is intentionally NOT enabled by default — this platform gates through Nexus, so
+    // an Artifactory source would only ever report "not configured/licensed" (coverage noise). An org that
+    // actually runs Artifactory can add it via the admin Intelligence-sources UI.
+    public List<string> EnabledSources { get; set; } = new() { "osv", "kev", "epss", "malware", "vsix-scanner" };
 
     // --- Admin-managed source configuration (credentials/endpoints) for the built-in source types,
     //     keyed by source key. Credentials entered via the admin UI are stored here (self-hosted). ---

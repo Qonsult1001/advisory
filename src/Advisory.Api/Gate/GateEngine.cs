@@ -285,6 +285,15 @@ public class GateEngine : IGateEngine
             }
         }
 
+        // EPSS (and vulncheck) are PER-FINDING enrichment: they score an existing CVE, they don't scan the
+        // package. If there were no findings to score, there was nothing for them to do — that's conclusive
+        // coverage (Empty), NOT an unverified gap. Only record a not-run status if they were never touched;
+        // a package with zero findings should not report "epss did not run".
+        if (p.EnabledSources.Contains("epss") && !health.ContainsKey("epss"))
+            Merge("epss", SourceStatus.Empty, 0, "no findings to score (nothing to enrich)", 0);
+        if (p.EnabledSources.Contains("vulncheck") && _vc.IsAvailable && !health.ContainsKey("vulncheck"))
+            Merge("vulncheck", SourceStatus.Empty, 0, "no CVEs to look up", 0);
+
         // Contextual analysis (npm reachability): annotate findings in place, then derive blocks.
         var reachCov = await AnnotateReachability(root, p, collected, Merge, ct);
 
@@ -330,7 +339,7 @@ public class GateEngine : IGateEngine
         decision = decisionBox.Value;
 
         // Build coverage report; decide if required sources were conclusive.
-        var coverage = BuildCoverage(p, health, contentCov, reachCov, curationCov);
+        var coverage = BuildCoverage(p, health, root.Ecosystem, contentCov, reachCov, curationCov);
         if (decision == GateDecision.Allow && p.QuarantineOnUncertainty && !coverage.AllRequiredConclusive)
         {
             decision = GateDecision.Quarantine;
@@ -344,6 +353,7 @@ public class GateEngine : IGateEngine
 
     private static CoverageReport BuildCoverage(FirewallPolicy p,
         Dictionary<string, (SourceStatus status, int findings, string? detail, long ms)> health,
+        Ecosystem ecosystem,
         SourceCoverage? contentScan = null, SourceCoverage? reachScan = null, SourceCoverage? curation = null)
     {
         var rows = new List<SourceCoverage>();
@@ -352,6 +362,11 @@ public class GateEngine : IGateEngine
 
         foreach (var key in p.EnabledSources)
         {
+            // The vsix-scanner only applies to editor extensions (.vsix). For every other ecosystem it is
+            // correctly not run — skip it entirely so it doesn't report as a coverage gap on every pip/npm
+            // install. It's only a real dimension (and a real gap if it fails) for AIEditorExtensions.
+            if (key == "vsix-scanner" && ecosystem != Ecosystem.AIEditorExtensions) continue;
+
             var required = p.RequiredSources.Contains(key);
             var (status, findings, detail, ms) = health.TryGetValue(key, out var h)
                 ? h : (SourceStatus.Skipped, 0, "not queried", 0L);
