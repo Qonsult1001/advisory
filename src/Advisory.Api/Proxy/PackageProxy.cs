@@ -97,12 +97,39 @@ public sealed class PackageProxyController : ControllerBase
             return await ExistsAsync(quarantineUrl, ct) ? await StreamAsync(quarantineUrl, rest, ct)
                  : await ExistsAsync(approvedUrl, ct) ? await StreamAsync(approvedUrl, rest, ct) : NotFound();
 
-        // 1) Fast path: already approved? Stream it straight through.
-        if (await ExistsAsync(approvedUrl, ct))
-            return await StreamAsync(approvedUrl, rest, ct);
-
-        // 2) Miss: derive {name, version, file} from the path and gate-then-serve (single-flight).
+        // Derive {name, version, file} up-front — needed both to re-gate an approved hit and to gate a miss.
         var (name, version, fileName) = ParsePyPiArtifactPath(rest);
+
+        // 1) Fast path: already approved? Aligned with the JFrog Xray posture for CACHED artifacts — the
+        //    bytes in pypi-approved are IMMUTABLE, but the vulnerability knowledge (OSV/KEV/malware) is not.
+        //    So we RE-RUN the fast coordinate gate against CURRENT policy on EVERY request before serving.
+        //    This is metadata-only (no bytes re-downloaded, no re-unpack) → ~sub-second, and it CLOSES the
+        //    approved-cache-bypass: a freshly-disclosed CVE on an already-approved package blocks on the very
+        //    next pull instead of waiting for a background sweep. Content threats (secrets/IaC/pickle) were
+        //    already caught at promote time and can't change for immutable cached bytes, so only the
+        //    coordinate dimension needs re-checking here. Zero staleness window — stronger than Xray's
+        //    hourly DB-sync-then-rescan, because we check live at request time.
+        if (await ExistsAsync(approvedUrl, ct))
+        {
+            if (name is not null)
+            {
+                var stillOk = await CoordinateGateOnceAsync(Ecosystem.PyPI, name, version!, fileName!, ct);
+                if (!stillOk)
+                {
+                    // Fresh block on a previously-approved package → pull it from approved and 403. The gate
+                    // logs the triggering rules; belt-and-suspenders record so it is never re-promoted.
+                    try { await _nexus.RevokeApprovedAsync(Ecosystem.PyPI, name, version!, ct); } catch { }
+                    using (var scope = _scopes.CreateScope())
+                        scope.ServiceProvider.GetRequiredService<Advisory.Api.Scan.ScanStore>()
+                             .MarkRevoked(Ecosystem.PyPI, name, version!);
+                    _log.LogWarning("proxy RE-GATE blocked approved {Name}@{Ver} on new policy — revoked, 403", name, version);
+                    return StatusCode(403);
+                }
+            }
+            return await StreamAsync(approvedUrl, rest, ct);
+        }
+
+        // 2) Miss: gate-then-serve (single-flight).
         if (name is null)
         {
             // Not a gateable artifact path (e.g. odd metadata) — best-effort passthrough from quarantine.
