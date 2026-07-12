@@ -135,6 +135,12 @@ builder.Services.AddSingleton<Advisory.Api.Catalog.OpRiskService>();
 builder.Services.AddSingleton<Advisory.Api.Scan.ScanStore>();
 // Resolves the developer behind a proxy request (IT-issued token → identity) for exposure attribution.
 builder.Services.AddSingleton<Advisory.Api.Proxy.DevIdentity>();
+// Reverse-proxy ecosystem adapters — one per gated package manager (pypi/npm/nuget/go). Each supplies the
+// ecosystem-specific index/artifact URL shapes + rewrite; the gate/recall/exposure pipeline is shared.
+builder.Services.AddSingleton<Advisory.Api.Proxy.IEcosystemProxyAdapter, Advisory.Api.Proxy.Adapters.PyPiProxyAdapter>();
+builder.Services.AddSingleton<Advisory.Api.Proxy.IEcosystemProxyAdapter, Advisory.Api.Proxy.Adapters.NpmProxyAdapter>();
+builder.Services.AddSingleton<Advisory.Api.Proxy.IEcosystemProxyAdapter, Advisory.Api.Proxy.Adapters.NuGetProxyAdapter>();
+builder.Services.AddSingleton<Advisory.Api.Proxy.IEcosystemProxyAdapter, Advisory.Api.Proxy.Adapters.GoProxyAdapter>();
 
 builder.Services.AddScoped<IGateEngine, GateEngine>();
 builder.Services.AddHostedService<ExceptionSweepJob>();

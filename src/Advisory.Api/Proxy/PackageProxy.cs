@@ -1,5 +1,4 @@
 using System.Collections.Concurrent;
-using System.Text.RegularExpressions;
 using Advisory.Api.Gate;
 using Advisory.Api.Models;
 using Advisory.Api.Nexus;
@@ -29,6 +28,7 @@ public sealed class PackageProxyController : ControllerBase
     private readonly ILogger<PackageProxyController> _log;
     private readonly DevIdentity _identity;
     private readonly Advisory.Api.Scan.ScanStore _scans;
+    private readonly IReadOnlyDictionary<string, IEcosystemProxyAdapter> _adapters;
 
     // Single-flight: one gate+promote per {repo|file} in flight; concurrent requests share the Task.
     private static readonly ConcurrentDictionary<string, Lazy<Task<bool>>> _inflight = new(StringComparer.OrdinalIgnoreCase);
@@ -43,10 +43,12 @@ public sealed class PackageProxyController : ControllerBase
 
     public PackageProxyController(IHttpClientFactory httpFactory, IServiceScopeFactory scopes,
         INexusClient nexus, IConfiguration cfg, ILogger<PackageProxyController> log,
-        DevIdentity identity, Advisory.Api.Scan.ScanStore scans)
+        DevIdentity identity, Advisory.Api.Scan.ScanStore scans,
+        IEnumerable<IEcosystemProxyAdapter> adapters)
     {
         _httpFactory = httpFactory; _scopes = scopes; _nexus = nexus; _cfg = cfg; _log = log;
         _identity = identity; _scans = scans;
+        _adapters = adapters.ToDictionary(a => a.RoutePrefix, StringComparer.OrdinalIgnoreCase);
         if (_gate is null)
             lock (_gateInit)
                 _gate ??= new SemaphoreSlim(Math.Max(1, cfg.GetValue("PROXY_GATE_CONCURRENCY", 6)));
@@ -55,105 +57,117 @@ public sealed class PackageProxyController : ControllerBase
     private string NexusBase => (_cfg["NEXUS_URL"] ?? "http://nexus:8081").TrimEnd('/');
     private HttpClient Http() => _httpFactory.CreateClient("nexus");
 
-    // ─────────────────────────── PyPI: index ───────────────────────────
+    // ─────────────────────────── generic index (any ecosystem) ───────────────────────────
 
-    /// <summary>The PEP 503 simple index for a package — proxied from Nexus quarantine, with the artifact
-    /// links rewritten to point back at this proxy so pip downloads through the gate.</summary>
-    [HttpGet("/pypi/simple/{name}")]
-    public async Task<IActionResult> PyPiIndex(string name, CancellationToken ct)
+    /// <summary>Index/metadata request for ANY gated ecosystem. The first path segment selects the adapter
+    /// (pypi/npm/nuget/go); the adapter maps the rest to a Nexus quarantine URL and rewrites artifact links
+    /// back to this proxy so the client downloads through the gate. Binary metadata is passed through as-is.</summary>
+    [HttpGet("/{prefix}/index/{**rest}")]
+    public async Task<IActionResult> Index(string prefix, string rest, CancellationToken ct)
     {
-        var lower = name.ToLowerInvariant();
-        var url = $"{NexusBase}/repository/pypi-quarantine/simple/{Uri.EscapeDataString(lower)}/";
-        using var resp = await Http().GetAsync(url, ct);
+        if (!_adapters.TryGetValue(prefix, out var adapter)) return NotFound();
+        var mapped = adapter.MapIndexRequest(rest ?? "", NexusBase);
+        if (mapped is null) return NotFound();
+        using var resp = await Http().GetAsync(mapped.Value.upstreamUrl, ct);
         if (!resp.IsSuccessStatusCode) return StatusCode((int)resp.StatusCode);
-        var html = await resp.Content.ReadAsStringAsync(ct);
-        // Rewrite every artifact href from a Nexus quarantine URL to our proxy path. Nexus serves links
-        // like ".../repository/pypi-quarantine/packages/<pkg>/<ver>/<file>" (absolute or relative).
-        html = RewritePyPiIndex(html, lower);
-        return Content(html, "text/html");
+        var isText = mapped.Value.contentType.StartsWith("text/") || mapped.Value.contentType.Contains("json") || mapped.Value.contentType.Contains("xml");
+        if (!isText)
+        {
+            var stream = await resp.Content.ReadAsStreamAsync(ct);
+            return new FileStreamResult(stream, resp.Content.Headers.ContentType?.MediaType ?? mapped.Value.contentType);
+        }
+        var body = await resp.Content.ReadAsStringAsync(ct);
+        body = adapter.RewriteIndex(body, NexusBase);
+        return Content(body, mapped.Value.contentType);
     }
 
-    // Rewrite absolute and relative artifact links in a simple-index page to "/pypi/packages/...".
-    private static string RewritePyPiIndex(string html, string pkg)
+    // Back-compat: pip is configured with ".../pypi/simple/" as its index-url, so pip requests
+    // "/pypi/simple/<name>". Route that shape to the generic handler with rest = "simple/<name>".
+    [HttpGet("/pypi/simple/{name}")]
+    public Task<IActionResult> PyPiSimple(string name, CancellationToken ct)
+        => Index("pypi", $"simple/{name}", ct);
+
+    // ─────────────────────────── generic artifact (any ecosystem) ───────────────────────────
+
+    /// <summary>Artifact download for ANY gated ecosystem. Adapter maps the path to approved/quarantine
+    /// Nexus URLs and parses {name,version,file}; the gate/recall/exposure/stream logic below is shared.</summary>
+    [HttpGet("/{prefix}/artifact/{**rest}")]
+    public async Task<IActionResult> Artifact(string prefix, string rest, CancellationToken ct)
     {
-        // Absolute Nexus URLs -> proxy path.
-        html = Regex.Replace(html, @"https?://[^""']*?/repository/pypi-quarantine/(packages/[^""'#]+)",
-            m => "/pypi/" + m.Groups[1].Value, RegexOptions.IgnoreCase);
-        // Bare relative hrefs (Nexus sometimes serves "../../packages/..." or "packages/..."): normalise.
-        html = Regex.Replace(html, @"href=""(?:\.\./)*(packages/[^""#]+)",
-            m => "href=\"/pypi/" + m.Groups[1].Value, RegexOptions.IgnoreCase);
-        return html;
+        if (!_adapters.TryGetValue(prefix, out var adapter)) return NotFound();
+        return await GatedArtifact(adapter, rest ?? "", ct);
     }
 
-    // ─────────────────────────── PyPI: artifact ───────────────────────────
-
-    /// <summary>An artifact download (wheel/sdist/metadata). Serve from approved if present; otherwise
-    /// gate-then-serve. `rest` is the Nexus-relative artifact path after "packages/".</summary>
+    // Back-compat PyPI artifact route (pip downloads via ".../pypi/packages/...").
     [HttpGet("/pypi/packages/{**rest}")]
-    public async Task<IActionResult> PyPiArtifact(string rest, CancellationToken ct)
-    {
-        var approvedUrl = $"{NexusBase}/repository/pypi-approved/packages/{rest}";
-        var quarantineUrl = $"{NexusBase}/repository/pypi-quarantine/packages/{rest}";
+    public Task<IActionResult> PyPiArtifact(string rest, CancellationToken ct)
+        => GatedArtifact(_adapters["pypi"], $"packages/{rest}", ct);
 
-        // PEP 658 metadata sidecar (<file>.whl.metadata) — small harmless text, not runnable code. Serve
-        // it straight from quarantine (no gate) so pip can resolve without waiting on a gate cycle.
-        if (rest.EndsWith(".metadata", StringComparison.OrdinalIgnoreCase))
+    // The shared gate-then-serve pipeline, ecosystem-agnostic via the adapter.
+    private async Task<IActionResult> GatedArtifact(IEcosystemProxyAdapter adapter, string rest, CancellationToken ct)
+    {
+        var eco = adapter.Ecosystem;
+        var mapped = adapter.MapArtifactRequest(rest, NexusBase);
+        if (mapped is null) return NotFound();
+        var (approvedUrl, quarantineUrl) = mapped.Value;
+
+        // Harmless metadata sidecar (PEP 658 .metadata, npm doc, Go .info/.mod) — serve without gating so
+        // the client can resolve; carries no executable bytes.
+        if (adapter.IsUngatedMetadata(rest))
             return await ExistsAsync(quarantineUrl, ct) ? await StreamAsync(quarantineUrl, rest, ct)
                  : await ExistsAsync(approvedUrl, ct) ? await StreamAsync(approvedUrl, rest, ct) : NotFound();
 
         // Derive {name, version, file} up-front — needed both to re-gate an approved hit and to gate a miss.
-        var (name, version, fileName) = ParsePyPiArtifactPath(rest);
+        var (name, version, fileName) = adapter.ParseArtifactPath(rest);
 
         // 1) Fast path: already approved? Aligned with the JFrog Xray posture for CACHED artifacts — the
-        //    bytes in pypi-approved are IMMUTABLE, but the vulnerability knowledge (OSV/KEV/malware) is not.
+        //    bytes in <eco>-approved are IMMUTABLE, but the vulnerability knowledge (OSV/KEV/malware) is not.
         //    So we RE-RUN the fast coordinate gate against CURRENT policy on EVERY request before serving.
         //    This is metadata-only (no bytes re-downloaded, no re-unpack) → ~sub-second, and it CLOSES the
         //    approved-cache-bypass: a freshly-disclosed CVE on an already-approved package blocks on the very
-        //    next pull instead of waiting for a background sweep. Content threats (secrets/IaC/pickle) were
-        //    already caught at promote time and can't change for immutable cached bytes, so only the
-        //    coordinate dimension needs re-checking here. Zero staleness window — stronger than Xray's
-        //    hourly DB-sync-then-rescan, because we check live at request time.
+        //    next pull instead of waiting for a background sweep. Content threats were already caught at
+        //    promote time and can't change for immutable cached bytes, so only the coordinate dimension needs
+        //    re-checking. Zero staleness window — stronger than Xray's hourly DB-sync-then-rescan.
         if (await ExistsAsync(approvedUrl, ct))
         {
             if (name is not null)
             {
-                var stillOk = await CoordinateGateOnceAsync(Ecosystem.PyPI, name, version!, fileName!, ct);
+                var stillOk = await CoordinateGateOnceAsync(eco, name, version!, fileName!, ct);
                 if (!stillOk)
                 {
                     // Fresh block on a previously-approved package → pull it from approved, flag everyone who
                     // already installed it for RECALL, and return 403 WITH remediation instructions.
-                    try { await _nexus.RevokeApprovedAsync(Ecosystem.PyPI, name, version!, ct); } catch { }
-                    _scans.MarkRevoked(Ecosystem.PyPI, name, version!);
-                    return await BlockedWithRemediationAsync(Ecosystem.PyPI, name, version!, "re-gate on current policy");
+                    try { await _nexus.RevokeApprovedAsync(eco, name, version!, ct); } catch { }
+                    _scans.MarkRevoked(eco, name, version!);
+                    return await BlockedWithRemediationAsync(eco, name, version!, "re-gate on current policy");
                 }
             }
             // Cleared: record that this asset now has this exact version (exposure), then stream.
-            _scans.RecordServed(Ecosystem.PyPI, name ?? rest, version ?? "", _identity.Resolve(HttpContext), _identity.CaptureAsset(HttpContext));
+            _scans.RecordServed(eco, name ?? rest, version ?? "", _identity.Resolve(HttpContext), _identity.CaptureAsset(HttpContext));
             return await StreamAsync(approvedUrl, rest, ct);
         }
 
         // 2) Miss: gate-then-serve (single-flight).
         if (name is null)
         {
-            // Not a gateable artifact path (e.g. odd metadata) — best-effort passthrough from quarantine.
+            // Not a gateable artifact path — best-effort passthrough from quarantine.
             return await ExistsAsync(quarantineUrl, ct) ? await StreamAsync(quarantineUrl, rest, ct) : NotFound();
         }
 
         // STAGE 1 — coordinate gate (OSV/malware/KEV/cooling-off) on metadata only, NO bytes fetched yet.
         // Single-flight so a burst for the same file gates once. Known-bad → 403 WITH remediation, 0 bytes.
-        var coordOk = await CoordinateGateOnceAsync(Ecosystem.PyPI, name, version!, fileName!, ct);
-        if (!coordOk) return await BlockedWithRemediationAsync(Ecosystem.PyPI, name, version!, "known-vulnerable at gate");
+        var coordOk = await CoordinateGateOnceAsync(eco, name, version!, fileName!, ct);
+        if (!coordOk) return await BlockedWithRemediationAsync(eco, name, version!, "known-vulnerable at gate");
 
-        // STAGE 2 — clean on coordinates: fetch into quarantine, then STREAM the bytes to pip WHILE
-        // content-scanning the same bytes. pip sees data flowing (its read-timeout never fires, any size);
-        // if the content scan finds a hidden payload mid-stream, the connection ABORTS (pip discards the
-        // broken download — it never installs/executes it). Promotion + the full-tree deep scan run async.
-        // Capture WHO + WHICH ASSET is pulling now; GatedStreamResult records the exposure only once the tail
-        // is released (i.e. the content scan cleared and the developer actually gets a usable artifact).
+        // STAGE 2 — clean on coordinates: fetch into quarantine, then STREAM the bytes to the client WHILE
+        // content-scanning the same bytes. The client sees data flowing (its read-timeout never fires, any
+        // size); a content threat mid-stream ABORTS the connection (client discards the broken download).
+        // Promotion + the full-tree deep scan run async. Capture WHO + WHICH ASSET is pulling now;
+        // GatedStreamResult records the exposure only once the tail is released (scan cleared → usable file).
         var pulledBy = _identity.Resolve(HttpContext);
         var asset = _identity.CaptureAsset(HttpContext);
-        await _nexus.FetchIntoQuarantineAsync(Ecosystem.PyPI, name!, version!, ct);
-        return new GatedStreamResult(this, Ecosystem.PyPI, name!, version!, fileName!, quarantineUrl, pulledBy, asset);
+        await _nexus.FetchIntoQuarantineAsync(eco, name!, version!, ct);
+        return new GatedStreamResult(this, eco, name!, version!, fileName!, quarantineUrl, pulledBy, asset);
     }
 
     // ─────────────────────────── remediation ───────────────────────────
@@ -180,11 +194,9 @@ public sealed class PackageProxyController : ControllerBase
             _log.LogWarning("proxy RECALL — {Name}@{Ver} revoked; {N} developer(s) have it installed and must remove it", name, version, affected);
         _log.LogWarning("proxy BLOCKED {Name}@{Ver} ({Why}); remediation → {Safe}", name, version, why, safeVersion ?? "no safe version found");
 
-        var tool = eco == Ecosystem.npm ? "npm" : "pip";
-        var uninstall = eco == Ecosystem.npm ? $"npm uninstall {name}" : $"pip uninstall -y {name}";
-        var install = safeVersion is not null
-            ? (eco == Ecosystem.npm ? $"npm install {name}@{safeVersion}" : $"pip install {name}=={safeVersion}")
-            : null;
+        var tool = EcosystemCommands.Tool(eco);
+        var uninstall = EcosystemCommands.Uninstall(eco, name);
+        var install = EcosystemCommands.Install(eco, name, safeVersion);
         var detail = install is not null
             ? $"{name}=={version} is blocked ({why}). Remove it and install the gate-verified safe version:\n  {uninstall}\n  {install}"
             : $"{name}=={version} is blocked ({why}). Remove it: {uninstall}. No gate-verified safe version was found — contact your security team.";
@@ -361,20 +373,5 @@ public sealed class PackageProxyController : ControllerBase
         var stream = await resp.Content.ReadAsStreamAsync(ct);
         var contentType = resp.Content.Headers.ContentType?.MediaType ?? "application/octet-stream";
         return new FileStreamResult(stream, contentType);
-    }
-
-    // From "<name>/<version>/<file>" derive the coordinates. pip's simple index uses this shape via Nexus.
-    private static (string? name, string? version, string? file) ParsePyPiArtifactPath(string rest)
-    {
-        var noQuery = rest.Split('?')[0];
-        var segs = noQuery.Split('/', StringSplitOptions.RemoveEmptyEntries);
-        if (segs.Length >= 3)
-        {
-            var file = segs[^1];
-            var version = segs[^2];
-            var name = segs[^3];
-            return (Uri.UnescapeDataString(name), Uri.UnescapeDataString(version), Uri.UnescapeDataString(file));
-        }
-        return (null, null, null);
     }
 }

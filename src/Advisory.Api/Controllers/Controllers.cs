@@ -914,9 +914,9 @@ public class QuarantineController : ControllerBase
                 resolved = e.Resolved, resolvedBy = e.ResolvedBy, resolvedAt = e.ResolvedAt,
                 remediation = new
                 {
-                    uninstall = e.Ecosystem == Ecosystem.npm ? $"npm uninstall {e.Name}" : $"pip uninstall -y {e.Name}",
-                    install = e.SafeVersion is null ? null
-                        : (e.Ecosystem == Ecosystem.npm ? $"npm install {e.Name}@{e.SafeVersion}" : $"pip install {e.Name}=={e.SafeVersion}"),
+                    tool = Advisory.Api.Proxy.EcosystemCommands.Tool(e.Ecosystem),
+                    uninstall = Advisory.Api.Proxy.EcosystemCommands.Uninstall(e.Ecosystem, e.Name),
+                    install = Advisory.Api.Proxy.EcosystemCommands.Install(e.Ecosystem, e.Name, e.SafeVersion),
                 },
             };
         }
@@ -938,9 +938,9 @@ public class QuarantineController : ControllerBase
                     firstSeen = g.Min(e => e.FirstSeen), lastSeen = g.Max(e => e.LastSeen),
                     remediation = new
                     {
-                        uninstall = first.Ecosystem == Ecosystem.npm ? $"npm uninstall {first.Name}" : $"pip uninstall -y {first.Name}",
-                        install = first.SafeVersion is null ? null
-                            : (first.Ecosystem == Ecosystem.npm ? $"npm install {first.Name}@{first.SafeVersion}" : $"pip install {first.Name}=={first.SafeVersion}"),
+                        tool = Advisory.Api.Proxy.EcosystemCommands.Tool(first.Ecosystem),
+                        uninstall = Advisory.Api.Proxy.EcosystemCommands.Uninstall(first.Ecosystem, first.Name),
+                        install = Advisory.Api.Proxy.EcosystemCommands.Install(first.Ecosystem, first.Name, first.SafeVersion),
                     },
                     assets,
                 };
@@ -1305,9 +1305,8 @@ public class ReportsController : ControllerBase
         {
             var a = e.Asset;
             var attributed = !e.User.StartsWith("unattributed:", StringComparison.Ordinal);
-            var uninstall = e.Ecosystem == Ecosystem.npm ? $"npm uninstall {e.Name}" : $"pip uninstall -y {e.Name}";
-            var install = e.SafeVersion is null ? null
-                : (e.Ecosystem == Ecosystem.npm ? $"npm install {e.Name}@{e.SafeVersion}" : $"pip install {e.Name}=={e.SafeVersion}");
+            var uninstall = Advisory.Api.Proxy.EcosystemCommands.Uninstall(e.Ecosystem, e.Name);
+            var install = Advisory.Api.Proxy.EcosystemCommands.Install(e.Ecosystem, e.Name, e.SafeVersion);
             rows.Add(new()
             {
                 ["package"] = e.Name, ["version"] = e.Version, ["ecosystem"] = e.Ecosystem.ToString(),
