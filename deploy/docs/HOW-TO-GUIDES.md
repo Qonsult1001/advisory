@@ -296,13 +296,23 @@ from the sections above; you're just delivering it as a **managed file or enviro
 
 **Per-ecosystem managed setting (deploy these):**
 
+All four gated ecosystems now go through the **firewall proxy** (`<PROXY_URL>`), so installs work **first
+try** and every pull is gated + recorded on the Recall / Exposure ledger — point the client at the proxy,
+not at Nexus directly.
+
 | Ecosystem | What IT pushes (machine-wide) |
 |-----------|-------------------------------|
-| **pip** | A global `pip.conf` / `pip.ini` with `[global]` `index-url = <PROXY_URL>/pypi/simple/` (the firewall proxy — installs work **first try**). Machine-wide locations: Linux `/etc/pip.conf`, Windows `C:\ProgramData\pip\pip.ini`. (Or set the `PIP_INDEX_URL` environment variable for all users.) |
-| **npm** | A global `.npmrc` with `registry=<NEXUS_URL>/repository/npm-approved/`. Machine-wide: the file at npm's global prefix `etc/npmrc`, or set the `NPM_CONFIG_REGISTRY` environment variable for all users. *(npm uses the repository directly for now; its first-try proxy is a fast-follow.)* |
-| **NuGet** | A machine-wide `NuGet.Config` with **only** the `<NEXUS_URL>/repository/nuget-approved/index.json` source (remove `nuget.org`). Location: Windows `%ProgramFiles(x86)%\NuGet\Config\`, Linux `/etc/NuGet/NuGet.Config`. |
-| **Cargo** | A shared `~/.cargo/config.toml` (or `$CARGO_HOME/config.toml` baked into the image) that replaces the crates-io source with `<NEXUS_URL>/repository/cargo-approved/`. |
-| **Go** | The `GOPROXY` environment variable set for all users to `<NEXUS_URL>/repository/go-approved/`, plus `GONOSUMDB`/`GOFLAGS` as your policy needs. |
+| **pip** | A global `pip.conf` / `pip.ini` with `[global]` `index-url = <PROXY_URL>/pypi/simple/`. Machine-wide locations: Linux `/etc/pip.conf`, Windows `C:\ProgramData\pip\pip.ini`. (Or set the `PIP_INDEX_URL` environment variable for all users.) |
+| **npm** | A global `.npmrc` with `registry=<PROXY_URL>/npm/`. Machine-wide: the file at npm's global prefix `etc/npmrc`, or set the `NPM_CONFIG_REGISTRY` environment variable for all users. |
+| **NuGet** | A machine-wide `NuGet.Config` with **only** the `<PROXY_URL>/nuget/index/index.json` source (remove `nuget.org`). Location: Windows `%ProgramFiles(x86)%\NuGet\Config\`, Linux `/etc/NuGet/NuGet.Config`. |
+| **Go** | The `GOPROXY` environment variable set for all users to `<PROXY_URL>/go`, plus `GOSUMDB=off` (the proxy is the trusted source) and `GOFLAGS`/`GONOSUMCHECK` as your policy needs. |
+
+> The developer token and the `X-Advisory-Asset` header (previous section) attach to these the same way —
+> put the token in the URL's userinfo (`https://<token>:@<PROXY_URL>/npm/`) and inject the asset header from
+> your provisioning, so npm/NuGet/Go installs land on the Recall / Exposure ledger with the same attribution
+> as pip. **Cargo, Maven, RubyGems etc. are not gated by this proxy** (out of scope); **Debian/Ubuntu (apt)
+> remain provisioning-deferred**; **HuggingFace / Docker / editor-extensions** are gated by their own
+> scanners, not this proxy.
 
 **Deliver it with the channel you already run:**
 - **Windows (domain):** Group Policy *Preferences → Files* to drop `pip.ini` / `.npmrc` / `NuGet.Config`

@@ -33,9 +33,12 @@ public sealed class PyPiProxyAdapter : IEcosystemProxyAdapter
         return body;
     }
 
+    // `rest` is the full artifact path after the repo root (the back-compat route passes "packages/…",
+    // and the generic /pypi/artifact/{**rest} route passes whatever the rewritten index href carried,
+    // which also begins "packages/"). So map it straight through — do NOT re-prepend "packages/".
     public (string approvedUrl, string quarantineUrl)? MapArtifactRequest(string rest, string nexusBase)
-        => ($"{nexusBase}/repository/pypi-approved/packages/{rest}",
-            $"{nexusBase}/repository/pypi-quarantine/packages/{rest}");
+        => ($"{nexusBase}/repository/pypi-approved/{rest}",
+            $"{nexusBase}/repository/pypi-quarantine/{rest}");
 
     public bool IsUngatedMetadata(string rest)
         => rest.EndsWith(".metadata", StringComparison.OrdinalIgnoreCase);
