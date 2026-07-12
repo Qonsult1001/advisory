@@ -87,6 +87,16 @@ public class NexusClient : INexusClient
     private string QuarantineRepo(Ecosystem e) => $"{NexusEcosystems.Prefix(e)}-{_quarantineSuffix}";
     private string ApprovedRepo(Ecosystem e) => $"{NexusEcosystems.Prefix(e)}-{_approvedSuffix}";
 
+    // A sensible upload filename when the component didn't carry one. Each ecosystem's hosted repo derives
+    // the coordinates from the filename, so the shape matters: pypi sdist, npm tgz, nuget nupkg, go zip.
+    private static string DefaultFileName(NexusComponent c) => c.Ecosystem switch
+    {
+        Ecosystem.npm => $"{(c.Name.Contains('/') ? c.Name[(c.Name.LastIndexOf('/') + 1)..] : c.Name)}-{c.Version}.tgz",
+        Ecosystem.NuGet => $"{c.Name}.{c.Version}.nupkg",
+        Ecosystem.Go => $"{c.Version}.zip",
+        _ => $"{c.Name}-{c.Version}.tar.gz",   // pypi + default
+    };
+
     public bool IsConfigured => !string.IsNullOrWhiteSpace(_baseUrl);
 
     public NexusClient(IHttpClientFactory f, IConfiguration cfg, ILogger<NexusClient> log)
@@ -158,7 +168,7 @@ public class NexusClient : INexusClient
             var url = $"{_baseUrl}/service/rest/v1/components?repository={repo}" +
                       (token is null ? "" : $"&continuationToken={token}");
             using var resp = await _http.GetAsync(url, ct);
-            if (!resp.IsSuccessStatusCode) { _log.LogWarning("Nexus list {Status}", (int)resp.StatusCode); break; }
+            if (!resp.IsSuccessStatusCode) { _log.LogWarning("Nexus list {Status} for {Url}", (int)resp.StatusCode, url); break; }
             using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
             foreach (var comp in doc.RootElement.GetProperty("items").EnumerateArray())
             {
@@ -191,6 +201,10 @@ public class NexusClient : INexusClient
                     name = m.Groups["n"].Value;
                     version = m.Groups["v"].Value;
                 }
+                // Nexus's Go format stores the module name WITH surrounding double-quotes (e.g. the component
+                // name is literally `"rsc.io/quote"`). Strip them so downstream matching (revoke, recall,
+                // approved-list) keys on the plain module path the proxy/gate uses.
+                if (eco == Ecosystem.Go) { name = name.Trim('"'); version = version.Trim('"'); }
                 items.Add(new NexusComponent(comp.GetProperty("id").GetString() ?? "",
                     eco, name, version, fileName, sha, dl ?? ""));
             }
@@ -205,14 +219,28 @@ public class NexusClient : INexusClient
     public async Task PromoteAsync(NexusComponent c, byte[] bytes, CancellationToken ct)
     {
         if (!IsConfigured || bytes.Length == 0) return;
-        // Upload to the approved repo (component upload API; PyPI form fields shown).
+        // Upload to the approved repo via the Nexus component API. The asset FIELD NAME and any required
+        // component fields differ per format (verified against /service/rest/v1/formats/<fmt>/upload-specs):
+        // pypi/npm/nuget/rubygems → "<fmt>.asset" (single file); go → "go.asset" + required "go.version".
+        // Using the wrong field silently mis-files (npm/nuget) or hard-400s (go) — this is why non-PyPI
+        // promotion never worked before.
         using var form = new MultipartFormDataContent();
         var file = new ByteArrayContent(bytes);
         file.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
-        form.Add(file, "pypi.asset", c.FileName ?? $"{c.Name}-{c.Version}.tar.gz");
+        var fmt = NexusEcosystems.Format(c.Ecosystem);          // "pypi","npm","nuget","go",…
+        form.Add(file, $"{fmt}.asset", c.FileName ?? DefaultFileName(c));
+        if (c.Ecosystem == Ecosystem.Go)                        // Go hosted requires the module version field
+            form.Add(new StringContent(c.Version), "go.version");
         var url = $"{_baseUrl}/service/rest/v1/components?repository={ApprovedRepo(c.Ecosystem)}";
         using var resp = await _http.PostAsync(url, form, ct);
-        _log.LogInformation("Promote {Pkg} -> {Repo}: {Status}", c.Name, ApprovedRepo(c.Ecosystem), (int)resp.StatusCode);
+        if (!resp.IsSuccessStatusCode)
+        {
+            var err = await resp.Content.ReadAsStringAsync(ct);
+            _log.LogWarning("Promote {Pkg}@{Ver} -> {Repo} FAILED {Status}: {Err}", c.Name, c.Version,
+                ApprovedRepo(c.Ecosystem), (int)resp.StatusCode, err.Length > 300 ? err[..300] : err);
+        }
+        else
+            _log.LogInformation("Promote {Pkg}@{Ver} -> {Repo}: {Status}", c.Name, c.Version, ApprovedRepo(c.Ecosystem), (int)resp.StatusCode);
 
         // Defensive (off by default — hosted 404s are not sticky on Nexus 3.93 CE): if enabled, bust any
         // negative cache on the approved repo so a developer's retry sees the freshly-uploaded package.
@@ -259,7 +287,7 @@ public class NexusClient : INexusClient
                     using var form = new MultipartFormDataContent();
                     var fc = new ByteArrayContent(bytes);
                     fc.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
-                    form.Add(fc, "pypi.asset", fileName);
+                    form.Add(fc, $"{NexusEcosystems.Format(c.Ecosystem)}.asset", fileName);
                     using var resp = await _http.PostAsync(
                         $"{_baseUrl}/service/rest/v1/components?repository={ApprovedRepo(c.Ecosystem)}", form, ct);
                     if (resp.IsSuccessStatusCode) promoted++;
@@ -298,7 +326,12 @@ public class NexusClient : INexusClient
         var items = await ListComponentsAsync(repo, ct);
         var match = items.FirstOrDefault(c => string.Equals(c.Name, name, StringComparison.OrdinalIgnoreCase)
             && (string.IsNullOrEmpty(version) || string.Equals(c.Version, version, StringComparison.OrdinalIgnoreCase)));
-        if (match is null) return false;
+        if (match is null)
+        {
+            _log.LogWarning("Revoke miss in {Repo}: looking for [{Name}]@[{Ver}]; have [{Have}]", repo, name, version,
+                string.Join(", ", items.Select(i => $"{i.Name}@{i.Version}")));
+            return false;
+        }
         using var resp = await _http.DeleteAsync(
             $"{_baseUrl}/service/rest/v1/components/{Uri.EscapeDataString(match.ComponentId)}", ct);
         _log.LogWarning("REVOKED {Pkg}@{Ver} from {Repo}: {Status}", name, version, repo, (int)resp.StatusCode);
