@@ -1726,20 +1726,30 @@ function Exceptions({ policy, setPolicy }) {
     <Card title="Approved exceptions" desc="Time-boxed, attributed overrides. This register replaces the per-package approval ticket. Pick a held/blocked package below, or type one manually.">
       <Table cols={["Component", "Ticket", "Approver", "Expires", ""]}>
         {policy.exceptions.length === 0 && <tr><td style={s.td} colSpan={5}>No active exceptions.</td></tr>}
-        {policy.exceptions.map((e, i) => (
+        {policy.exceptions.map((e, i) => {
+          // System exceptions are REQUIRED infrastructure — the build backends (setuptools/wheel/pip/build)
+          // that pip needs to install any package. They are permanent and cannot be revoked (removing one
+          // would break every source install). Show a lock instead of a Revoke button.
+          const isSystem = (e.approvedBy || "").toLowerCase() === "system";
+          return (
           <tr key={i} style={s.tr}>
             <td style={{ ...s.td, fontFamily: C.mono }}>{e.package}</td>
-            <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11 }}>{e.ticket}</td>
+            <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11 }}>{e.ticket || (isSystem ? "—" : e.ticket)}</td>
             <td style={s.td}>{e.approvedBy || "—"}</td>
-            <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11 }}>{e.expires || "—"}</td>
+            <td style={{ ...s.td, fontFamily: C.mono, fontSize: 11 }}>{isSystem ? "never (required)" : (e.expires || "—")}</td>
             <td style={{ ...s.td, textAlign: "right" }}>
-              <button onClick={() => {
-                // Persist the removal via the API (un-grants + audits), then update local state.
-                api.revokeException(e.ticket).catch(() => {});
-                setPolicy((p) => ({ ...p, exceptions: p.exceptions.filter((_, j) => j !== i) }));
-              }} style={s.remove}>Revoke</button></td>
+              {isSystem
+                ? <span title="Required build tool — pip needs this to install any package; it cannot be revoked."
+                    style={{ fontSize: 11, color: C.dim, display: "inline-flex", alignItems: "center", gap: 4 }}>🔒 required</span>
+                : <button onClick={() => {
+                    // Persist the removal via the API (un-grants + audits), then update local state.
+                    api.revokeException(e.ticket).catch(() => {});
+                    setPolicy((p) => ({ ...p, exceptions: p.exceptions.filter((_, j) => j !== i) }));
+                  }} style={s.remove}>Revoke</button>}
+            </td>
           </tr>
-        ))}
+          );
+        })}
       </Table>
       {addMsg && <div style={{ padding: "10px 16px 0", fontSize: 12.5, color: addMsg.tone === "ok" ? C.accentDim : "#c0392b" }}>{addMsg.text}</div>}
 

@@ -1177,12 +1177,21 @@ public class ExceptionsController : ControllerBase
     public async Task<ActionResult> Revoke(string ticket, CancellationToken ct)
     {
         var p = _store.Current;
+        // SYSTEM exceptions are required build-tool bootstraps (setuptools/wheel/pip/build) — pip needs them
+        // to install ANY package. They are permanent and MUST NOT be revocable (the UI hides the button, but
+        // this is the real guard: an API caller can't delete them either). Refuse the whole request if it
+        // would touch one. Note system exceptions have an EMPTY ticket, so a blank/empty ticket is rejected
+        // outright — otherwise RemoveAll(Ticket == "") would wipe all four at once.
+        var targeted = p.Exceptions.Where(e => e.Ticket == ticket).ToList();
+        if (string.IsNullOrEmpty(ticket) || targeted.Any(e => string.Equals(e.ApprovedBy, "system", StringComparison.OrdinalIgnoreCase)))
+            return BadRequest(new { error = "Required system exceptions (build tools like setuptools/wheel/pip/build) cannot be revoked — pip needs them to install any package." });
+
         // Capture the package(s) this exception covered BEFORE removing it, so we can pull them out of
         // approved too — revoking an exception should behave like a package revoke (full undo), not just
         // delete the override.
         var affected = p.Exceptions.Where(e => e.Ticket == ticket).Select(e => e.Package).ToList();
         var updated = ClonePolicy(p);
-        var removed = updated.Exceptions.RemoveAll(e => e.Ticket == ticket);
+        var removed = updated.Exceptions.RemoveAll(e => e.Ticket == ticket && !string.Equals(e.ApprovedBy, "system", StringComparison.OrdinalIgnoreCase));
         await _store.UpdateAsync(updated, _user.Name);
 
         // Pull each affected package out of the approved repos + denylist it (across all firewall
