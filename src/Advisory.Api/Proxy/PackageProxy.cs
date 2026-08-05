@@ -103,6 +103,27 @@ public sealed class PackageProxyController : ControllerBase
     public Task<IActionResult> PyPiArtifact(string rest, CancellationToken ct)
         => GatedArtifact(_adapters["pypi"], $"packages/{rest}", ct);
 
+    // Back-compat: real npm clients are configured with ".../npm/" as their registry, so they request the
+    // package document at "/npm/<name>" (or "/npm/@scope/name") and download tarballs at
+    // "/npm/<name>/-/<file>.tgz" — NOT the generic "/npm/index|artifact/..." shape. This catch-all maps the
+    // npm client's native paths onto the shared handlers so `npm install` works without an E404. The more
+    // specific "/npm/index/{**rest}" and "/npm/artifact/{**rest}" routes still win for internal links.
+    [HttpGet("/npm/{**rest}")]
+    public Task<IActionResult> NpmClient(string rest, CancellationToken ct)
+    {
+        rest ??= "";
+        // This catch-all also matches the generic "/npm/index/…" and "/npm/artifact/…" shapes (ASP.NET may
+        // route them here rather than to the specific handlers), so dispatch those explicitly first.
+        if (rest.StartsWith("index/", StringComparison.OrdinalIgnoreCase))
+            return Index("npm", rest["index/".Length..], ct);
+        if (rest.StartsWith("artifact/", StringComparison.OrdinalIgnoreCase))
+            return GatedArtifact(_adapters["npm"], rest["artifact/".Length..], ct);
+        // Native npm-client paths: a tarball request contains "/-/"; everything else is the package document.
+        return rest.Contains("/-/", StringComparison.Ordinal)
+            ? GatedArtifact(_adapters["npm"], rest, ct)
+            : Index("npm", rest, ct);
+    }
+
     // The shared gate-then-serve pipeline, ecosystem-agnostic via the adapter.
     private async Task<IActionResult> GatedArtifact(IEcosystemProxyAdapter adapter, string rest, CancellationToken ct)
     {

@@ -46,7 +46,7 @@ services:
     depends_on: [nexus, mssql]
     environment:
       - PolicyPath=/data/policy.json
-      - PROXY_PORT=8090
+      - PROXY_PORT=${PROXY_PORT:-8090}
       - AuditPath=/data/audit.jsonl
       - WormPath=/data/audit.worm.jsonl
       - ScanIndexPath=/data/scans.json

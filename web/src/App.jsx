@@ -1,7 +1,11 @@
 import React, { useState, useEffect, useCallback } from "react";
 import BrainDashboard, { MutationFlow } from "./BrainDashboard.jsx";
 
-const API = "http://localhost:5000/api";
+// Same-origin API base. The console is served by nginx (web/nginx.conf), which proxies /api/ and /v1/ to
+// the api container — so this works BOTH in dev and behind an HTTPS reverse proxy (e.g. Nginx Proxy
+// Manager) without hard-coding a host. An operator can override at runtime via window.__ADVISORY_CONFIG__
+// (injected into index.html) for unusual topologies; otherwise it stays same-origin "/api".
+const API = (typeof window !== "undefined" && window.__ADVISORY_CONFIG__ && window.__ADVISORY_CONFIG__.apiBase) || "/api";
 const api = {
   getPolicy: () => fetch(`${API}/policy`).then((r) => r.json()),
   putPolicy: (p) => fetch(`${API}/policy`, { method: "PUT",
