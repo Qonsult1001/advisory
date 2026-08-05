@@ -263,6 +263,32 @@ The exception persists into the signed policy and clears any prior revoke. **To 
 use its **Revoke** action — this removes the exception *and* pulls the package back out of approved
 (revoke wins over an exception). Expired exceptions are swept automatically (hourly) and audited.
 
+### 5.5 Recall / Exposure
+
+**Nav: Pipeline → Recall / Exposure.** The security team's **remove-worklist**: when a package a developer
+already installed is *later* found vulnerable — a fresh CVE caught on the next pull, or an operator revoke —
+every machine that has that exact version is listed here so it can be located and remediated. This is the
+actionable side of retroactive revocation: the firewall can't reach into a developer's machine, but it tells
+you *exactly which machines have the bad version, who owns them, and what to run*.
+
+The page groups by **incident** (one revoked package version), and each incident expands to its **affected
+assets** (one card per machine):
+
+- **Locate the machine** — hostname, IP, MAC address, operating system.
+- **Identify the owner** — the developer (by their IT-issued token), OS login user, department, asset tag.
+- **Prove remediation** — first-seen, last-seen, pull count, and a **Mark removed** button that records who
+  cleared it and when.
+- **Fix it** — the exact commands per ecosystem, copy-to-clipboard: e.g. `pip uninstall -y <pkg>`,
+  `npm uninstall <pkg>`, `dotnet remove package <pkg>`, `go get <mod>@none`, plus the safe-version install.
+
+Fields the firewall can't read from a request (MAC, hostname, department) come from an `X-Advisory-Asset`
+header IT injects into its pushed package-manager config; anything not supplied shows as “—”. A pull with no
+developer token is shown as *unattributed* (best-effort IP/host). See How-To Guide 6 for the IT setup.
+
+> **Where do these packages come from?** All four proxy-gated ecosystems feed this list — **PyPI, npm,
+> NuGet, Go**. Each shows its own native remediation command. HuggingFace/Docker/editor-extensions are gated
+> by their own scanners (not this proxy) and don't appear here.
+
 ---
 
 ## 6. Xray
@@ -325,8 +351,8 @@ The ledger refreshes live while you watch it, and the most recent decisions appe
 
 ### Reports
 
-**Nav: Pipeline → Reports.** Aggregated, exportable views over the decision ledger — the four
-Xray-style report types:
+**Nav: Pipeline → Reports.** Aggregated, exportable views over the decision ledger — the Xray-style
+report types, each downloadable as CSV:
 
 | Report | What it shows |
 |---|---|
@@ -334,6 +360,8 @@ Xray-style report types:
 | **Violations** | Block / Quarantine decisions with triggered controls + waiver status |
 | **Legal · Licenses** | Declared licence, prohibited matches, unknowns |
 | **Operational Risk** | EOL, version age, newer versions, project health |
+| **Recall / Exposure** | Every endpoint that installed a later-revoked package — one row per affected machine: package, version, CVE, developer, hostname, IP, MAC, OS, department, asset tag, first/last seen, pull count, removal status + who cleared it, and the exact remove/replace commands. The auditable asset-recall worklist (also on the Pipeline → Recall / Exposure screen). |
+| **SBOM (per project)** | Software Bill of Materials grouped by project — every package each project pulled, its version, ecosystem, status (approved / recalled-vulnerable), CVE, and which machines it's installed on. The per-application bill of materials for ISO 27001 / secure-development evidence. Projects come from the `X-Advisory-Project` header IT/CI sets per repo (see How-To Guide 6); un-tagged pulls fall under “(unassigned)”. |
 
 Each report opens with an **executive summary** — headline stat cards + a distribution chart — above
 the detail table. **Click any row** to expand its full detail (CVE ids link to osv.dev). **Export** via
@@ -358,16 +386,26 @@ The firewall uses a **two-repo model per ecosystem**:
 Browse **`#browse/browse`** to see the components in each repo. For example `pypi-approved` holds the
 PyPI packages that passed the gate.
 
-### How a developer pulls an approved package
-Point the package manager at the **approved** repo URL, not the public registry. For PyPI:
+### How a developer pulls a package (through the firewall proxy)
 
-```
-pip install <package> --index-url <NEXUS_URL>/repository/pypi-approved/simple/
-```
+Developers point their package manager at the **firewall proxy** (`<PROXY_URL>`, default port 8090), not
+at the public registry or Nexus directly. The proxy makes installs work **first try**: on a cache miss it
+fetches, gates, and streams the package in one request; a blocked package returns a 403 with the exact
+remediation. IT pushes this config centrally, so the developer types the normal command. All four gated
+ecosystems go through the proxy:
 
-Only packages the gate **promoted** are available there — a blocked package simply isn't in
-`pypi-approved`, so the install fails closed. This is the **non-bypassable enforcement**: developers
-can only get what the firewall approved.
+| Ecosystem | Client points at |
+|---|---|
+| **pip** | `<PROXY_URL>/pypi/simple/` (index-url) |
+| **npm** | `<PROXY_URL>/npm/` (registry) |
+| **NuGet** | `<PROXY_URL>/nuget/index/index.json` (source) |
+| **Go** | `GOPROXY=<PROXY_URL>/go` (with `GOSUMDB=off`) |
+
+A blocked package fails closed — it's never served, and the 403 tells the developer what safe version to
+use instead. This is the **non-bypassable enforcement**: developers can only get what the firewall approved,
+and every pull is recorded on the Recall / Exposure ledger. See How-To Guide 6 for the full IT setup
+(central config, per-developer tokens, and the asset header). Debian/Ubuntu (apt) are gated once their
+repos are provisioned; HuggingFace, Docker and editor extensions are gated by their own scanners.
 
 ### Browsing
 - **Browse → Browse** — tree view of every repo and its components/assets.

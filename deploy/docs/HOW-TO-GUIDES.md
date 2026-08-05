@@ -383,10 +383,23 @@ wrapper, a proxy in front, or `PIP_*` tooling). Recognised keys:
 | `dept` | Department / team | `Payments` |
 | `tag` | Asset tag / serial | `CORP-004821` |
 | `user` | OS login user | `alice.dev` |
+| `project` | Project / application this pull belongs to | `payments-api` |
 
 ```
-X-Advisory-Asset: host=dev-laptop-07.corp.local; mac=a4:83:e7:2b:19:c0; os=Windows 11 23H2; dept=Payments; tag=CORP-004821; user=alice.dev
+X-Advisory-Asset: host=dev-laptop-07.corp.local; mac=a4:83:e7:2b:19:c0; os=Windows 11 23H2; dept=Payments; tag=CORP-004821; user=alice.dev; project=payments-api
 ```
+
+**3. A project tag (for the per-project SBOM).** To produce a Software Bill of Materials *per project* (for
+ISO 27001 / secure-development evidence), tell the firewall which project a pull belongs to. Set it either
+as `project=…` in the asset header above, or — easiest for CI, one per repo — a dedicated header:
+
+```
+X-Advisory-Project: payments-api
+```
+
+Every package that project pulls is then grouped under it on **Pipeline → Reports → SBOM (per project)**,
+which lists each project's components, versions, status (approved / recalled), and where they're installed
+— downloadable as CSV. Pulls with no project set fall under “(unassigned)”.
 
 Every field is best-effort: send what you have; anything omitted shows as “—” on the Recall / Exposure
 screen. The proxy always captures source IP and the pip/Python/OS reported in pip's own User-Agent, so
