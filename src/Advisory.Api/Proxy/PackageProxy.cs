@@ -299,8 +299,16 @@ public sealed class PackageProxyController : ControllerBase
             await System.IO.File.WriteAllBytesAsync(temp, bytes);
             using var scope = _scopes.CreateScope();
             var gate = scope.ServiceProvider.GetRequiredService<IGateEngine>();
+            // COMPLETION GATE = FULL TREE. Run the FULL transitive evaluation (not root-only) on the
+            // downloaded bytes before releasing the tail. This is what makes "every dependent package the
+            // tree requires falls under policy BEFORE it reaches the developer" true: if ANY node in the
+            // dependency tree is malicious/known-exploited/high-CVSS, the whole package is withheld and
+            // uninstallable — a risky transitive dep can no longer be detected-after-serve. We can afford
+            // the full walk here because the bytes are already downloaded and the withhold-tail keeps the
+            // client's connection alive (no timeout) while it runs (~2s for a typical tree). The content
+            // scan (secrets/IaC/pickle on these bytes) still runs as part of the same evaluation via LocalPath.
             var pkg = new PackageRef(eco, name, version, Sha256: null, FileName: fileName, LocalPath: temp);
-            var result = await gate.EvaluateFastAsync(pkg, default);
+            var result = await gate.EvaluateAsync(pkg, default);
             var clean = result.Decision == GateDecision.Allow;
             if (clean)
             {
@@ -310,11 +318,19 @@ public sealed class PackageProxyController : ControllerBase
                     try { await _nexus.PromoteAsync(comp, bytes, default); } catch { }
                     try { await _nexus.PromoteAllFilesAsync(comp, default); } catch { }
                 });
-                _ = DeepScanAsync(eco, name, version);
             }
             else
-                _log.LogWarning("proxy CONTENT-THREAT {Name}@{Ver} [{File}] — withholding tail (uninstallable): {Rules}",
-                    name, version, fileName, string.Join("; ", result.TriggeredRules));
+            {
+                // A tree node (or the content scan) failed — record the block so the console shows WHY,
+                // and never re-promote this version. The tail is withheld → the package is uninstallable.
+                var scans = scope.ServiceProvider.GetRequiredService<Advisory.Api.Scan.ScanStore>();
+                scans.MarkRevoked(eco, name, version);
+                try { await scans.RecordDecisionAsync($"{NexusEcosystems.Prefix(eco)}-quarantine", pkg, result); } catch { }
+                var badNodes = (result.TreeFindings ?? Array.Empty<TreeFinding>())
+                    .Where(tf => tf.Depth > 0).Select(tf => tf.Component).Distinct().Take(5);
+                _log.LogWarning("proxy TREE-BLOCK {Name}@{Ver} [{File}] — withholding tail (uninstallable): {Rules}. Bad deps: {Deps}",
+                    name, version, fileName, string.Join("; ", result.TriggeredRules), string.Join(", ", badNodes));
+            }
             return clean;
         }
         catch (Exception ex) { _log.LogWarning(ex, "content scan failed for {Name}@{Ver} — withholding tail (fail-closed)", name, version); return false; }
@@ -325,32 +341,9 @@ public sealed class PackageProxyController : ControllerBase
     internal string NexusBaseUrl => NexusBase;
 
 
-    // Async defense-in-depth: full transitive gate. On a block, revoke from approved + record a violation.
-    private async Task DeepScanAsync(Ecosystem eco, string name, string version)
-    {
-        try
-        {
-            using var scope = _scopes.CreateScope();
-            var gate = scope.ServiceProvider.GetRequiredService<IGateEngine>();
-            var result = await gate.EvaluateAsync(new PackageRef(eco, name, version), default);
-            if (result.Decision != GateDecision.Allow)
-            {
-                var scans = scope.ServiceProvider.GetRequiredService<Advisory.Api.Scan.ScanStore>();
-                scans.MarkRevoked(eco, name, version);                       // never re-promote
-                // Flag recall for anyone who already received this version (the deep tree scan found a
-                // problem AFTER we served it) — the retroactive "remove it" worklist.
-                var (near, latest) = scans.GetSafeVersions(eco, name, version);
-                var cve = result.TreeFindings?.FirstOrDefault()?.Finding?.Id;
-                scans.FlagRecall(eco, name, version, cve, near ?? latest);
-                try { await _nexus.RevokeApprovedAsync(eco, name, version, default); } catch { }  // pull it from approved
-                _log.LogWarning("proxy DEEP-SCAN (full tree) flagged {Name}@{Ver} AFTER serve — revoked from approved: {Rules}",
-                    name, version, string.Join("; ", result.TriggeredRules));
-                // The already-served copy on the first developer's machine is flagged for follow-up; no
-                // future dev can pull it. This is defense-in-depth; the fast gate is the real boundary.
-            }
-        }
-        catch (Exception ex) { _log.LogDebug("deep scan {Name}@{Ver} error: {Err}", name, version, ex.Message); }
-    }
+    // (The former async DeepScanAsync is gone: the full transitive tree is now gated SYNCHRONOUSLY at
+    // completion in ContentScanAndPromoteAsync — a bad tree node withholds the tail before serve, rather
+    // than being revoked after serve. The approved-path per-request re-gate covers cache freshness.)
 
     // ─────────────────────────── helpers ───────────────────────────
 

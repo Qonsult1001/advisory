@@ -3593,6 +3593,10 @@ function DevRequests() {
                 <td style={s.td}>
                   <span style={{ display: "inline-block", padding: "2px 9px", borderRadius: 20, fontSize: 10.5, fontWeight: 600,
                     color: tone, background: `${tone}1a`, textTransform: "capitalize" }}>{r.status}</span>
+                  {/* A block is version-specific — show WHICH version was blocked so a clean 4.4.3 isn't
+                      read as bad just because 4.4.2 was blocked. */}
+                  {r.status === "blocked" && r.blockedVersion &&
+                    <span style={{ marginLeft: 6, fontSize: 10, color: "#c0392b", fontFamily: C.mono }} title="The block applies to this specific version">@{r.blockedVersion}</span>}
                 </td>
                 <td style={{ ...s.td, fontSize: 11 }}>
                   {r.status === "blocked" && (r.safeNearest || r.safeLatest)

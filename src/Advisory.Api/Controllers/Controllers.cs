@@ -862,19 +862,30 @@ public class QuarantineController : ControllerBase
         var rows = reqs.Select(r =>
         {
             var prefix = NexusEcosystems.TryGet(r.Ecosystem, out var d) ? d.Prefix : "";
-            // Latest stored scan for this package name (any version) tells us blocked vs pending.
-            var scan = _scans.ForRepository($"{prefix}-quarantine")
+            // The developer request is captured at NAME level (the log tailer sees the name, not always the
+            // exact version). Find scans for this name, newest first — but DO NOT let a block on ONE version
+            // masquerade as a block on the whole package: version identity matters. A scan of 4.4.2 (blocked)
+            // must never make 4.4.3 read as "blocked". So we report the status of the newest scan AND carry
+            // its exact version, and mark whether the block is version-specific so the console can say
+            // "4.4.2 blocked" rather than implying the requested version is bad.
+            var scans = _scans.ForRepository($"{prefix}-quarantine")
                 .Where(s => s.Name.Equals(r.Name, StringComparison.OrdinalIgnoreCase))
-                .OrderByDescending(s => s.ScannedAt).FirstOrDefault();
-            string status = approvedNames.Contains($"{r.Ecosystem}|{r.Name}") ? "approved"
+                .OrderByDescending(s => s.ScannedAt).ToList();
+            var scan = scans.FirstOrDefault();
+            // "approved" only if this exact name is present in approved (an allowed version exists);
+            // a blocked verdict is always tied to the SPECIFIC version that was scanned.
+            var anyApproved = approvedNames.Contains($"{r.Ecosystem}|{r.Name}");
+            string status = anyApproved ? "approved"
                 : scan?.Decision == "Block" ? "blocked"
                 : scan is not null ? "processing" : "pending";
-            var (near, latest) = scan is not null && scan.Decision == "Block"
-                ? _scans.GetSafeVersions(r.Ecosystem, r.Name, scan.Version) : (null, null);
+            var blockedVersion = scan?.Decision == "Block" ? scan.Version : null;
+            var (near, latest) = blockedVersion is not null
+                ? _scans.GetSafeVersions(r.Ecosystem, r.Name, blockedVersion) : (null, null);
             return new
             {
                 r.Name, ecosystem = r.Ecosystem.ToString(), user = r.User, requestedAt = r.RequestedAt,
-                version = scan?.Version,   // the version we last scanned (drives the detail drawer)
+                version = scan?.Version,            // the exact version this status refers to (drives the drawer)
+                blockedVersion,                     // non-null ⇒ the block is specific to THIS version
                 status, safeNearest = near, safeLatest = latest,
             };
         }).ToList();

@@ -42,8 +42,9 @@ public sealed class DevIdentity
     {
         var token = ExtractToken(http.Request);
         if (token is not null && _tokenToUser.TryGetValue(token, out var user)) return user;
-        // Fallback: best available client identifier, clearly labelled as not tied to a person.
-        var host = http.Connection.RemoteIpAddress?.ToString();
+        // Fallback: best available client identifier, clearly labelled as not tied to a person. Normalise an
+        // IPv4-mapped IPv6 address to plain IPv4 so the recall list shows a resolvable v4, not "::ffff:…".
+        var host = NormalizeIp(http.Connection.RemoteIpAddress);
         if (string.IsNullOrEmpty(host) || host == "::1" || host == "127.0.0.1")
             host = http.Request.Headers["X-Forwarded-For"].FirstOrDefault() ?? host ?? "local";
         return $"unattributed:{host}";
@@ -64,8 +65,11 @@ public sealed class DevIdentity
     public Advisory.Api.Scan.ScanStore.AssetInfo CaptureAsset(HttpContext http)
     {
         var req = http.Request;
-        // Client IP: prefer the real source, then a forwarding header (proxy/LB in front).
-        var ip = http.Connection.RemoteIpAddress?.ToString();
+        // Client IP: prefer the real source, then a forwarding header (proxy/LB in front). Normalise to
+        // IPv4 where possible — an IPv4-mapped IPv6 address (::ffff:192.168.80.1, which is what Kestrel
+        // reports on a dual-stack socket) is unmappable/unresolvable for a security team; DNS resolves the
+        // v4 form. IPAddress.MapToIPv4() turns ::ffff:a.b.c.d into a.b.c.d and leaves real v6 alone.
+        var ip = NormalizeIp(http.Connection.RemoteIpAddress);
         if (string.IsNullOrEmpty(ip) || ip is "::1" or "127.0.0.1")
             ip = req.Headers["X-Forwarded-For"].FirstOrDefault()?.Split(',')[0].Trim() ?? ip;
 
@@ -83,8 +87,13 @@ public sealed class DevIdentity
         var kv = ParseAssetHeader(req.Headers["X-Advisory-Asset"].FirstOrDefault());
         string? Get(params string[] keys) { foreach (var k in keys) if (kv.TryGetValue(k, out var v) && v.Length > 0) return v; return null; }
 
+        // Hostname: prefer the IT-injected header; else best-effort reverse-DNS on the (normalised) IP so a
+        // machine is still identifiable by name, not just a bare address. Reverse-DNS is skipped for
+        // loopback and is bounded so it never delays a request.
+        var hostname = Get("host", "hostname", "fqdn") ?? ReverseDns(ip);
+
         return new Advisory.Api.Scan.ScanStore.AssetInfo(
-            Hostname: Get("host", "hostname", "fqdn"),
+            Hostname: hostname,
             Ip: ip,
             Mac: Get("mac", "macaddr"),
             Os: Get("os", "osversion") ?? platform,
@@ -92,6 +101,30 @@ public sealed class DevIdentity
             AssetTag: Get("tag", "assettag", "asset", "serial"),
             OsUser: Get("user", "osuser", "loginuser"),
             PipVersion: pip, PythonVersion: py, Platform: platform);
+    }
+
+    // Turn an IPv4-mapped IPv6 address (::ffff:a.b.c.d) into plain IPv4; leave real IPv4/IPv6 as-is.
+    private static string? NormalizeIp(System.Net.IPAddress? addr)
+    {
+        if (addr is null) return null;
+        if (addr.IsIPv4MappedToIPv6) return addr.MapToIPv4().ToString();
+        return addr.ToString();
+    }
+
+    // Best-effort reverse-DNS with a tight timeout so it never delays a pull; returns null on any failure,
+    // for loopback, or if it doesn't resolve. Not called when the IT asset header already supplies a host.
+    private static string? ReverseDns(string? ip)
+    {
+        if (string.IsNullOrEmpty(ip) || ip is "::1" or "127.0.0.1" || ip.StartsWith("unattributed", StringComparison.Ordinal)) return null;
+        if (!System.Net.IPAddress.TryParse(ip, out var addr)) return null;
+        try
+        {
+            var task = System.Net.Dns.GetHostEntryAsync(addr);
+            if (!task.Wait(TimeSpan.FromMilliseconds(200))) return null;   // bounded — don't block the pull
+            var host = task.Result?.HostName;
+            return string.IsNullOrWhiteSpace(host) || host == ip ? null : host;
+        }
+        catch { return null; }
     }
 
     private static Dictionary<string, string> ParseAssetHeader(string? header)
