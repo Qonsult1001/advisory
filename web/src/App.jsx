@@ -44,6 +44,7 @@ const api = {
   getExposure: (includeResolved = true) => fetch(`${API}/quarantine/exposure?includeResolved=${includeResolved}`).then((r) => r.json()),
   resolveExposure: (ecosystem, name, version, assetId, note) => fetch(`${API}/quarantine/exposure/resolve`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ecosystem, name, version, assetId, note }) }).then((r) => r.json().then((j) => ({ ok: r.ok, ...j }))),
   getPackageDetail: (ecosystem, name, version) => fetch(`${API}/quarantine/detail/${ecosystem}/${encodeURIComponent(name)}/${encodeURIComponent(version)}`).then((r) => r.json()),
+  getSbom: (project) => fetch(`${API}/quarantine/sbom${project ? `?project=${encodeURIComponent(project)}` : ""}`).then((r) => r.json()),
   getReport: (type) => fetch(`${API}/reports/${type}`).then((r) => r.json()),
   reportCsvUrl: (type) => `${API}/reports/${type}?format=csv`,
   getViolationsDetailed: (watch) => fetch(`${API}/violations/detailed${watch ? `?watch=${encodeURIComponent(watch)}` : ""}`).then((r) => r.json()),
@@ -7566,6 +7567,7 @@ const REPORT_TYPES = [
   { key: "licenses", label: "Legal · Licenses", icon: "§", desc: "Due-diligence license report for evaluated packages — declared license, prohibited matches, unknowns." },
   { key: "operational", label: "Operational Risk", icon: "⏲", desc: "EOL / deprecated, version age, newer versions, project health for evaluated packages." },
   { key: "recall", label: "Recall / Exposure", icon: "⇤", desc: "Endpoints that installed a package later revoked — hostname, IP, MAC, OS, owner, CVE, remediation and status. The asset-recall worklist for audit." },
+  { key: "sbom", label: "SBOM (per project)", icon: "▤", desc: "Software Bill of Materials grouped by project — every package each project pulled, its version, status (approved / recalled), CVE, and where it's installed. ISO 27001 secure-development evidence." },
 ];
 // Executive summary for a report: a row of headline stat cards + a distribution bar chart, computed
 // from the live rows. Keeps the detail table below for drill-down + CSV. Per report type we pick the
@@ -7642,6 +7644,20 @@ function ReportSummary({ type, rows }) {
       { label: "Open", value: open, color: C.block },
       { label: "Removed", value: rows.length - open, color: C.allow },
     ];
+  } else if (type === "sbom") {
+    const projects = new Set(rows.map((r) => r.project)).size;
+    const vulnerable = count((r) => String(r.status) !== "Approved");
+    const ecos = new Set(rows.map((r) => r.ecosystem)).size;
+    cards = [
+      { label: "Components", value: rows.length },
+      { label: "Projects", value: projects, tone: C.info },
+      { label: "Vulnerable", value: vulnerable, tone: vulnerable ? C.block : C.allow },
+      { label: "Ecosystems", value: ecos, tone: C.sub },
+    ];
+    chartTitle = "Components by project";
+    const byProj = by("project");
+    chart = Object.entries(byProj).sort((a, b) => b[1] - a[1]).slice(0, 8)
+      .map(([k, v]) => ({ label: k, value: v, color: C.accent }));
   }
   const max = Math.max(1, ...chart.map((c) => c.value));
   const hasChart = chart.some((c) => c.value > 0);

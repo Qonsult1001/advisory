@@ -83,9 +83,14 @@ public sealed class DevIdentity
         var mSys = System.Text.RegularExpressions.Regex.Match(ua, @"""name""\s*:\s*""([^""]+)""");
         if (mSys.Success) platform = mSys.Groups[1].Value;
 
-        // IT-injected asset header (opt-in, world-class detail): "host=…; mac=…; os=…; dept=…; tag=…; user=…".
+        // IT-injected asset header (opt-in, world-class detail): "host=…; mac=…; os=…; dept=…; tag=…; user=…; project=…".
         var kv = ParseAssetHeader(req.Headers["X-Advisory-Asset"].FirstOrDefault());
         string? Get(params string[] keys) { foreach (var k in keys) if (kv.TryGetValue(k, out var v) && v.Length > 0) return v; return null; }
+
+        // Project/app this pull belongs to — drives the per-project SBOM (ISO 27001). Prefer a dedicated
+        // X-Advisory-Project header (simplest for CI to set per repo), else "project=" in the asset header.
+        var project = req.Headers["X-Advisory-Project"].FirstOrDefault()?.Trim();
+        if (string.IsNullOrEmpty(project)) project = Get("project", "app", "application", "repo");
 
         // Hostname: prefer the IT-injected header; else best-effort reverse-DNS on the (normalised) IP so a
         // machine is still identifiable by name, not just a bare address. Reverse-DNS is skipped for
@@ -100,7 +105,8 @@ public sealed class DevIdentity
             Department: Get("dept", "department", "team"),
             AssetTag: Get("tag", "assettag", "asset", "serial"),
             OsUser: Get("user", "osuser", "loginuser"),
-            PipVersion: pip, PythonVersion: py, Platform: platform);
+            PipVersion: pip, PythonVersion: py, Platform: platform,
+            Project: project);
     }
 
     // Turn an IPv4-mapped IPv6 address (::ffff:a.b.c.d) into plain IPv4; leave real IPv4/IPv6 as-is.

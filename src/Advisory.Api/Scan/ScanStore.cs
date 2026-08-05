@@ -116,7 +116,8 @@ public class ScanStore
     public record AssetInfo(
         string? Hostname, string? Ip, string? Mac, string? Os,
         string? Department, string? AssetTag, string? OsUser,
-        string? PipVersion, string? PythonVersion, string? Platform);
+        string? PipVersion, string? PythonVersion, string? Platform,
+        string? Project = null);   // the project/app this pull belongs to (from IT/CI config) — drives the per-project SBOM
 
     public record Exposure(
         Ecosystem Ecosystem, string Name, string Version,
@@ -189,6 +190,12 @@ public class ScanStore
     public IReadOnlyList<Exposure> Recalls(bool includeResolved = true)
         => _exposure.Values.Where(e => e.Recall && (includeResolved || !e.Resolved))
                            .OrderByDescending(e => e.LastSeen).ToList();
+
+    /// <summary>EVERY served package (the full install inventory), for the per-project SBOM. Unlike Recalls
+    /// this includes clean, still-approved packages — an SBOM is the complete bill of materials, not just
+    /// the problems.</summary>
+    public IReadOnlyList<Exposure> AllExposures()
+        => _exposure.Values.OrderBy(e => e.Asset?.Project ?? "").ThenBy(e => e.Name).ToList();
 
     /// <summary>Wipe all scan history AND revocations (the operator "reset demo data" action).</summary>
     public void ClearAll()

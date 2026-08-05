@@ -985,6 +985,50 @@ public class QuarantineController : ControllerBase
         return Ok(new { resolved = true, name = req.Name, version = req.Version, assetId = req.AssetId, resolvedBy = by });
     }
 
+    /// <summary>Per-project Software Bill of Materials (SBOM). Groups every package this firewall served
+    /// by the PROJECT it was pulled for (from the IT/CI-set X-Advisory-Project header), so a security team
+    /// can produce a per-application bill of materials for ISO 27001 / secure-development evidence: what
+    /// each project depends on, at which versions, whether any are now recalled/vulnerable, and where they
+    /// were installed. Pulls with no project set fall under "(unassigned)". Downloadable as CSV.</summary>
+    [HttpGet("sbom")]
+    public ActionResult Sbom([FromQuery] string? project = null)
+    {
+        var all = _scans.AllExposures();
+        // One SBOM component per {project, ecosystem, name, version}; roll up the machines it's on.
+        var grouped = all
+            .GroupBy(e => (Project: string.IsNullOrWhiteSpace(e.Asset?.Project) ? "(unassigned)" : e.Asset!.Project!,
+                           e.Ecosystem, e.Name, e.Version))
+            .Select(g =>
+            {
+                var first = g.First();
+                var assets = g.Select(e => e.Asset?.Hostname ?? e.Asset?.Ip ?? e.User).Where(x => x is not null).Distinct().ToList();
+                var recalled = g.Any(e => e.Recall && !e.Resolved);
+                return new
+                {
+                    project = g.Key.Project,
+                    name = g.Key.Name, version = g.Key.Version, ecosystem = g.Key.Ecosystem.ToString(),
+                    status = recalled ? "Recalled/Vulnerable" : "Approved",
+                    cve = g.Select(e => e.Cve).FirstOrDefault(c => c is not null),
+                    installedOn = assets.Count, machines = assets,
+                    firstSeen = g.Min(e => e.FirstSeen), lastSeen = g.Max(e => e.LastSeen),
+                };
+            })
+            .Where(c => project is null || string.Equals(c.project, project, StringComparison.OrdinalIgnoreCase))
+            .OrderBy(c => c.project).ThenBy(c => c.name).ThenBy(c => c.version)
+            .ToList();
+
+        // Project summaries for the console's project picker + headline counts.
+        var projects = grouped.GroupBy(c => c.project).Select(g => new
+        {
+            project = g.Key,
+            components = g.Count(),
+            vulnerable = g.Count(c => c.status != "Approved"),
+            ecosystems = g.Select(c => c.ecosystem).Distinct().Count(),
+        }).OrderByDescending(p => p.components).ToList();
+
+        return Ok(new { projectCount = projects.Count, componentCount = grouped.Count, projects, components = grouped });
+    }
+
     /// <summary>Live gate verdict for one package version — the detail behind a Developer-requests /
     /// Quarantine row: every triggered CVE/rule with CVSS + KEV, the SBOM, and safe-version advice. Reads
     /// the stored scan; runs+indexes one on the fly if we don't have it yet (so the drawer is never empty).</summary>
@@ -1265,9 +1309,10 @@ public class ReportsController : ControllerBase
             "licenses" or "legal" => await Legal(limit, ct),
             "operational" => await Operational(limit, ct),
             "recall" or "exposure" => Recall(),
+            "sbom" => Sbom(),
             _ => null,
         };
-        if (rows is null) return BadRequest(new { error = "type must be vulnerabilities | violations | licenses | operational | recall" });
+        if (rows is null) return BadRequest(new { error = "type must be vulnerabilities | violations | licenses | operational | recall | sbom" });
 
         if (format.Equals("csv", StringComparison.OrdinalIgnoreCase))
             return File(System.Text.Encoding.UTF8.GetBytes(ToCsv(rows)), "text/csv", $"{type}-report.csv");
@@ -1339,6 +1384,32 @@ public class ReportsController : ControllerBase
                 ["status"] = e.Resolved ? "Removed" : "Open",
                 ["resolvedBy"] = e.ResolvedBy, ["resolvedAt"] = e.ResolvedAt,
                 ["remediationRemove"] = uninstall, ["remediationInstall"] = install,
+            });
+        }
+        return rows;
+    }
+
+    /// <summary>Per-project SBOM report: one row per {project, package, version} the firewall served, with
+    /// its status (Approved / Recalled-Vulnerable), CVE, and where it's installed. The complete per-project
+    /// software bill of materials for ISO 27001 / secure-development evidence. Downloadable as CSV.</summary>
+    private List<Dictionary<string, object?>> Sbom()
+    {
+        var rows = new List<Dictionary<string, object?>>();
+        var grouped = _scans.AllExposures()
+            .GroupBy(e => (Project: string.IsNullOrWhiteSpace(e.Asset?.Project) ? "(unassigned)" : e.Asset!.Project!,
+                           e.Ecosystem, e.Name, e.Version));
+        foreach (var g in grouped.OrderBy(g => g.Key.Project).ThenBy(g => g.Key.Name).ThenBy(g => g.Key.Version))
+        {
+            var machines = g.Select(e => e.Asset?.Hostname ?? e.Asset?.Ip ?? e.User).Where(x => x is not null).Distinct().ToList();
+            var recalled = g.Any(e => e.Recall && !e.Resolved);
+            rows.Add(new()
+            {
+                ["project"] = g.Key.Project,
+                ["package"] = g.Key.Name, ["version"] = g.Key.Version, ["ecosystem"] = g.Key.Ecosystem.ToString(),
+                ["status"] = recalled ? "Recalled/Vulnerable" : "Approved",
+                ["cve"] = g.Select(e => e.Cve).FirstOrDefault(c => c is not null),
+                ["installedOn"] = machines.Count, ["machines"] = string.Join(" ", machines),
+                ["firstSeen"] = g.Min(e => e.FirstSeen), ["lastSeen"] = g.Max(e => e.LastSeen),
             });
         }
         return rows;
