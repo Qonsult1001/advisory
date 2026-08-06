@@ -269,12 +269,34 @@ longer re-patches:
      JWTs (`AddMicrosoftIdentityWebApi`), it does not host the interactive sign-in redirect. So SSO is
      scaffolded, not functional end-to-end yet. Building it is a scoped follow-up (login redirect + callback
      or a SPA MSAL flow).
-   - **Entra app — Redirect / Reply URLs to pre-register** (console-1, public origin
-     `https://advisory.dtpodmandev01.directtransact.corp`):
-     - Redirect URI (SPA): `https://advisory.dtpodmandev01.directtransact.corp` and the same with a
-       trailing `/`
-     - Redirect URI (Web, for the server callback): `https://advisory.dtpodmandev01.directtransact.corp/signin-oidc`
-     - Front-channel logout URL: `https://advisory.dtpodmandev01.directtransact.corp`
+   - **Entra app-registration checklist** (verify BEFORE wiring the login flow — the API validates exactly
+     these). App: client `cf09f65e-5fb7-47e0-8716-8ef5a92697f5`, tenant
+     `db38f0f2-5d4e-4a08-8d35-111837127173`:
+     1. **Application ID URI** (= the audience): `api://cf09f65e-5fb7-47e0-8716-8ef5a92697f5`.
+        This is `AZURE_AD_AUDIENCE` — NOT the authorize-endpoint URL. (The client supplied
+        `https://login.microsoftonline.com/<tenant>/oauth2/v2.0/authorize` for audience, which is wrong —
+        that's the derived *authorize endpoint*, not the token audience.)
+     2. **Token version v2**: manifest `accessTokenAcceptedVersion: 2` (Microsoft.Identity.Web expects v2;
+        v1 tokens cause audience/issuer 401s).
+     3. **App roles** — Value fields must match the code EXACTLY (case-sensitive), read via
+        `ClaimTypes.Role` ← token `roles`: **`Admin`**, **`Approver`**, **`Viewer`**. Assign users/groups
+        to a role in Enterprise Applications → Users and groups, or they authenticate with NO permissions
+        (every gated endpoint 403s).
+     4. **Authentication → Web platform**:
+        - Redirect URI: `https://advisory.dtpodmandev01.directtransact.corp/signin-oidc`
+        - Front-channel logout URL: `https://advisory.dtpodmandev01.directtransact.corp/signout-callback-oidc`
+        - Implicit grant: ID/access tokens UNCHECKED (auth-code flow).
+     5. **API permissions**: Microsoft Graph delegated `openid`, `profile`, `email` + admin consent.
+     6. **Client secret** (Certificates & secrets → New client secret) — the server-side auth-code login
+        flow needs it: `AZURE_AD_CLIENT_SECRET`.
+   - **Corrected config** (for when SSO is enabled):
+     ```
+     AZURE_AD_INSTANCE=https://login.microsoftonline.com/
+     AZURE_AD_TENANT_ID=db38f0f2-5d4e-4a08-8d35-111837127173
+     AZURE_AD_CLIENT_ID=cf09f65e-5fb7-47e0-8716-8ef5a92697f5
+     AZURE_AD_AUDIENCE=api://cf09f65e-5fb7-47e0-8716-8ef5a92697f5
+     AZURE_AD_CLIENT_SECRET=<from step 6>
+     ```
 
 ---
 
