@@ -42,11 +42,15 @@ public sealed class DevIdentity
     {
         var token = ExtractToken(http.Request);
         if (token is not null && _tokenToUser.TryGetValue(token, out var user)) return user;
-        // Fallback: best available client identifier, clearly labelled as not tied to a person. Normalise an
-        // IPv4-mapped IPv6 address to plain IPv4 so the recall list shows a resolvable v4, not "::ffff:…".
-        var host = NormalizeIp(http.Connection.RemoteIpAddress);
+        // Fallback: best available client identifier, clearly labelled as not tied to a person. Prefer the
+        // real client from X-Forwarded-For (behind a reverse proxy the connection IP is the gateway, so
+        // every dev would collapse to one address). Normalise an IPv4-mapped IPv6 to plain IPv4.
+        var xff = http.Request.Headers["X-Forwarded-For"].FirstOrDefault()?.Split(',')[0].Trim();
+        var host = !string.IsNullOrEmpty(xff)
+            ? (NormalizeIp(System.Net.IPAddress.TryParse(xff, out var xa) ? xa : null) ?? xff)
+            : NormalizeIp(http.Connection.RemoteIpAddress);
         if (string.IsNullOrEmpty(host) || host == "::1" || host == "127.0.0.1")
-            host = http.Request.Headers["X-Forwarded-For"].FirstOrDefault() ?? host ?? "local";
+            host = xff ?? host ?? "local";
         return $"unattributed:{host}";
     }
 
@@ -65,13 +69,18 @@ public sealed class DevIdentity
     public Advisory.Api.Scan.ScanStore.AssetInfo CaptureAsset(HttpContext http)
     {
         var req = http.Request;
-        // Client IP: prefer the real source, then a forwarding header (proxy/LB in front). Normalise to
-        // IPv4 where possible — an IPv4-mapped IPv6 address (::ffff:192.168.80.1, which is what Kestrel
-        // reports on a dual-stack socket) is unmappable/unresolvable for a security team; DNS resolves the
-        // v4 form. IPAddress.MapToIPv4() turns ::ffff:a.b.c.d into a.b.c.d and leaves real v6 alone.
-        var ip = NormalizeIp(http.Connection.RemoteIpAddress);
+        // Client IP. When a reverse proxy (Nginx Proxy Manager, a load balancer, an ingress) fronts the
+        // package proxy, http.Connection.RemoteIpAddress is the PROXY/GATEWAY's IP — e.g. Podman's rootless
+        // gateway 10.89.0.1 — so EVERY developer would collapse to one address. The reverse proxy records the
+        // real client in X-Forwarded-For (left-most entry = original client), so PREFER that when present.
+        // Then normalise to IPv4 (an IPv4-mapped IPv6 like ::ffff:192.168.80.1 is unresolvable for a security
+        // team; IPAddress.MapToIPv4 turns it into a.b.c.d and leaves real IPv6 alone).
+        var xff = req.Headers["X-Forwarded-For"].FirstOrDefault()?.Split(',')[0].Trim();
+        var ip = !string.IsNullOrEmpty(xff)
+            ? NormalizeIp(System.Net.IPAddress.TryParse(xff, out var xa) ? xa : null) ?? xff
+            : NormalizeIp(http.Connection.RemoteIpAddress);
         if (string.IsNullOrEmpty(ip) || ip is "::1" or "127.0.0.1")
-            ip = req.Headers["X-Forwarded-For"].FirstOrDefault()?.Split(',')[0].Trim() ?? ip;
+            ip = xff ?? ip;
 
         // pip sends a User-Agent like "pip/24.0 {"cpython":{"version":"3.12.1"},"system":{"name":"Linux"…}}".
         var ua = req.Headers.UserAgent.FirstOrDefault() ?? "";

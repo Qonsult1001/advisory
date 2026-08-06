@@ -153,10 +153,15 @@ public class ScanStore
     }
 
     // Keep any field we already learned; fill blanks from the new pull (asset detail can arrive over time).
+    // NOTE: every AssetInfo field must appear here — a missing positional arg silently takes the record's
+    // default (null) and WIPES that field on the next pull. Project was previously omitted, so a second
+    // pull for the same asset dropped its project and the SBOM row fell under "(unassigned)".
     private static AssetInfo MergeAsset(AssetInfo old, AssetInfo now) => new(
         old.Hostname ?? now.Hostname, old.Ip ?? now.Ip, old.Mac ?? now.Mac, old.Os ?? now.Os,
         old.Department ?? now.Department, old.AssetTag ?? now.AssetTag, old.OsUser ?? now.OsUser,
-        now.PipVersion ?? old.PipVersion, now.PythonVersion ?? old.PythonVersion, now.Platform ?? old.Platform);
+        now.PipVersion ?? old.PipVersion, now.PythonVersion ?? old.PythonVersion, now.Platform ?? old.Platform,
+        // Prefer a project the new pull carries (CI may set it later), else keep what we had.
+        now.Project ?? old.Project);
 
     /// <summary>A package version was revoked — flag every asset that has it for recall, attaching the CVE
     /// reason + recommended safe version. Returns the number of assets now on the recall list.</summary>
