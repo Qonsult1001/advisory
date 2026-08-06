@@ -78,10 +78,13 @@ services:
       - GROQ_API_KEY=${GROQ_API_KEY:-}
       - GROQ_MODEL=${GROQ_MODEL:-openai/gpt-oss-120b}
       # SSO / RBAC (Entra ID / OIDC). Leave unset for the dev fallback (all roles, local). See README.
+      # ClientSecret is required for the INTERACTIVE sign-in (auth-code) flow; the four IDs alone only
+      # validate bearer tokens.
       - AzureAd__Instance=${AZURE_AD_INSTANCE:-}
       - AzureAd__TenantId=${AZURE_AD_TENANT_ID:-}
       - AzureAd__ClientId=${AZURE_AD_CLIENT_ID:-}
       - AzureAd__Audience=${AZURE_AD_AUDIENCE:-}
+      - AzureAd__ClientSecret=${AZURE_AD_CLIENT_SECRET:-}
     volumes:
       # All runtime data lives in THIS bundle's ./data — isolated from the dev stack's data dir.
       # ":z" relabels for SELinux (Podman / RHEL / Fedora); harmless on Docker / non-SELinux hosts.
