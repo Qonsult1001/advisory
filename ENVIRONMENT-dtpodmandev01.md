@@ -259,11 +259,22 @@ longer re-patches:
    now prefers the real client from `X-Forwarded-For` (which NPM sets) for the exposure IP + unattributed
    fallback. **Still requires** the `X-Advisory-Asset host=` header for corporate *hostnames* (reverse-DNS
    only resolves what your DNS can, and a rootless-Podman gateway IP has no useful record) — see Guide 6.
-9. ⏳ **NEEDS CLIENT INPUT** — **SSO.** Not a bug: `SSO_ENABLED` is a console-splash flag; the API keys real
-   auth off `AzureAd:ClientId`. Flipping the flag ALONE breaks login (console demands SSO, API can't
-   validate). `.env.example` now documents the two-part dependency. **To enable, send: Entra tenant id,
-   client (app) id, and API audience (Application ID URI).** Then set all four `AZURE_AD_*` + `SSO_ENABLED=true`
-   and rebuild both api + console.
+9. ⏳ **NEEDS CLIENT INPUT + A CODE GAP** — **SSO.** Two separate things:
+   - **Config (client-side):** `SSO_ENABLED` is only the console-splash flag; the API keys real auth off
+     `AzureAd:ClientId`. Flipping the flag ALONE breaks login (console demands SSO, API can't validate).
+     `.env.example` documents the two-part dependency. **To enable, send: Entra tenant id, client (app) id,
+     and API audience (Application ID URI).**
+   - **Code (not yet built):** the console's "Sign in with SSO" button redirects to `/api/auth/login`, but
+     that endpoint + the OIDC callback are **not implemented** — the API currently only *validates* bearer
+     JWTs (`AddMicrosoftIdentityWebApi`), it does not host the interactive sign-in redirect. So SSO is
+     scaffolded, not functional end-to-end yet. Building it is a scoped follow-up (login redirect + callback
+     or a SPA MSAL flow).
+   - **Entra app — Redirect / Reply URLs to pre-register** (console-1, public origin
+     `https://advisory.dtpodmandev01.directtransact.corp`):
+     - Redirect URI (SPA): `https://advisory.dtpodmandev01.directtransact.corp` and the same with a
+       trailing `/`
+     - Redirect URI (Web, for the server callback): `https://advisory.dtpodmandev01.directtransact.corp/signin-oidc`
+     - Front-channel logout URL: `https://advisory.dtpodmandev01.directtransact.corp`
 
 ---
 
