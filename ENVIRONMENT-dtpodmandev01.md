@@ -248,6 +248,23 @@ longer re-patches:
    on an older base might lack (`SafeVersionRecommender.cs`, `LogTailer.cs`), and packaging runs a
    build-against-the-base check so a delta that would fail to compile is caught before shipping.
 
+### Feedback round 2 (update `091922b`)
+
+7. ✅ **DONE** — **SBOM project dropped on re-pull.** `ScanStore.MergeAsset` omitted the `Project` field, so
+   a second pull for the same asset cleared it and the row fell under `(unassigned)`. Fixed — `Project`
+   survives re-pulls (`new.Project ?? old.Project`). Verified: re-pulling with no project header keeps the
+   package under its project.
+8. ✅ **DONE** — **Machine list showed gateway IPs, not real clients.** Behind Nginx Proxy Manager, the
+   connection IP is the Podman gateway (`10.89.0.1`), so every developer collapsed to one address. The proxy
+   now prefers the real client from `X-Forwarded-For` (which NPM sets) for the exposure IP + unattributed
+   fallback. **Still requires** the `X-Advisory-Asset host=` header for corporate *hostnames* (reverse-DNS
+   only resolves what your DNS can, and a rootless-Podman gateway IP has no useful record) — see Guide 6.
+9. ⏳ **NEEDS CLIENT INPUT** — **SSO.** Not a bug: `SSO_ENABLED` is a console-splash flag; the API keys real
+   auth off `AzureAd:ClientId`. Flipping the flag ALONE breaks login (console demands SSO, API can't
+   validate). `.env.example` now documents the two-part dependency. **To enable, send: Entra tenant id,
+   client (app) id, and API audience (Application ID URI).** Then set all four `AZURE_AD_*` + `SSO_ENABLED=true`
+   and rebuild both api + console.
+
 ---
 
 ## 11. Quick reference — URLs for this environment
