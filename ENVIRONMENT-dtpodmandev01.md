@@ -259,16 +259,20 @@ longer re-patches:
    now prefers the real client from `X-Forwarded-For` (which NPM sets) for the exposure IP + unattributed
    fallback. **Still requires** the `X-Advisory-Asset host=` header for corporate *hostnames* (reverse-DNS
    only resolves what your DNS can, and a rootless-Podman gateway IP has no useful record) — see Guide 6.
-9. ⏳ **NEEDS CLIENT INPUT + A CODE GAP** — **SSO.** Two separate things:
-   - **Config (client-side):** `SSO_ENABLED` is only the console-splash flag; the API keys real auth off
-     `AzureAd:ClientId`. Flipping the flag ALONE breaks login (console demands SSO, API can't validate).
-     `.env.example` documents the two-part dependency. **To enable, send: Entra tenant id, client (app) id,
-     and API audience (Application ID URI).**
-   - **Code (not yet built):** the console's "Sign in with SSO" button redirects to `/api/auth/login`, but
-     that endpoint + the OIDC callback are **not implemented** — the API currently only *validates* bearer
-     JWTs (`AddMicrosoftIdentityWebApi`), it does not host the interactive sign-in redirect. So SSO is
-     scaffolded, not functional end-to-end yet. Building it is a scoped follow-up (login redirect + callback
-     or a SPA MSAL flow).
+9. ✅ **CODE DONE — awaiting live test on the published box.** **SSO interactive sign-in.**
+   - **Code (BUILT, update `ce0a3da`):** `/api/auth/login` (→ Entra), `/signin-oidc` callback,
+     `/api/auth/logout`, `/api/auth/me` are implemented (OpenID Connect web-app flow via
+     Microsoft.Identity.Web, alongside the existing bearer-JWT validation). App roles map from the token
+     `roles` claim to `Admin`/`Approver`/`Viewer`. Forwarded-headers + nginx passthrough make the API build
+     `redirect_uri = https://advisory.dtpodmandev01.directtransact.corp/signin-oidc` — matching the
+     registered Entra URI. **Verified locally up to the Entra hand-off** (login → 302 to the real authorize
+     URL with correct tenant/client/PKCE; correct HTTPS redirect_uri; callback route present). The **live
+     sign-in round-trip must be tested on the published box** — only there does the registered HTTPS
+     redirect resolve.
+   - **To turn it on** (published box): in `deploy/.env` set `SSO_ENABLED=true` + the five `AZURE_AD_*`
+     values (the four IDs + `AZURE_AD_CLIENT_SECRET`), then apply the update (rebuilds api + console).
+   - **Config (client-side):** `SSO_ENABLED` is the console-splash flag; the API keys real auth off
+     `AzureAd:ClientId` + needs `AzureAd:ClientSecret` for the interactive flow. `.env.example` documents it.
    - **Entra app-registration checklist** (verify BEFORE wiring the login flow — the API validates exactly
      these). App: client `cf09f65e-5fb7-47e0-8716-8ef5a92697f5`, tenant
      `db38f0f2-5d4e-4a08-8d35-111837127173`:
