@@ -358,6 +358,19 @@ public class DlpInspector
         {
             var node = System.Text.Json.Nodes.JsonNode.Parse(text);
             if (node is null) return Redact(text, findings, pfSpans, customRules, cap: false);
+            // Redact ONLY the fields that carry user prompt text — NOT tool schemas, model, metadata, etc.
+            // A chat request (Anthropic/OpenAI) puts the prompt in `messages`; some completion/embedding
+            // shapes use `prompt` or `input`. Redacting the whole tree corrupted `tools[].input_schema`
+            // (a redaction inside a JSON-Schema string made it fail draft-2020-12 validation → 400). System
+            // instructions can also carry PII, so `system` is redacted too. Everything else is left intact.
+            if (node is System.Text.Json.Nodes.JsonObject root)
+            {
+                foreach (var field in new[] { "messages", "prompt", "input", "system" })
+                    if (root[field] is { } sub)
+                        RedactNode(sub, findings, pfSpans, customRules);
+                return root.ToJsonString();
+            }
+            // Body isn't a JSON object (unexpected) — redact the whole node rather than forward raw.
             RedactNode(node, findings, pfSpans, customRules);
             return node.ToJsonString();
         }
