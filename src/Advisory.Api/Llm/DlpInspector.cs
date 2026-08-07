@@ -200,8 +200,14 @@ public class DlpInspector
         if (customBlocking.Count > 0) parts.Add($"Custom ({string.Join(",", customBlocking.Distinct())})");
         var reason = block ? string.Join("; ", parts) : null;
 
-        var original = text.Length > 2000 ? text[..2000] + "…" : text;
-        var redactedPreview = Redact(text, findings, pfSpans, cfg.CustomRules, cap: true);
+        // The transcript preview should show what the user ACTUALLY TYPED — the last user turn — not the
+        // whole prepended context. Claude Code / Cursor front-load a large <system-reminder> / session-start
+        // block as the first message, so showing all-messages made every record's "original" look identical
+        // (the boilerplate) instead of the real prompt. Detection still runs over the full `text` above;
+        // only the human-readable preview is scoped to the last user message.
+        var previewSrc = LastUserText(body) ?? text;
+        var original = previewSrc.Length > 2000 ? previewSrc[..2000] + "…" : previewSrc;
+        var redactedPreview = Redact(previewSrc, findings, pfSpans, cfg.CustomRules, cap: true);
         // The FORWARDED body must stay valid JSON. Redacting the raw serialized text can splice a
         // [CAT:REDACTED] token across a structural quote/brace and corrupt the JSON (Anthropic then
         // 400s: "not valid JSON at char 0"). So when the body parses as JSON, redact only inside
@@ -256,6 +262,37 @@ public class DlpInspector
     // ---- helpers ----
 
     /// <summary>Pull human text out of an OpenAI/Anthropic request body (messages + system + tools).</summary>
+    /// <summary>The text of the LAST user message — what the human actually typed this turn — for the
+    /// transcript preview. Tools like Claude Code / Cursor prepend a large session-start / system-reminder
+    /// block as earlier messages; showing those made every audit row's "original" identical. Returns null
+    /// if the body isn't a chat request or has no user turn, so the caller can fall back to the full text.</summary>
+    private static string? LastUserText(string body)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            if (!doc.RootElement.TryGetProperty("messages", out var msgs) || msgs.ValueKind != JsonValueKind.Array)
+                return null;
+            string? last = null;
+            foreach (var m in msgs.EnumerateArray())
+            {
+                if (!m.TryGetProperty("role", out var role) || role.GetString() != "user") continue;
+                if (!m.TryGetProperty("content", out var c)) continue;
+                if (c.ValueKind == JsonValueKind.String) { last = c.GetString(); continue; }
+                if (c.ValueKind == JsonValueKind.Array)
+                {
+                    var sb = new StringBuilder();
+                    foreach (var part in c.EnumerateArray())
+                        if (part.TryGetProperty("type", out var pt) && pt.GetString() == "text"
+                            && part.TryGetProperty("text", out var t)) sb.AppendLine(t.GetString());
+                    if (sb.Length > 0) last = sb.ToString().TrimEnd();
+                }
+            }
+            return string.IsNullOrWhiteSpace(last) ? null : last;
+        }
+        catch { return null; }
+    }
+
     private static string ExtractText(string body)
     {
         try
@@ -263,10 +300,15 @@ public class DlpInspector
             using var doc = JsonDocument.Parse(body);
             var sb = new StringBuilder();
             var root = doc.RootElement;
-            if (root.TryGetProperty("system", out var sys) && sys.ValueKind == JsonValueKind.String) sb.AppendLine(sys.GetString());
+            // Scan ONLY the USER turns — what the human actually sent to the model. We deliberately do NOT
+            // scan the `system` field or assistant turns: coding tools (Claude Code / Cursor) load a large
+            // session-start / <system-reminder> / skill block there, and its incidental digit runs and text
+            // trip card/ID/phone patterns → false-positive findings on innocent prompts like "whats your
+            // name". The user's own data is in the user turns; that's the exfiltration surface that matters.
             if (root.TryGetProperty("messages", out var msgs) && msgs.ValueKind == JsonValueKind.Array)
                 foreach (var m in msgs.EnumerateArray())
                 {
+                    if (m.TryGetProperty("role", out var role) && role.GetString() != "user") continue; // user turns only
                     if (!m.TryGetProperty("content", out var c)) continue;
                     if (c.ValueKind == JsonValueKind.String) sb.AppendLine(c.GetString());
                     else if (c.ValueKind == JsonValueKind.Array)

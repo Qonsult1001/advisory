@@ -35,8 +35,17 @@ public class LlmCallRecord
 public class LlmAuditService
 {
     private readonly ConcurrentQueue<LlmCallRecord> _records = new();
+    // Only audit calls where SOMETHING happened: a redaction, a block, or an upstream error. Clean
+    // pass-throughs (decision Allowed + 2xx, no findings) are noise — a chat tool fires many of them
+    // per turn (the prompt, then a background autosuggest/title request, etc.) and none carry sensitive
+    // data or a policy action worth an operator's attention. Keeping only actionable rows makes the
+    // audit log a record of what the gateway DID, not a request firehose.
+    private static bool Noteworthy(LlmCallRecord r) =>
+        r.Decision is "Redacted" or "Blocked"   // data was redacted, or the call was blocked
+        || r.Status >= 400;                       // or the provider rejected it (error worth seeing)
     public void Add(LlmCallRecord r)
     {
+        if (!Noteworthy(r)) return;
         _records.Enqueue(r);
         while (_records.Count > 2000 && _records.TryDequeue(out _)) { }
     }
@@ -253,6 +262,31 @@ public class LlmGatewayController : ControllerBase
         if (model.Length > 0 && p.BlockedModels.Any(m => model.Contains(m, StringComparison.OrdinalIgnoreCase)))
             return Blocked(rec, sw, 403, $"model '{model}' is on the deny-list (SEC-LLM-01)");
 
+        // Skip the tool's own INTERNAL machinery calls — Claude Code / Cursor fire background requests
+        // around each user turn (next-message autosuggest, conversation-title generation, topic detection,
+        // quota checks). These are not the user sending data to the AI; they carry the tool's own prompts
+        // (and often the prior turn echoed back), so scanning them floods the audit log with duplicate/
+        // false-positive PII rows that aren't a real exfiltration event. Forward them untouched and DON'T
+        // audit. Detection is by the stable prompt markers these features use.
+        if (IsToolInternal(body))
+        {
+            var passReq = new HttpRequestMessage(HttpMethod.Post, $"{upstream}/{MapPath(provider, path)}{Request.QueryString}");
+            passReq.Content = new StringContent(StripModelPrefix(body, rawModel, model), Encoding.UTF8, "application/json");
+            foreach (var h in Request.Headers) if (!DropHeaders.Contains(h.Key)) passReq.Headers.TryAddWithoutValidation(h.Key, (string[])h.Value!);
+            if (provider == "anthropic" && !passReq.Headers.Contains("anthropic-version")) passReq.Headers.TryAddWithoutValidation("anthropic-version", "2023-06-01");
+            if (provider == "anthropic" && Request.Headers.TryGetValue("Authorization", out var oa) && ((string)oa!).Contains("sk-ant-oat", StringComparison.OrdinalIgnoreCase)
+                && !(passReq.Headers.TryGetValues("anthropic-beta", out var ob) && string.Join(",", ob).Contains("oauth-2025-04-20")))
+            { passReq.Headers.Remove("anthropic-beta"); passReq.Headers.TryAddWithoutValidation("anthropic-beta", "oauth-2025-04-20"); }
+            var http0 = _f.CreateClient("llm-gw");
+            using var up0 = await http0.SendAsync(passReq, HttpCompletionOption.ResponseHeadersRead, ct);
+            Response.StatusCode = (int)up0.StatusCode;
+            Response.ContentType = up0.Content.Headers.ContentType?.ToString() ?? "application/json";
+            Response.Headers["Cache-Control"] = "no-cache"; Response.Headers["X-Accel-Buffering"] = "no";
+            await using var s0 = await up0.Content.ReadAsStreamAsync(ct);
+            await s0.CopyToAsync(Response.Body, ct);
+            return new EmptyResult();
+        }
+
         // Outbound DLP (PII/POPIA-GDPR, cards, secrets, proprietary code) — record + optionally block.
         var dlpCfg = new DlpSettings
         {
@@ -367,6 +401,27 @@ public class LlmGatewayController : ControllerBase
             return new ContentResult { Content = respBody, ContentType = "application/json", StatusCode = (int)resp.StatusCode };
         }
         catch (Exception ex) { return Blocked(rec, sw, 502, $"upstream error: {ex.Message}"); }
+    }
+
+    // Stable markers that identify a coding tool's OWN background requests (not the user talking to the AI):
+    // Claude Code's next-message autosuggest, conversation-title generation, and topic/quota probes. Matched
+    // against the raw request body so we catch them wherever the marker sits (system prompt or a message).
+    private static readonly string[] ToolInternalMarkers =
+    {
+        "[SUGGESTION MODE:",                          // Claude Code next-input autosuggest
+        "Suggest what the user might naturally type", // (same feature, phrasing fallback)
+        "isNewTopic",                                 // Claude Code topic-boundary detection
+        "Please write a 5-10 word title",             // conversation-title generation
+        "summarize this conversation as a title",     // title-gen phrasing fallback
+    };
+
+    /// <summary>True when the request is the coding tool's own machinery (autosuggest / title / topic /
+    /// quota), not the user sending content to the model — so we forward it untouched and don't audit it.</summary>
+    private static bool IsToolInternal(string body)
+    {
+        foreach (var m in ToolInternalMarkers)
+            if (body.Contains(m, StringComparison.OrdinalIgnoreCase)) return true;
+        return false;
     }
 
     /// <summary>Does the request ask for a streaming (SSE) response? Reads the JSON "stream": true flag.</summary>
