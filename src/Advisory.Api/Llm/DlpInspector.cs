@@ -9,7 +9,11 @@ namespace Advisory.Api.Llm;
 public record DlpFinding(string Category, string Rule, string Severity, int Count, string Sample, string Method = "regex");
 
 /// <summary>Result of inspecting an outbound LLM request: findings + original & redacted previews.</summary>
-public record DlpResult(List<DlpFinding> Findings, string RedactedPreview, string OriginalPreview, bool Block, string? BlockReason);
+// RedactedPreview/OriginalPreview are 2000-char samples for the AUDIT LOG. RedactedBody is the FULL
+// request text with every detected PII/card/secret/custom span replaced — this is what the gateway can
+// forward upstream in "redact" mode so sensitive data (POPIA/PCI) is stripped BEFORE it reaches the AI
+// provider, rather than blocking the whole call.
+public record DlpResult(List<DlpFinding> Findings, string RedactedPreview, string OriginalPreview, bool Block, string? BlockReason, string RedactedBody);
 
 /// <summary>
 /// Data-loss-prevention inspector for outbound LLM traffic (the LiteLLM "guardrails" idea, but
@@ -197,7 +201,9 @@ public class DlpInspector
         var reason = block ? string.Join("; ", parts) : null;
 
         var original = text.Length > 2000 ? text[..2000] + "…" : text;
-        return new DlpResult(findings, Redact(text, findings, pfSpans, cfg.CustomRules), original, block, reason);
+        var redactedPreview = Redact(text, findings, pfSpans, cfg.CustomRules, cap: true);
+        var redactedBody = Redact(text, findings, pfSpans, cfg.CustomRules, cap: false);
+        return new DlpResult(findings, redactedPreview, original, block, reason, redactedBody);
     }
 
     // ---- AI classifier ----
@@ -294,9 +300,11 @@ public class DlpInspector
     /// regex/Luhn patterns, the AI Privacy Filter's exact spans (names, addresses, account numbers),
     /// payment cards, and CVV. This is the text the audit log stores as "what would leave".</summary>
     private static string Redact(string text, List<DlpFinding> findings, List<(string Sample, string Rule)>? pfSpans = null,
-        List<(string Name, string Pattern, bool Block)>? customRules = null)
+        List<(string Name, string Pattern, bool Block)>? customRules = null, bool cap = true)
     {
-        var preview = text.Length > 2000 ? text[..2000] + "…" : text;
+        // cap=true → a 2000-char sample for the audit preview. cap=false → the WHOLE text redacted, for the
+        // body we actually forward upstream (so nothing sensitive is truncated-then-forwarded).
+        var preview = cap && text.Length > 2000 ? text[..2000] + "…" : text;
 
         // 0) Custom admin rules — mask their matches too.
         if (customRules is { Count: > 0 })

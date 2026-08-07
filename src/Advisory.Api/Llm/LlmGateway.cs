@@ -67,12 +67,9 @@ public class LlmAuditService
 [Route("api/llm")]
 public class LlmGatewayController : ControllerBase
 {
-    private static readonly Dictionary<string, string> Upstreams = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ["openai"] = "https://api.openai.com",
-        ["anthropic"] = "https://api.anthropic.com",
-        ["groq"] = "https://api.groq.com",
-    };
+    // Upstream provider bases. Overridable via env (LLM_OPENAI_BASE / LLM_ANTHROPIC_BASE / LLM_GROQ_BASE)
+    // so a site can point at Azure OpenAI, a regional endpoint, or a test double without a code change.
+    private readonly Dictionary<string, string> Upstreams;
     // Caller headers we forward upstream (auth + protocol); everything else is dropped.
     private static readonly string[] ForwardHeaders =
         { "Authorization", "x-api-key", "anthropic-version", "anthropic-beta", "OpenAI-Organization", "Content-Type" };
@@ -85,8 +82,16 @@ public class LlmGatewayController : ControllerBase
     private readonly ICurrentUser _user;
 
     public LlmGatewayController(IHttpClientFactory f, IPolicyStore policy, LlmAuditService audit,
-        DlpInspector dlp, IPrivacyFilter pf, ICurrentUser user)
-    { _f = f; _policy = policy; _audit = audit; _dlp = dlp; _pf = pf; _user = user; }
+        DlpInspector dlp, IPrivacyFilter pf, ICurrentUser user, IConfiguration cfg)
+    {
+        _f = f; _policy = policy; _audit = audit; _dlp = dlp; _pf = pf; _user = user;
+        Upstreams = new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["openai"]    = (cfg["LLM_OPENAI_BASE"]    ?? "https://api.openai.com").TrimEnd('/'),
+            ["anthropic"] = (cfg["LLM_ANTHROPIC_BASE"] ?? "https://api.anthropic.com").TrimEnd('/'),
+            ["groq"]      = (cfg["LLM_GROQ_BASE"]       ?? "https://api.groq.com").TrimEnd('/'),
+        };
+    }
 
     [HttpGet("/api/llm/records")]
     [Authorize(Policy = Policies.CanViewer)]
@@ -100,6 +105,41 @@ public class LlmGatewayController : ControllerBase
     {
         var state = await _pf.StateAsync(ct);
         return Ok(new { privacyFilterConfigured = _pf.Configured, privacyFilterReady = state == "ready", privacyFilterState = state });
+    }
+
+    /// <summary>
+    /// Standalone DLP redaction. Takes a block of text and returns it with every detected PII/POPIA/PCI/
+    /// secret span replaced by [CATEGORY:REDACTED]. This is what CLIENT-SIDE integrations call — most
+    /// importantly editor HOOKS (Cursor `beforeReadFile` / prompt hooks, Claude Code hooks): the hook sends
+    /// the file/prompt text here BEFORE the editor forwards it to its AI backend, and substitutes the
+    /// redacted version — so sensitive data never leaves the machine in the clear, even for tools (like
+    /// Cursor's built-in AI) whose network traffic can't be intercepted. Anonymous so a lightweight hook
+    /// script can call it without an auth dance; gate it at the network if needed.
+    /// </summary>
+    public record RedactRequest(string Text, bool? Block);
+    [HttpPost("/api/dlp/redact")]
+    [AllowAnonymous]
+    public async Task<ActionResult> Redact([FromBody] RedactRequest req, CancellationToken ct)
+    {
+        if (req is null || string.IsNullOrEmpty(req.Text))
+            return Ok(new { redacted = req?.Text ?? "", hasSensitive = false, findings = Array.Empty<object>() });
+        var p = _policy.Current.Llm;
+        var cfg = new DlpSettings
+        {
+            ScanPii = p.ScanPii, ScanCards = p.ScanCards, ScanSecrets = p.ScanSecrets, ScanCode = p.ScanCode,
+            // For the hook we REDACT (never hard-block a developer's file read); Block is opt-in per call.
+            BlockPii = req?.Block == true, BlockCards = req?.Block == true, BlockSecrets = req?.Block == true, BlockCode = false,
+            UseAi = p.UseAiDlp, UsePrivacyFilter = p.UsePrivacyFilter,
+            CustomRules = p.CustomDlpRules.Where(r => r.Enabled).Select(r => (r.Name, r.Pattern, r.Block)).ToList(),
+        };
+        var dlp = await _dlp.InspectAsync(req.Text, cfg, ct);
+        return Ok(new
+        {
+            redacted = dlp.RedactedBody,
+            hasSensitive = dlp.Findings.Count > 0,
+            blocked = dlp.Block,
+            findings = dlp.Findings.Select(f => new { f.Category, f.Rule }).Distinct(),
+        });
     }
 
     /// <summary>CSV export of the call audit trail (compliance evidence).</summary>
@@ -197,9 +237,17 @@ public class LlmGatewayController : ControllerBase
         if (p.CaptureTranscripts) { rec.Preview = dlp.RedactedPreview; rec.Original = dlp.OriginalPreview; }
         if (dlp.Block) return Blocked(rec, sw, 403, $"outbound DLP — {dlp.BlockReason} (SEC-LLM-02)");
 
+        // REDACT MODE: forward the REDACTED prompt (sensitive spans replaced) instead of the original, so
+        // POPIA/PCI data never reaches the AI provider in the clear — while the call still succeeds. This
+        // is what makes routing Cursor / Claude Code through the gateway safe. Falls back to the original
+        // body when redact mode is off (the historical behaviour: scan+log, or hard-block on a Block rule).
+        var outboundBody = p.RedactAndForward && dlp.Findings.Count > 0 ? dlp.RedactedBody : body;
+        if (p.RedactAndForward && dlp.Findings.Count > 0) rec.Decision = "Redacted";
+
         // Strip the LiteLLM "provider/" prefix from the model before forwarding to the real provider.
-        var fwdBody = StripModelPrefix(body, rawModel, model);
+        var fwdBody = StripModelPrefix(outboundBody, rawModel, model);
         var upstreamPath = MapPath(provider, path);
+        var wantsStream = RequestWantsStream(body);   // read from the ORIGINAL body (client's stream flag)
 
         using var req = new HttpRequestMessage(HttpMethod.Post, $"{upstream}/{upstreamPath}{Request.QueryString}");
         req.Content = new StringContent(fwdBody, Encoding.UTF8, "application/json");
@@ -213,17 +261,58 @@ public class LlmGatewayController : ControllerBase
         try
         {
             var http = _f.CreateClient("llm-gw");
+
+            // STREAMING PASSTHROUGH. Cursor, Claude Code and most chat tools request "stream": true and read
+            // a Server-Sent-Events (SSE) token stream. The INBOUND prompt was already fully inspected +
+            // (in redact mode) redacted above — that's complete before the first response byte — so we can
+            // relay the upstream SSE stream straight back to the client untouched. Buffering it (the old
+            // behaviour) would break these tools. We read response headers first, then copy the body stream.
+            if (wantsStream)
+            {
+                using var upResp = await http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
+                rec.Status = (int)upResp.StatusCode;
+                rec.Decision = rec.Decision == "Redacted" ? "Redacted" : "Allowed";
+                rec.DurationMs = sw.ElapsedMilliseconds;
+                _audit.Add(rec);   // record now; token counts come from usage in the final SSE chunk (best-effort)
+
+                Response.StatusCode = (int)upResp.StatusCode;
+                Response.ContentType = upResp.Content.Headers.ContentType?.ToString() ?? "text/event-stream";
+                Response.Headers["Cache-Control"] = "no-cache";
+                Response.Headers["X-Accel-Buffering"] = "no";   // don't let nginx buffer the SSE stream
+                await using var upStream = await upResp.Content.ReadAsStreamAsync(ct);
+                var buf = new byte[8192];
+                int n;
+                while ((n = await upStream.ReadAsync(buf, ct)) > 0)
+                {
+                    await Response.Body.WriteAsync(buf.AsMemory(0, n), ct);
+                    await Response.Body.FlushAsync(ct);   // flush each chunk so tokens arrive live
+                }
+                return new EmptyResult();
+            }
+
             using var resp = await http.SendAsync(req, ct);
             var respBody = await resp.Content.ReadAsStringAsync(ct);
             rec.Status = (int)resp.StatusCode;
             rec.ResponseChars = respBody.Length;
             (rec.TokensIn, rec.TokensOut) = ExtractUsage(respBody);
-            rec.Decision = "Allowed";
+            if (rec.Decision != "Redacted") rec.Decision = "Allowed";
             rec.DurationMs = sw.ElapsedMilliseconds;
             _audit.Add(rec);
             return new ContentResult { Content = respBody, ContentType = "application/json", StatusCode = (int)resp.StatusCode };
         }
         catch (Exception ex) { return Blocked(rec, sw, 502, $"upstream error: {ex.Message}"); }
+    }
+
+    /// <summary>Does the request ask for a streaming (SSE) response? Reads the JSON "stream": true flag.</summary>
+    private static bool RequestWantsStream(string body)
+    {
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(body);
+            return doc.RootElement.TryGetProperty("stream", out var s)
+                && s.ValueKind == System.Text.Json.JsonValueKind.True;
+        }
+        catch { return false; }
     }
 
     /// <summary>Resolve (provider, bareModel) from an optional forced provider + the model string.</summary>

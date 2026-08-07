@@ -194,6 +194,12 @@ public class LlmGatewayPolicy
     public bool CaptureTranscripts { get; set; } = true;   // store a REDACTED preview of each prompt
     public bool UseAiDlp { get; set; } = true;             // Groq fallback for free-text PII/code
     public bool UsePrivacyFilter { get; set; } = true;     // on-prem OpenAI Privacy Filter as primary PII engine
+    // REDACT MODE: when true, instead of only blocking, the gateway FORWARDS THE REDACTED PROMPT — every
+    // detected PII/POPIA/PCI span is replaced with [CATEGORY:REDACTED] before the request reaches the AI
+    // provider. This is what lets Cursor / Claude Code / any OpenAI-compatible tool keep working while
+    // sensitive data never leaves the network in the clear. A hard-block rule (e.g. BlockCards) still
+    // blocks; redaction covers everything else that's merely scanned. Off by default (opt-in per site).
+    public bool RedactAndForward { get; set; } = false;
 
     public bool ScanPii { get; set; } = true;
     public bool BlockPii { get; set; } = false;            // notify by default; flip to enforce
