@@ -271,6 +271,26 @@ public class LlmGatewayController : ControllerBase
         if (provider == "anthropic" && !req.Headers.Contains("anthropic-version"))
             req.Headers.TryAddWithoutValidation("anthropic-version", "2023-06-01");
 
+        // OAuth (subscription) tokens — e.g. Claude Code / the VS Code extension signed in with a
+        // Claude Max/Pro plan — arrive as `Authorization: Bearer sk-ant-oat...`. Anthropic's
+        // /v1/messages REJECTS an OAuth bearer with 401 unless the request also carries
+        // `anthropic-beta: oauth-2025-04-20`. Tools sending an API key (x-api-key) don't need it.
+        // The extension may not add this header on the base-URL path, so inject it when we see an
+        // OAuth bearer and it isn't already present — otherwise a proxied Max session always 401s.
+        if (provider == "anthropic"
+            && Request.Headers.TryGetValue("Authorization", out var auth)
+            && ((string)auth!).Contains("sk-ant-oat", StringComparison.OrdinalIgnoreCase))
+        {
+            var betas = req.Headers.TryGetValues("anthropic-beta", out var existing)
+                ? string.Join(",", existing) : "";
+            if (!betas.Contains("oauth-2025-04-20", StringComparison.OrdinalIgnoreCase))
+            {
+                req.Headers.Remove("anthropic-beta");
+                var merged = string.IsNullOrEmpty(betas) ? "oauth-2025-04-20" : betas + ",oauth-2025-04-20";
+                req.Headers.TryAddWithoutValidation("anthropic-beta", merged);
+            }
+        }
+
         try
         {
             var http = _f.CreateClient("llm-gw");

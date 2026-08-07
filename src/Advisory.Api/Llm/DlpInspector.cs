@@ -202,7 +202,16 @@ public class DlpInspector
 
         var original = text.Length > 2000 ? text[..2000] + "…" : text;
         var redactedPreview = Redact(text, findings, pfSpans, cfg.CustomRules, cap: true);
-        var redactedBody = Redact(text, findings, pfSpans, cfg.CustomRules, cap: false);
+        // The FORWARDED body must stay valid JSON. Redacting the raw serialized text can splice a
+        // [CAT:REDACTED] token across a structural quote/brace and corrupt the JSON (Anthropic then
+        // 400s: "not valid JSON at char 0"). So when the body parses as JSON, redact only inside
+        // STRING VALUES and re-serialize — structure is preserved. Non-JSON bodies fall back to the
+        // flat text redaction.
+        // Build the FORWARDED body from the ORIGINAL request JSON (`body`), not the extracted `text` —
+        // `text` is only the message content pulled out by ExtractText for detection. Redacting `body`
+        // JSON-aware keeps the {model, messages, ...} envelope intact so the upstream still gets valid
+        // JSON (redacting `text` would forward the bare message string → Anthropic 400 "invalid JSON").
+        var redactedBody = RedactJsonAware(body, findings, pfSpans, cfg.CustomRules);
         return new DlpResult(findings, redactedPreview, original, block, reason, redactedBody);
     }
 
@@ -337,6 +346,65 @@ public class DlpInspector
                 preview = re.Replace(preview, _ => $"[{rule}:REDACTED]");
         return preview;
     }
+
+    /// <summary>Redact PII while keeping the body valid JSON: parse the tree, apply the same span/
+    /// pattern replacements to each STRING VALUE only, and re-serialize. If the body isn't JSON
+    /// (or parsing/rebuilding fails), fall back to the flat full-text redaction so we never forward
+    /// unredacted content — the failure mode is "over-redact / plain text", never "leak".</summary>
+    private static string RedactJsonAware(string text, List<DlpFinding> findings,
+        List<(string Sample, string Rule)>? pfSpans, List<(string Name, string Pattern, bool Block)>? customRules)
+    {
+        try
+        {
+            var node = System.Text.Json.Nodes.JsonNode.Parse(text);
+            if (node is null) return Redact(text, findings, pfSpans, customRules, cap: false);
+            RedactNode(node, findings, pfSpans, customRules);
+            return node.ToJsonString();
+        }
+        catch
+        {
+            // Not JSON, or the tree couldn't be rebuilt — redact the raw text instead of forwarding raw.
+            return Redact(text, findings, pfSpans, customRules, cap: false);
+        }
+    }
+
+    private static void RedactNode(System.Text.Json.Nodes.JsonNode node, List<DlpFinding> findings,
+        List<(string Sample, string Rule)>? pfSpans, List<(string Name, string Pattern, bool Block)>? customRules)
+    {
+        switch (node)
+        {
+            case System.Text.Json.Nodes.JsonObject obj:
+                // Copy keys first — we replace values in-place while iterating.
+                foreach (var key in obj.Select(kv => kv.Key).ToList())
+                {
+                    var child = obj[key];
+                    if (child is System.Text.Json.Nodes.JsonValue v &&
+                        v.TryGetValue<string>(out var s) && s is not null)
+                        obj[key] = RedactString(s, findings, pfSpans, customRules);
+                    else if (child is not null)
+                        RedactNode(child, findings, pfSpans, customRules);
+                }
+                break;
+            case System.Text.Json.Nodes.JsonArray arr:
+                for (var i = 0; i < arr.Count; i++)
+                {
+                    var child = arr[i];
+                    if (child is System.Text.Json.Nodes.JsonValue v &&
+                        v.TryGetValue<string>(out var s) && s is not null)
+                        arr[i] = RedactString(s, findings, pfSpans, customRules);
+                    else if (child is not null)
+                        RedactNode(child, findings, pfSpans, customRules);
+                }
+                break;
+        }
+    }
+
+    /// <summary>Apply the full redaction pass to a single JSON string value. Reuses Redact() with
+    /// cap:false; the returned string is stored back as a JSON value, so System.Text.Json handles
+    /// all escaping — the bracketed [CAT:REDACTED] token can never break the surrounding JSON.</summary>
+    private static string RedactString(string value, List<DlpFinding> findings,
+        List<(string Sample, string Rule)>? pfSpans, List<(string Name, string Pattern, bool Block)>? customRules)
+        => Redact(value, findings, pfSpans, customRules, cap: false);
 }
 
 /// <summary>Per-category DLP configuration read from the LLM gateway policy.</summary>
