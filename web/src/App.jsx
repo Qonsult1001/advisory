@@ -1020,7 +1020,7 @@ function Status({ ok }) {
 // Grouped left nav modeled on JFrog's platform sidebar: top-level product groups, each expanding
 // to its sub-items. Xray mirrors the demo exactly (4 items); everything else lives in its own group.
 const NAV = [
-  // Trimmed nav: Catalog first, then Xray / Curation / Pipeline. Dashboard, AppTrust, AI/ML,
+  // Trimmed nav: Catalog first, then Xray / Curation / Pipeline / AI Gateway. Dashboard, AppTrust,
   // Mutation and Evolution are hidden for now (kept in code so they can be re-enabled later).
   { type: "item", key: "catalog", label: "Catalog", icon: "▦" },
   { type: "group", key: "xray", label: "Xray", icon: "◉", children: [
@@ -1034,6 +1034,9 @@ const NAV = [
     ["requests", "Developer requests"], ["queue", "Intake queue"], ["quarantine", "Quarantine"], ["approved", "Approved packages"],
     ["recall", "Recall / Exposure"], ["exceptions", "Approved exceptions"], ["audit", "Decision ledger"], ["reports", "Reports"],
   ]},
+  // AI Gateway (LLM proxy + DLP): routes Cursor / Claude Code / AI-SDK traffic through the privacy
+  // filter so POPIA/PCI is redacted before it reaches the model provider. Re-enabled (was hidden).
+  { type: "item", key: "llmgateway", label: "AI Gateway", icon: "✦" },
 ];
 const NAV_PARENT = (() => { const m = {}; NAV.forEach(g => g.children?.forEach(([k]) => m[k] = g.key)); return m; })();
 
@@ -8354,6 +8357,17 @@ function LlmGateway({ policy, setPolicy, save, saving }) {
                 </tr>
               ))}
             </tbody></table>
+
+            <SubHead>Redact &amp; forward — silent DLP for AI coding tools (SEC-LLM-03)</SubHead>
+            <div style={{ padding: "4px 22px 8px", color: C.sub, fontSize: 12 }}>
+              When on, a request carrying PII/cards/secrets is <b>not blocked</b> — the sensitive spans are
+              replaced with <code>[CATEGORY:REDACTED]</code> and the <b>redacted</b> prompt is forwarded to
+              the model. This is what lets Cursor / Claude Code / AI-SDK tools run normally through the
+              gateway while POPIA/PCI data is stripped before it ever reaches the provider. With this off,
+              the gateway falls back to scan-and-log (or hard-block, per the category Block switches above).</div>
+            <Table cols={["Control", "Rule", "Setting"]}>
+              <Ctl id="SEC-LLM-03" rule="Redact detected data and forward (silent — recommended for Cursor / Claude Code)"><Switch on={llm.redactAndForward} onChange={(v) => setLlm({ redactAndForward: v })} /></Ctl>
+            </Table>
 
             <SubHead>Custom rules — org-specific patterns</SubHead>
             <div style={{ padding: "4px 22px 8px", color: C.sub, fontSize: 12 }}>
