@@ -58,6 +58,46 @@ echo '{"prompt":"my card is 4111 1111 1111 1111"}' | node redact-hook.mjs
 # → {"continue":true,"permission":"allow","prompt":"my card is [CREDIT_CARD:REDACTED]", ...}
 ```
 
+## Claude Code (and the app-layer vs. network question)
+
+Claude Code also has hooks, but a **key difference**: its `UserPromptSubmit` hook can **block** a prompt or
+add context — it **cannot silently rewrite/redact** the prompt (only Cursor's `beforeSubmitPrompt` can).
+So there are two ways to protect Claude Code, and you'll likely want both:
+
+- **Silent redaction (recommended for Claude Code):** route it through the gateway —
+  `ANTHROPIC_BASE_URL=https://<your-gateway>` (+ `ANTHROPIC_AUTH_TOKEN`). The gateway redacts and forwards;
+  the developer never sees an interruption.
+- **Detect-and-block guard (test it right now):** add `claude-code-guard.sh` as a `UserPromptSubmit` hook.
+  It scans your prompt via `/api/dlp/redact` and **blocks** it (fail-closed) if it contains POPIA/PCI,
+  showing the redacted preview. Add to `~/.claude/settings.json`:
+
+  ```json
+  {
+    "hooks": {
+      "UserPromptSubmit": [
+        { "hooks": [ { "type": "command",
+          "command": "ADVISORY_REDACT_URL=http://localhost:5000/api/dlp/redact bash /path/to/claude-code-guard.sh" } ] }
+      ]
+    }
+  }
+  ```
+
+  Then type a prompt with a fake SA ID or card — Claude Code refuses it. That's the app-layer proof.
+
+## Network enforcement — the non-bypassable backstop
+
+The hook is the app-layer control (redacts, but a developer can remove it). For an enforcement guarantee,
+pair it with a **firewall egress policy** on developer subnets:
+
+- **Block** outbound to the AI vendors' inference hosts: `api.openai.com`, `api.anthropic.com`, and — to
+  cut off Cursor's uninterceptable built-in AI — `api2.cursor.sh` / `api3.cursor.sh` / `api4.cursor.sh` /
+  `*.cursorapi.com`.
+- **Allow** only your gateway's egress to those vendors (the gateway holds the keys and does the redaction).
+
+Now a developer who removes the hook simply **can't reach the AI** except through the gateway, and Cursor's
+built-in AI can't phone home — forcing everyone down the redacting path. Hook = redaction; network block =
+it can't be turned off.
+
 ## Honest limits
 
 - The hook covers the **prompt + file** surfaces Cursor exposes hooks for. If Cursor adds a data path with
