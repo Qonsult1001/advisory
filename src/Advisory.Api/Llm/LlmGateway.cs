@@ -163,20 +163,33 @@ public class LlmGatewayController : ControllerBase
     // provider is routed from the model name (LiteLLM convention: "anthropic/…", "groq/…", else
     // OpenAI). No vendor-specific path rewriting required.
 
+    // NOTE on auth: these AI-passthrough routes are [AllowAnonymous] because the CREDENTIAL is the
+    // caller's own provider key — Claude Code sends x-api-key / an OpenAI SDK sends Authorization: Bearer,
+    // which the gateway forwards upstream (ForwardHeaders). The gateway itself holds no session here; it
+    // is protected by NETWORK PLACEMENT (only dev machines / the reverse proxy can reach it) and by the
+    // fact that a call is useless without a valid upstream key. The admin/console endpoints above keep
+    // their [Authorize] policies. This is what lets a standard tool point ANTHROPIC_BASE_URL / OpenAI
+    // base-URL at the gateway with no Advisory login.
     [HttpPost("/v1/chat/completions")]
-    [Authorize(Policy = Policies.CanViewer)]
+    [AllowAnonymous]
     public Task<IActionResult> ChatCompletions(CancellationToken ct) => Proxy(null, "v1/chat/completions", ct);
 
+    // Anthropic-native surface — Claude Code POSTs here. Force the "anthropic" provider so it routes to
+    // api.anthropic.com/v1/messages (MapPath leaves /v1/messages as-is for anthropic).
+    [HttpPost("/v1/messages")]
+    [AllowAnonymous]
+    public Task<IActionResult> Messages(CancellationToken ct) => Proxy("anthropic", "v1/messages", ct);
+
     [HttpPost("/v1/completions")]
-    [Authorize(Policy = Policies.CanViewer)]
+    [AllowAnonymous]
     public Task<IActionResult> Completions(CancellationToken ct) => Proxy(null, "v1/completions", ct);
 
     [HttpPost("/v1/embeddings")]
-    [Authorize(Policy = Policies.CanViewer)]
+    [AllowAnonymous]
     public Task<IActionResult> Embeddings(CancellationToken ct) => Proxy(null, "v1/embeddings", ct);
 
     [HttpPost("/v1/responses")]
-    [Authorize(Policy = Policies.CanViewer)]
+    [AllowAnonymous]
     public Task<IActionResult> Responses(CancellationToken ct) => Proxy(null, "v1/responses", ct);
 
     /// <summary>GET /v1/models — OpenAI-spec model list (returns the providers the gateway allows).</summary>
