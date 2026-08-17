@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "hooks": {
+    "beforeSubmitPrompt": [
+      { "command": "node ~/.cursor/advisory/redact-hook.mjs" }
+    ],
+    "beforeReadFile": [
+      { "command": "node ~/.cursor/advisory/redact-hook.mjs" }
+    ]
+  }
+}

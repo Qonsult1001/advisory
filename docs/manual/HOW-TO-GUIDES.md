@@ -4,7 +4,9 @@ Each guide gets one real goal done. They assume you've signed in to the console 
 know the basics — if you're brand new, do *Tutorial — Gate your first package* first. Guides branch
 where the real world forks ("if X, then…").
 
-> `<CONSOLE_URL>` / `<NEXUS_URL>` are the addresses your administrator configured for this install.
+> `<CONSOLE_URL>` (curation console), `<PROXY_URL>` (the package firewall developers point pip/npm at,
+> e.g. `:8090`), and `<NEXUS_URL>` (the internal repository) are the addresses your administrator
+> configured for this install.
 
 **Guides in this document**
 
@@ -182,10 +184,11 @@ prohibited licences, etc.), then **Commit & sign policy**.
 `pip install` / `npm install` you already use — nothing about your commands changes. A **one-time
 registry setting** silently redirects them through the Advisory proxy, so every package you get is one
 the firewall has vetted.
-**Start:** your administrator has given you the proxy address — call it `<NEXUS_URL>` (for example
-`http://advisory.mycompany.local:8081`). You have `pip` / `npm` installed.
+**Start:** your administrator has given you the firewall proxy address — call it `<PROXY_URL>` (for
+example `http://advisory.mycompany.local:8090`). You have `pip` / `npm` installed.
 **End:** plain `pip install <anything>` / `npm install <anything>` are transparently served through the
-firewall — same commands, safe source.
+firewall — same commands, safe source, **works first try** (the firewall vets each package inline as you
+pull it; you don't have to run the command twice).
 
 > **The idea:** you don't type a new URL and you don't learn a new command. You set the redirect **once**
 > (below), then use pip/npm exactly as before. In many organisations **IT sets this for you** (via a
@@ -197,18 +200,20 @@ firewall — same commands, safe source.
 
 **Set the redirect once:**
 ```
-pip config set global.index-url <NEXUS_URL>/repository/pypi-approved/simple/
+pip config set global.index-url <PROXY_URL>/pypi/simple/
 ```
-*(If `<NEXUS_URL>` is plain `http://`, also run:*
-`pip config set global.trusted-host <host part of NEXUS_URL, e.g. advisory.mycompany.local>`*)*
+*(If `<PROXY_URL>` is plain `http://`, also run:*
+`pip config set global.trusted-host <host part of PROXY_URL, e.g. advisory.mycompany.local>`*)*
 
 **Use it normally — same command you always run:**
 ```
 pip install requests
 ```
 
-**You should see:** `Successfully installed requests-…`. You didn't type any Nexus URL — pip picked up
-the redirect from its config and pulled through the firewall.
+**You should see:** `Successfully installed requests-…` on the **first** run. A package the firewall
+hasn't vetted before is fetched, scanned, and served inline (a few extra seconds the first time); after
+that it's instant. You didn't type any URL — pip picked up the redirect from its config and pulled
+through the firewall.
 
 > **Prefer not to run a command?** The same setting lives in a file pip reads
 > (`%APPDATA%\pip\pip.ini` on Windows, `~/.config/pip/pip.conf` on macOS/Linux) under
@@ -291,13 +296,23 @@ from the sections above; you're just delivering it as a **managed file or enviro
 
 **Per-ecosystem managed setting (deploy these):**
 
+All four gated ecosystems now go through the **firewall proxy** (`<PROXY_URL>`), so installs work **first
+try** and every pull is gated + recorded on the Recall / Exposure ledger — point the client at the proxy,
+not at Nexus directly.
+
 | Ecosystem | What IT pushes (machine-wide) |
 |-----------|-------------------------------|
-| **pip** | A global `pip.conf` / `pip.ini` with `[global]` `index-url = <NEXUS_URL>/repository/pypi-approved/simple/`. Machine-wide locations: Linux `/etc/pip.conf`, Windows `C:\ProgramData\pip\pip.ini`. (Or set the `PIP_INDEX_URL` environment variable for all users.) |
-| **npm** | A global `.npmrc` with `registry=<NEXUS_URL>/repository/npm-approved/`. Machine-wide: the file at npm's global prefix `etc/npmrc`, or set the `NPM_CONFIG_REGISTRY` environment variable for all users. |
-| **NuGet** | A machine-wide `NuGet.Config` with **only** the `<NEXUS_URL>/repository/nuget-approved/index.json` source (remove `nuget.org`). Location: Windows `%ProgramFiles(x86)%\NuGet\Config\`, Linux `/etc/NuGet/NuGet.Config`. |
-| **Cargo** | A shared `~/.cargo/config.toml` (or `$CARGO_HOME/config.toml` baked into the image) that replaces the crates-io source with `<NEXUS_URL>/repository/cargo-approved/`. |
-| **Go** | The `GOPROXY` environment variable set for all users to `<NEXUS_URL>/repository/go-approved/`, plus `GONOSUMDB`/`GOFLAGS` as your policy needs. |
+| **pip** | A global `pip.conf` / `pip.ini` with `[global]` `index-url = <PROXY_URL>/pypi/simple/`. Machine-wide locations: Linux `/etc/pip.conf`, Windows `C:\ProgramData\pip\pip.ini`. (Or set the `PIP_INDEX_URL` environment variable for all users.) |
+| **npm** | A global `.npmrc` with `registry=<PROXY_URL>/npm/`. Machine-wide: the file at npm's global prefix `etc/npmrc`, or set the `NPM_CONFIG_REGISTRY` environment variable for all users. |
+| **NuGet** | A machine-wide `NuGet.Config` with **only** the `<PROXY_URL>/nuget/index/index.json` source (remove `nuget.org`). Location: Windows `%ProgramFiles(x86)%\NuGet\Config\`, Linux `/etc/NuGet/NuGet.Config`. |
+| **Go** | The `GOPROXY` environment variable set for all users to `<PROXY_URL>/go`, plus `GOSUMDB=off` (the proxy is the trusted source) and `GOFLAGS`/`GONOSUMCHECK` as your policy needs. |
+
+> The developer token and the `X-Advisory-Asset` header (previous section) attach to these the same way —
+> put the token in the URL's userinfo (`https://<token>:@<PROXY_URL>/npm/`) and inject the asset header from
+> your provisioning, so npm/NuGet/Go installs land on the Recall / Exposure ledger with the same attribution
+> as pip. **Cargo, Maven, RubyGems etc. are not gated by this proxy** (out of scope); **Debian/Ubuntu (apt)
+> remain provisioning-deferred**; **HuggingFace / Docker / editor-extensions** are gated by their own
+> scanners, not this proxy.
 
 **Deliver it with the channel you already run:**
 - **Windows (domain):** Group Policy *Preferences → Files* to drop `pip.ini` / `.npmrc` / `NuGet.Config`
@@ -328,6 +343,68 @@ from the sections above; you're just delivering it as a **managed file or enviro
 
 > Bottom line: **config = the tools use the proxy; network block = the proxy is the only option.** Ship
 > both from IT and the firewall is enforced for every user, not just the ones who set it up themselves.
+
+### For IT — attribute installs to a developer and their machine (Recall / Exposure)
+
+> **Read this if you want the Recall / Exposure screen to name real people and machines.** When a package
+> a developer already installed is *later* found vulnerable, the firewall builds a **recall worklist** —
+> every endpoint that has the vulnerable copy, with the exact remove command. For that list to say
+> *"host `dev-laptop-07`, `alice`, 10.2.4.19"* instead of just an IP, IT gives the proxy two things. Both
+> are optional and the developer still types plain `pip install` — nothing changes for them.
+
+**1. A per-developer token (who).** Issue each developer a unique opaque token and record the mapping in
+the API's `PROXY_DEV_TOKENS` setting (server-side — the map never leaves IT):
+
+```
+PROXY_DEV_TOKENS=a1b2c3=alice, d4e5f6=bob, 9z8y7x=carol
+```
+
+Then bake the token into the same pushed pip config, as HTTP Basic userinfo on the index URL:
+
+```
+# /etc/pip.conf (or C:\ProgramData\pip\pip.ini) — pushed per machine/user by IT
+[global]
+index-url = https://a1b2c3:@<PROXY_URL>/pypi/simple/
+```
+
+pip sends the token automatically on every request; the proxy maps it back to `alice`. No token → the
+pull is recorded as `unattributed:<ip>` (still visible, just not tied to a person).
+
+**2. An asset header (which machine).** To capture hostname / MAC / OS / department / asset-tag, have IT's
+provisioning inject an `X-Advisory-Asset` header — a simple `key=value; …` string — from the values your
+MDM/asset system already holds. Deliver it however your channel supports request headers (a small pip
+wrapper, a proxy in front, or `PIP_*` tooling). Recognised keys:
+
+| Key | Meaning | Example |
+|-----|---------|---------|
+| `host` | Machine hostname / FQDN | `dev-laptop-07.corp.local` |
+| `mac` | MAC address | `a4:83:e7:2b:19:c0` |
+| `os` | OS + version | `Windows 11 23H2` |
+| `dept` | Department / team | `Payments` |
+| `tag` | Asset tag / serial | `CORP-004821` |
+| `user` | OS login user | `alice.dev` |
+| `project` | Project / application this pull belongs to | `payments-api` |
+
+```
+X-Advisory-Asset: host=dev-laptop-07.corp.local; mac=a4:83:e7:2b:19:c0; os=Windows 11 23H2; dept=Payments; tag=CORP-004821; user=alice.dev; project=payments-api
+```
+
+**3. A project tag (for the per-project SBOM).** To produce a Software Bill of Materials *per project* (for
+ISO 27001 / secure-development evidence), tell the firewall which project a pull belongs to. Set it either
+as `project=…` in the asset header above, or — easiest for CI, one per repo — a dedicated header:
+
+```
+X-Advisory-Project: payments-api
+```
+
+Every package that project pulls is then grouped under it on **Pipeline → Reports → SBOM (per project)**,
+which lists each project's components, versions, status (approved / recalled), and where they're installed
+— downloadable as CSV. Pulls with no project set fall under “(unassigned)”.
+
+Every field is best-effort: send what you have; anything omitted shows as “—” on the Recall / Exposure
+screen. The proxy always captures source IP and the pip/Python/OS reported in pip's own User-Agent, so
+even with no header you get IP + tooling versions. **MAC and hardware detail can only come from this
+header** — a MAC address never crosses an IP hop, so the proxy cannot read it from the request itself.
 
 ---
 

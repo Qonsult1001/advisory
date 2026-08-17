@@ -3,6 +3,7 @@ using Advisory.Api.Gate;
 using Advisory.Api.Integrations;
 using Advisory.Api.Auth;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Authentication.OpenIdConnect;
 using Microsoft.Identity.Web;
 using Advisory.Api.Nexus;
 using Advisory.Api.Queue;
@@ -14,6 +15,18 @@ using Advisory.Api.VulnSources;
 var appUptime = System.Diagnostics.Stopwatch.StartNew();
 var builder = WebApplication.CreateBuilder(args);
 
+// Reverse proxy (auto-gate first-try pip install) listens on its OWN port, separate from the admin API
+// on 5000 — different audience/trust (dev pip traffic vs SecOps control plane). Same process, no new
+// container. Default 8090; set PROXY_PORT=0 to disable the extra listener. We listen explicitly on both
+// the API port and the proxy port (ConfigureKestrel replaces ASPNETCORE_URLS, so re-add the API port).
+var _proxyPort = builder.Configuration.GetValue("PROXY_PORT", 8090);
+var _apiPort = builder.Configuration.GetValue("API_LISTEN_PORT", 5000);
+builder.WebHost.ConfigureKestrel(k =>
+{
+    k.ListenAnyIP(_apiPort);
+    if (_proxyPort > 0 && _proxyPort != _apiPort) k.ListenAnyIP(_proxyPort);
+});
+
 builder.Services.AddControllers()
     .AddJsonOptions(o => o.JsonSerializerOptions.Converters.Add(
         new System.Text.Json.Serialization.JsonStringEnumConverter()));
@@ -23,8 +36,31 @@ builder.Services.AddControllers()
 var entraConfigured = !string.IsNullOrWhiteSpace(builder.Configuration["AzureAd:ClientId"]);
 if (entraConfigured)
 {
-    builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-        .AddMicrosoftIdentityWebApi(builder.Configuration.GetSection("AzureAd"));
+    // TWO auth schemes, both bound to the same AzureAd config:
+    //  • WEB-APP (OpenID Connect + cookie): the INTERACTIVE browser sign-in. The console's
+    //    "Sign in with SSO" button hits /api/auth/login, which challenges this scheme → the user is
+    //    redirected to Entra, signs in, and is returned to /signin-oidc; a cookie session is established
+    //    carrying the app-role claims. This is the default for browser requests.
+    //  • WEB-API (JWT bearer): validates an Authorization: Bearer token for programmatic/API callers.
+    // App roles ("Admin"/"Approver"/"Viewer") arrive as role claims; RoleClaimType is set so
+    // [Authorize(Roles=…)] and RequireRole(...) see them via ClaimTypes.Role.
+    builder.Services.AddAuthentication(OpenIdConnectDefaults.AuthenticationScheme)
+        .AddMicrosoftIdentityWebApp(options =>
+        {
+            builder.Configuration.GetSection("AzureAd").Bind(options);
+            options.CallbackPath = "/signin-oidc";
+            options.SignedOutCallbackPath = "/signout-callback-oidc";
+            // Entra sends app roles in the "roles" claim; treating it as the role claim makes
+            // RequireRole("Admin"/…) and [Authorize(Roles=…)] work off the app roles.
+            options.TokenValidationParameters.RoleClaimType = "roles";
+        })
+        .EnableTokenAcquisitionToCallDownstreamApi()
+        .AddInMemoryTokenCaches();
+    builder.Services.AddMicrosoftIdentityWebApiAuthentication(builder.Configuration, "AzureAd",
+        JwtBearerDefaults.AuthenticationScheme);
+    // The JWT scheme also reads app roles from the "roles" claim.
+    builder.Services.Configure<Microsoft.AspNetCore.Authentication.JwtBearer.JwtBearerOptions>(
+        JwtBearerDefaults.AuthenticationScheme, o => o.TokenValidationParameters.RoleClaimType = "roles");
 }
 else
 {
@@ -121,6 +157,14 @@ builder.Services.AddSingleton<Advisory.Api.Scan.ReachabilityAnalyzer>();
 builder.Services.AddSingleton<Advisory.Api.Catalog.CatalogService>();
 builder.Services.AddSingleton<Advisory.Api.Catalog.OpRiskService>();
 builder.Services.AddSingleton<Advisory.Api.Scan.ScanStore>();
+// Resolves the developer behind a proxy request (IT-issued token → identity) for exposure attribution.
+builder.Services.AddSingleton<Advisory.Api.Proxy.DevIdentity>();
+// Reverse-proxy ecosystem adapters — one per gated package manager (pypi/npm/nuget/go). Each supplies the
+// ecosystem-specific index/artifact URL shapes + rewrite; the gate/recall/exposure pipeline is shared.
+builder.Services.AddSingleton<Advisory.Api.Proxy.IEcosystemProxyAdapter, Advisory.Api.Proxy.Adapters.PyPiProxyAdapter>();
+builder.Services.AddSingleton<Advisory.Api.Proxy.IEcosystemProxyAdapter, Advisory.Api.Proxy.Adapters.NpmProxyAdapter>();
+builder.Services.AddSingleton<Advisory.Api.Proxy.IEcosystemProxyAdapter, Advisory.Api.Proxy.Adapters.NuGetProxyAdapter>();
+builder.Services.AddSingleton<Advisory.Api.Proxy.IEcosystemProxyAdapter, Advisory.Api.Proxy.Adapters.GoProxyAdapter>();
 
 builder.Services.AddScoped<IGateEngine, GateEngine>();
 builder.Services.AddHostedService<ExceptionSweepJob>();
@@ -133,8 +177,19 @@ builder.Services.AddHostedService<IntakeConsumer>();
 builder.Services.AddSingleton<INexusClient, NexusClient>();
 builder.Services.AddSingleton<Advisory.Api.Nexus.BridgeResetSignal>();
 builder.Services.AddSingleton<Advisory.Api.Integrations.IGitRepoClient, Advisory.Api.Integrations.GitHubRepoClient>();
+// Safe-version recommender (auto-gate-on-pull): on a blocked package, find gate-verified nearest/latest
+// safe versions. Version list comes from the catalog; each candidate is re-gated before it's recommended.
+builder.Services.AddScoped<Advisory.Api.Nexus.SafeVersionRecommender>(sp =>
+{
+    var catalog = sp.GetRequiredService<Advisory.Api.Catalog.CatalogService>();
+    var gate = sp.GetRequiredService<IGateEngine>();
+    return new Advisory.Api.Nexus.SafeVersionRecommender(
+        async (eco, name, ct) => (await catalog.OverviewAsync(eco, name, null, ct)).AllVersions,
+        gate);
+});
 builder.Services.AddHostedService<PromotionBridge>();
 builder.Services.AddHostedService<NexusAutoProvisioner>();   // seeds the default ecosystems on first boot
+builder.Services.AddHostedService<Advisory.Api.Nexus.LogTailer>();   // auto-gate-on-pull: tail request.log, enqueue dev misses
 
 builder.Services.AddCors(o => o.AddDefaultPolicy(p =>
     // 8088 = the console (docker-compose maps host 8080→8088); 5173 = vite dev.
@@ -142,12 +197,66 @@ builder.Services.AddCors(o => o.AddDefaultPolicy(p =>
     p.WithOrigins("http://localhost:5173", "http://localhost:8080", "http://localhost:8088").AllowAnyHeader().AllowAnyMethod()));
 
 var app = builder.Build();
+// Behind the console nginx / Nginx-Proxy-Manager, honour X-Forwarded-Proto and -For so the app knows the
+// real scheme (https) and client IP. Without this the OIDC redirect_uri would be built as http:// (the
+// internal hop) and Entra would reject it. Must run BEFORE authentication.
+{
+    var fwd = new Microsoft.AspNetCore.Builder.ForwardedHeadersOptions
+    {
+        ForwardedHeaders = Microsoft.AspNetCore.HttpOverrides.ForwardedHeaders.XForwardedFor
+                         | Microsoft.AspNetCore.HttpOverrides.ForwardedHeaders.XForwardedProto
+                         | Microsoft.AspNetCore.HttpOverrides.ForwardedHeaders.XForwardedHost
+    };
+    // The proxy is a trusted in-network hop (console nginx → api); clear the default known-network
+    // restriction so the headers it sets are honoured.
+    fwd.KnownNetworks.Clear();
+    fwd.KnownProxies.Clear();
+    app.UseForwardedHeaders(fwd);
+}
 app.UseSwagger();
 app.UseSwaggerUI();
 app.UseCors();
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
+
+// ─────────────────────────── interactive SSO login/logout ───────────────────────────
+// The console's "Sign in with SSO" button opens /api/auth/login?returnTo=<url>. When Entra is configured,
+// this challenges the OpenID Connect scheme → the user is redirected to Microsoft, signs in, and is
+// returned to /signin-oidc (handled by Microsoft.Identity.Web), which sets the session cookie and then
+// redirects back to returnTo (the console). When Entra is NOT configured (dev), there's nothing to sign
+// into, so we just bounce back to returnTo — the dev principal already has all roles.
+app.MapGet("/api/auth/login", (HttpContext http, string? returnTo) =>
+{
+    var target = string.IsNullOrWhiteSpace(returnTo) ? "/" : returnTo;
+    if (!entraConfigured) return Results.Redirect(target);
+    return Results.Challenge(
+        new Microsoft.AspNetCore.Authentication.AuthenticationProperties { RedirectUri = target },
+        new[] { OpenIdConnectDefaults.AuthenticationScheme });
+}).AllowAnonymous();
+
+// Who am I? The console calls this to show the signed-in user + their roles (and to detect a live session).
+app.MapGet("/api/auth/me", (HttpContext http) =>
+{
+    var u = http.User;
+    if (u?.Identity?.IsAuthenticated != true) return Results.Ok(new { authenticated = false });
+    var name = u.FindFirst("preferred_username")?.Value ?? u.FindFirst("name")?.Value ?? u.Identity!.Name;
+    var roles = u.FindAll(System.Security.Claims.ClaimTypes.Role).Select(c => c.Value)
+        .Concat(u.FindAll("roles").Select(c => c.Value)).Distinct().ToArray();
+    return Results.Ok(new { authenticated = true, name, roles });
+}).AllowAnonymous();
+
+// Sign out: clear the local cookie and (when Entra is configured) the Entra session too.
+app.MapGet("/api/auth/logout", (HttpContext http, string? returnTo) =>
+{
+    var target = string.IsNullOrWhiteSpace(returnTo) ? "/" : returnTo;
+    if (!entraConfigured) return Results.Redirect(target);
+    return Results.SignOut(
+        new Microsoft.AspNetCore.Authentication.AuthenticationProperties { RedirectUri = target },
+        new[] { Microsoft.AspNetCore.Authentication.Cookies.CookieAuthenticationDefaults.AuthenticationScheme,
+                OpenIdConnectDefaults.AuthenticationScheme });
+}).AllowAnonymous();
+
 app.MapGet("/api/health", () => Results.Ok(new { status = "ok", service = "Advisory.Api" }))
    .AllowAnonymous();
 app.MapGet("/api/numcpu", () => new { numcpu = Environment.ProcessorCount }).AllowAnonymous();

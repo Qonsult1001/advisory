@@ -827,16 +827,242 @@ public class QuarantineController : ControllerBase
                 reason = scan.Verdict ?? scan.Decision;
             }
             else { status = "pending"; reason = "Awaiting the next gate cycle."; }
+            // For a blocked version, surface the gate-verified safe alternatives so the console can say
+            // "blocked — use this version instead" rather than a dead end (auto-gate-on-pull remediation).
+            var (safeNearest, safeLatest) = status == "blocked"
+                ? _scans.GetSafeVersions(h.Ecosystem, h.Name, h.Version)
+                : (null, null);
             return new
             {
                 h.Name, ecosystem = h.Ecosystem.ToString(), h.Version, h.FileName,
                 status, reason,
                 decision = scan?.Decision,
                 critical = scan?.Critical ?? 0, high = scan?.High ?? 0,
+                safeNearest, safeLatest,
             };
         }).ToList();
 
         return Ok(new { configured = true, count = rows.Count, held = rows });
+    }
+
+    /// <summary>Recent packages developers requested that weren't approved yet (discovered by the log
+    /// tailer, auto-gate-on-pull), each joined to its current pipeline state + any safe-version advice —
+    /// so a developer can see the fate of what their pip/npm install pulled in.</summary>
+    [HttpGet("requests")]
+    public async Task<ActionResult> Requests(CancellationToken ct)
+    {
+        var reqs = _scans.RecentRequests();
+        // Build the approved set once so we can label each request promoted/blocked/pending.
+        var approvedNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (_nexus.IsConfigured)
+            foreach (var eco in NexusEcosystems.Gateable)
+                if (NexusEcosystems.TryGet(eco, out var def))
+                    foreach (var a in await _nexus.ListComponentsAsync($"{def.Prefix}-approved", ct))
+                        approvedNames.Add($"{eco}|{a.Name}");
+        var rows = reqs.Select(r =>
+        {
+            var prefix = NexusEcosystems.TryGet(r.Ecosystem, out var d) ? d.Prefix : "";
+            // The developer request is captured at NAME level (the log tailer sees the name, not always the
+            // exact version). Find scans for this name, newest first — but DO NOT let a block on ONE version
+            // masquerade as a block on the whole package: version identity matters. A scan of 4.4.2 (blocked)
+            // must never make 4.4.3 read as "blocked". So we report the status of the newest scan AND carry
+            // its exact version, and mark whether the block is version-specific so the console can say
+            // "4.4.2 blocked" rather than implying the requested version is bad.
+            var scans = _scans.ForRepository($"{prefix}-quarantine")
+                .Where(s => s.Name.Equals(r.Name, StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(s => s.ScannedAt).ToList();
+            var scan = scans.FirstOrDefault();
+            // "approved" only if this exact name is present in approved (an allowed version exists);
+            // a blocked verdict is always tied to the SPECIFIC version that was scanned.
+            var anyApproved = approvedNames.Contains($"{r.Ecosystem}|{r.Name}");
+            string status = anyApproved ? "approved"
+                : scan?.Decision == "Block" ? "blocked"
+                : scan is not null ? "processing" : "pending";
+            var blockedVersion = scan?.Decision == "Block" ? scan.Version : null;
+            var (near, latest) = blockedVersion is not null
+                ? _scans.GetSafeVersions(r.Ecosystem, r.Name, blockedVersion) : (null, null);
+            return new
+            {
+                r.Name, ecosystem = r.Ecosystem.ToString(), user = r.User, requestedAt = r.RequestedAt,
+                version = scan?.Version,            // the exact version this status refers to (drives the drawer)
+                blockedVersion,                     // non-null ⇒ the block is specific to THIS version
+                status, safeNearest = near, safeLatest = latest,
+            };
+        }).ToList();
+        return Ok(new { count = rows.Count, requests = rows });
+    }
+
+    /// <summary>The RECALL worklist: packages that were served to developers and LATER revoked (a fresh CVE
+    /// caught by the per-request re-gate, or an operator revoke). Each row = a developer who has a now-
+    /// vulnerable version installed and must remove it, with the CVE and the gate-verified safe version so
+    /// the console can tell them exactly what to run. This is the org-wide "installed copies out on machines
+    /// that must be pulled" view — the actionable side of retroactive revocation.</summary>
+    [HttpGet("exposure")]
+    public ActionResult Exposure([FromQuery] bool includeResolved = true)
+    {
+        var recalls = _scans.Recalls(includeResolved);
+
+        // Per-asset rows with the full enterprise detail: locate (host/ip/mac/os), own (developer/dept/tag),
+        // prove (first/last seen, pull count, resolved-by/at) and remediate (exact commands).
+        object AssetRow(Advisory.Api.Scan.ScanStore.Exposure e)
+        {
+            // Defensive: a record persisted before the asset model existed can deserialize with a null Asset.
+            var a = e.Asset ?? new Advisory.Api.Scan.ScanStore.AssetInfo(null, null, null, null, null, null, null, null, null, null);
+            var assetId = a.Hostname ?? a.Mac ?? a.AssetTag ?? a.Ip ?? e.User;
+            return new
+            {
+                assetId,
+                name = e.Name, ecosystem = e.Ecosystem.ToString(), version = e.Version,
+                developer = e.User, attributed = !e.User.StartsWith("unattributed:", StringComparison.Ordinal),
+                asset = new
+                {
+                    hostname = a.Hostname, ip = a.Ip, mac = a.Mac, os = a.Os,
+                    department = a.Department, assetTag = a.AssetTag, osUser = a.OsUser,
+                    pipVersion = a.PipVersion, pythonVersion = a.PythonVersion, platform = a.Platform,
+                },
+                firstSeen = e.FirstSeen, lastSeen = e.LastSeen, pullCount = e.PullCount,
+                cve = e.Cve, safeVersion = e.SafeVersion,
+                resolved = e.Resolved, resolvedBy = e.ResolvedBy, resolvedAt = e.ResolvedAt,
+                remediation = new
+                {
+                    tool = Advisory.Api.Proxy.EcosystemCommands.Tool(e.Ecosystem),
+                    uninstall = Advisory.Api.Proxy.EcosystemCommands.Uninstall(e.Ecosystem, e.Name),
+                    install = Advisory.Api.Proxy.EcosystemCommands.Install(e.Ecosystem, e.Name, e.SafeVersion),
+                },
+            };
+        }
+
+        // Group into INCIDENTS by {package, version, cve} — one incident, N affected assets — the shape a
+        // security team triages by ("recall six 1.5.1: 3 machines, 1 remediated").
+        var incidents = recalls
+            .GroupBy(e => (e.Ecosystem, e.Name, e.Version))
+            .Select(g =>
+            {
+                var first = g.First();
+                var assets = g.Select(AssetRow).ToList();
+                return new
+                {
+                    ecosystem = first.Ecosystem.ToString(), name = first.Name, version = first.Version,
+                    cve = first.Cve, safeVersion = first.SafeVersion,
+                    affected = assets.Count,
+                    open = g.Count(e => !e.Resolved),
+                    firstSeen = g.Min(e => e.FirstSeen), lastSeen = g.Max(e => e.LastSeen),
+                    remediation = new
+                    {
+                        tool = Advisory.Api.Proxy.EcosystemCommands.Tool(first.Ecosystem),
+                        uninstall = Advisory.Api.Proxy.EcosystemCommands.Uninstall(first.Ecosystem, first.Name),
+                        install = Advisory.Api.Proxy.EcosystemCommands.Install(first.Ecosystem, first.Name, first.SafeVersion),
+                    },
+                    assets,
+                };
+            })
+            .OrderByDescending(i => i.lastSeen)
+            .ToList();
+
+        return Ok(new
+        {
+            incidentCount = incidents.Count,
+            assetCount = recalls.Count,
+            openAssets = recalls.Count(e => !e.Resolved),
+            incidents,
+        });
+    }
+
+    public record ResolveExposureRequest(string Ecosystem, string Name, string Version, string AssetId, string? Note);
+
+    /// <summary>Mark one ASSET's recall as handled (the vulnerable copy was removed / upgraded on that
+    /// machine). Records who cleared it + when for the audit trail. Admin.</summary>
+    [HttpPost("exposure/resolve")]
+    [Authorize(Policy = Policies.CanAdmin)]
+    public ActionResult ResolveExposure([FromBody] ResolveExposureRequest req)
+    {
+        if (req is null || string.IsNullOrWhiteSpace(req.Name) || string.IsNullOrWhiteSpace(req.AssetId))
+            return BadRequest(new { error = "ecosystem, name, version and assetId are required" });
+        if (!Enum.TryParse<Ecosystem>(req.Ecosystem, ignoreCase: true, out var eco))
+            return BadRequest(new { error = $"Unknown ecosystem '{req.Ecosystem}'." });
+        var by = string.IsNullOrWhiteSpace(req.Note) ? _user.Name : $"{_user.Name} ({req.Note})";
+        _scans.ResolveExposure(eco, req.Name, req.Version ?? "", req.AssetId, by);
+        return Ok(new { resolved = true, name = req.Name, version = req.Version, assetId = req.AssetId, resolvedBy = by });
+    }
+
+    /// <summary>Per-project Software Bill of Materials (SBOM). Groups every package this firewall served
+    /// by the PROJECT it was pulled for (from the IT/CI-set X-Advisory-Project header), so a security team
+    /// can produce a per-application bill of materials for ISO 27001 / secure-development evidence: what
+    /// each project depends on, at which versions, whether any are now recalled/vulnerable, and where they
+    /// were installed. Pulls with no project set fall under "(unassigned)". Downloadable as CSV.</summary>
+    [HttpGet("sbom")]
+    public ActionResult Sbom([FromQuery] string? project = null)
+    {
+        var all = _scans.AllExposures();
+        // One SBOM component per {project, ecosystem, name, version}; roll up the machines it's on.
+        var grouped = all
+            .GroupBy(e => (Project: string.IsNullOrWhiteSpace(e.Asset?.Project) ? "(unassigned)" : e.Asset!.Project!,
+                           e.Ecosystem, e.Name, e.Version))
+            .Select(g =>
+            {
+                var first = g.First();
+                var assets = g.Select(e => e.Asset?.Hostname ?? e.Asset?.Ip ?? e.User).Where(x => x is not null).Distinct().ToList();
+                var recalled = g.Any(e => e.Recall && !e.Resolved);
+                return new
+                {
+                    project = g.Key.Project,
+                    name = g.Key.Name, version = g.Key.Version, ecosystem = g.Key.Ecosystem.ToString(),
+                    status = recalled ? "Recalled/Vulnerable" : "Approved",
+                    cve = g.Select(e => e.Cve).FirstOrDefault(c => c is not null),
+                    installedOn = assets.Count, machines = assets,
+                    firstSeen = g.Min(e => e.FirstSeen), lastSeen = g.Max(e => e.LastSeen),
+                };
+            })
+            .Where(c => project is null || string.Equals(c.project, project, StringComparison.OrdinalIgnoreCase))
+            .OrderBy(c => c.project).ThenBy(c => c.name).ThenBy(c => c.version)
+            .ToList();
+
+        // Project summaries for the console's project picker + headline counts.
+        var projects = grouped.GroupBy(c => c.project).Select(g => new
+        {
+            project = g.Key,
+            components = g.Count(),
+            vulnerable = g.Count(c => c.status != "Approved"),
+            ecosystems = g.Select(c => c.ecosystem).Distinct().Count(),
+        }).OrderByDescending(p => p.components).ToList();
+
+        return Ok(new { projectCount = projects.Count, componentCount = grouped.Count, projects, components = grouped });
+    }
+
+    /// <summary>Live gate verdict for one package version — the detail behind a Developer-requests /
+    /// Quarantine row: every triggered CVE/rule with CVSS + KEV, the SBOM, and safe-version advice. Reads
+    /// the stored scan; runs+indexes one on the fly if we don't have it yet (so the drawer is never empty).</summary>
+    [HttpGet("detail/{ecosystem}/{name}/{version}")]
+    public async Task<ActionResult> Detail(string ecosystem, string name, string version, CancellationToken ct)
+    {
+        if (!Enum.TryParse<Ecosystem>(ecosystem, ignoreCase: true, out var eco))
+            return BadRequest(new { error = $"Unknown ecosystem '{ecosystem}'." });
+        var prefix = NexusEcosystems.TryGet(eco, out var d) ? d.Prefix : "";
+        var scan = _scans.Get($"{prefix}-quarantine", name, version)
+                 ?? _scans.Get($"{prefix}-approved", name, version);
+        if (scan is null)
+        {
+            try { scan = await _scans.GetOrScanAsync($"{prefix}-quarantine", new PackageRef(eco, name, version), ct); }
+            catch { /* fall through to a minimal shape */ }
+        }
+        var (near, latest) = _scans.GetSafeVersions(eco, name, version);
+        var revoked = _scans.IsRevoked(eco, name, version);
+        return Ok(new
+        {
+            name, ecosystem = eco.ToString(), version,
+            decision = scan?.Decision, verdict = scan?.Verdict,
+            componentsScanned = scan?.ComponentsScanned ?? 0,
+            critical = scan?.Critical ?? 0, high = scan?.High ?? 0, medium = scan?.Medium ?? 0, low = scan?.Low ?? 0,
+            scannedAt = scan?.ScannedAt,
+            revoked, safeNearest = near, safeLatest = latest,
+            vulnerabilities = (scan?.Vulnerabilities ?? Array.Empty<Advisory.Api.Scan.ScanVuln>()).Select(v => new
+            {
+                v.Id, v.Severity, cvss = v.Cvss, v.Summary, fixedVersion = v.FixedVersion,
+                knownExploited = v.KnownExploited, component = v.Component, impactPath = v.ImpactPath,
+                aliases = v.Aliases, references = v.References,
+            }),
+            sbom = (scan?.Sbom ?? Array.Empty<Advisory.Api.Scan.ScanComponent>()).Select(c => new { c.Name, c.Version, c.Depth, c.Parent, c.Relation }),
+        });
     }
 
     /// <summary>Everything currently in the approved repos — the vetted packages developers can pull.</summary>
@@ -888,10 +1114,14 @@ public class QuarantineController : ControllerBase
         {
             // Denylist it so the bridge does not re-promote it next cycle — revoke is an explicit "no".
             _scans.MarkRevoked(eco, req.Name, req.Version ?? "");
+            // Flag every developer who already installed this version for recall (so an operator revoke of a
+            // vulnerable package produces the same "must be removed" worklist as an automatic re-gate block).
+            var (near, latest) = _scans.GetSafeVersions(eco, req.Name, req.Version ?? "");
+            var affected = _scans.FlagRecall(eco, req.Name, req.Version ?? "", null, near ?? latest);
             // Revoke WINS over any existing exception: remove a matching exception so it can't bounce
             // back to approved. To allow it again, grant a NEW exception after the revoke.
             var removed = await RemoveMatchingExceptionsAsync(req.Name, req.Version ?? "");
-            return Ok(new { revoked = true, name = req.Name, version = req.Version, exceptionsRemoved = removed });
+            return Ok(new { revoked = true, name = req.Name, version = req.Version, exceptionsRemoved = removed, recallFlagged = affected });
         }
         return NotFound(new { error = $"'{req.Name}' not found in {eco} approved repo." });
     }
@@ -1002,12 +1232,21 @@ public class ExceptionsController : ControllerBase
     public async Task<ActionResult> Revoke(string ticket, CancellationToken ct)
     {
         var p = _store.Current;
+        // SYSTEM exceptions are required build-tool bootstraps (setuptools/wheel/pip/build) — pip needs them
+        // to install ANY package. They are permanent and MUST NOT be revocable (the UI hides the button, but
+        // this is the real guard: an API caller can't delete them either). Refuse the whole request if it
+        // would touch one. Note system exceptions have an EMPTY ticket, so a blank/empty ticket is rejected
+        // outright — otherwise RemoveAll(Ticket == "") would wipe all four at once.
+        var targeted = p.Exceptions.Where(e => e.Ticket == ticket).ToList();
+        if (string.IsNullOrEmpty(ticket) || targeted.Any(e => string.Equals(e.ApprovedBy, "system", StringComparison.OrdinalIgnoreCase)))
+            return BadRequest(new { error = "Required system exceptions (build tools like setuptools/wheel/pip/build) cannot be revoked — pip needs them to install any package." });
+
         // Capture the package(s) this exception covered BEFORE removing it, so we can pull them out of
         // approved too — revoking an exception should behave like a package revoke (full undo), not just
         // delete the override.
         var affected = p.Exceptions.Where(e => e.Ticket == ticket).Select(e => e.Package).ToList();
         var updated = ClonePolicy(p);
-        var removed = updated.Exceptions.RemoveAll(e => e.Ticket == ticket);
+        var removed = updated.Exceptions.RemoveAll(e => e.Ticket == ticket && !string.Equals(e.ApprovedBy, "system", StringComparison.OrdinalIgnoreCase));
         await _store.UpdateAsync(updated, _user.Name);
 
         // Pull each affected package out of the approved repos + denylist it (across all firewall
@@ -1055,8 +1294,9 @@ public class ReportsController : ControllerBase
     private readonly IAuditLog _audit;
     private readonly IPolicyStore _policy;
     private readonly Advisory.Api.Catalog.OpRiskService _opRisk;
-    public ReportsController(IAuditLog audit, IPolicyStore policy, Advisory.Api.Catalog.OpRiskService opRisk)
-    { _audit = audit; _policy = policy; _opRisk = opRisk; }
+    private readonly Advisory.Api.Scan.ScanStore _scans;
+    public ReportsController(IAuditLog audit, IPolicyStore policy, Advisory.Api.Catalog.OpRiskService opRisk, Advisory.Api.Scan.ScanStore scans)
+    { _audit = audit; _policy = policy; _opRisk = opRisk; _scans = scans; }
 
     [HttpGet("{type}")]
     public async Task<ActionResult> Get(string type, [FromQuery] string format = "json",
@@ -1068,9 +1308,11 @@ public class ReportsController : ControllerBase
             "violations" => Violations(limit),
             "licenses" or "legal" => await Legal(limit, ct),
             "operational" => await Operational(limit, ct),
+            "recall" or "exposure" => Recall(),
+            "sbom" => Sbom(),
             _ => null,
         };
-        if (rows is null) return BadRequest(new { error = "type must be vulnerabilities | violations | licenses | operational" });
+        if (rows is null) return BadRequest(new { error = "type must be vulnerabilities | violations | licenses | operational | recall | sbom" });
 
         if (format.Equals("csv", StringComparison.OrdinalIgnoreCase))
             return File(System.Text.Encoding.UTF8.GetBytes(ToCsv(rows)), "text/csv", $"{type}-report.csv");
@@ -1112,6 +1354,62 @@ public class ReportsController : ControllerBase
                 ["policyControls"] = string.Join("; ", e.TriggeredRules),
                 ["status"] = ex is not null ? "Waived" : "Open",
                 ["waivedBy"] = ex?.Ticket, ["actor"] = e.Actor, ["detectedAt"] = e.Timestamp,
+            });
+        }
+        return rows;
+    }
+
+    /// <summary>Recall / Exposure report: one row PER AFFECTED ASSET — every endpoint that installed a
+    /// package later revoked, with the enterprise detail to locate the machine (hostname/IP/MAC/OS), its
+    /// owner (developer/dept/tag/os-user), the CVE, the exact remediation, and the removal status + who
+    /// cleared it and when. This is the auditable asset-recall worklist, CSV-exportable like the others.</summary>
+    private List<Dictionary<string, object?>> Recall()
+    {
+        var rows = new List<Dictionary<string, object?>>();
+        foreach (var e in _scans.Recalls(includeResolved: true))
+        {
+            var a = e.Asset;
+            var attributed = !e.User.StartsWith("unattributed:", StringComparison.Ordinal);
+            var uninstall = Advisory.Api.Proxy.EcosystemCommands.Uninstall(e.Ecosystem, e.Name);
+            var install = Advisory.Api.Proxy.EcosystemCommands.Install(e.Ecosystem, e.Name, e.SafeVersion);
+            rows.Add(new()
+            {
+                ["package"] = e.Name, ["version"] = e.Version, ["ecosystem"] = e.Ecosystem.ToString(),
+                ["cve"] = e.Cve, ["safeVersion"] = e.SafeVersion,
+                ["developer"] = attributed ? e.User : null,
+                ["hostname"] = a?.Hostname, ["ip"] = a?.Ip, ["mac"] = a?.Mac, ["os"] = a?.Os,
+                ["osUser"] = a?.OsUser, ["department"] = a?.Department, ["assetTag"] = a?.AssetTag,
+                ["pythonVersion"] = a?.PythonVersion, ["pipVersion"] = a?.PipVersion,
+                ["firstSeen"] = e.FirstSeen, ["lastSeen"] = e.LastSeen, ["pullCount"] = e.PullCount,
+                ["status"] = e.Resolved ? "Removed" : "Open",
+                ["resolvedBy"] = e.ResolvedBy, ["resolvedAt"] = e.ResolvedAt,
+                ["remediationRemove"] = uninstall, ["remediationInstall"] = install,
+            });
+        }
+        return rows;
+    }
+
+    /// <summary>Per-project SBOM report: one row per {project, package, version} the firewall served, with
+    /// its status (Approved / Recalled-Vulnerable), CVE, and where it's installed. The complete per-project
+    /// software bill of materials for ISO 27001 / secure-development evidence. Downloadable as CSV.</summary>
+    private List<Dictionary<string, object?>> Sbom()
+    {
+        var rows = new List<Dictionary<string, object?>>();
+        var grouped = _scans.AllExposures()
+            .GroupBy(e => (Project: string.IsNullOrWhiteSpace(e.Asset?.Project) ? "(unassigned)" : e.Asset!.Project!,
+                           e.Ecosystem, e.Name, e.Version));
+        foreach (var g in grouped.OrderBy(g => g.Key.Project).ThenBy(g => g.Key.Name).ThenBy(g => g.Key.Version))
+        {
+            var machines = g.Select(e => e.Asset?.Hostname ?? e.Asset?.Ip ?? e.User).Where(x => x is not null).Distinct().ToList();
+            var recalled = g.Any(e => e.Recall && !e.Resolved);
+            rows.Add(new()
+            {
+                ["project"] = g.Key.Project,
+                ["package"] = g.Key.Name, ["version"] = g.Key.Version, ["ecosystem"] = g.Key.Ecosystem.ToString(),
+                ["status"] = recalled ? "Recalled/Vulnerable" : "Approved",
+                ["cve"] = g.Select(e => e.Cve).FirstOrDefault(c => c is not null),
+                ["installedOn"] = machines.Count, ["machines"] = string.Join(" ", machines),
+                ["firstSeen"] = g.Min(e => e.FirstSeen), ["lastSeen"] = g.Max(e => e.LastSeen),
             });
         }
         return rows;

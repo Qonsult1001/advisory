@@ -36,8 +36,9 @@ public abstract class TreeWalker
 public class PyPiResolver : TreeWalker, IDependencyResolver
 {
     private readonly HttpClient _http;
+    private readonly ILogger<PyPiResolver> _log;
     public Ecosystem Ecosystem => Ecosystem.PyPI;
-    public PyPiResolver(IHttpClientFactory f) => _http = f.CreateClient("resolve");
+    public PyPiResolver(IHttpClientFactory f, ILogger<PyPiResolver> log) { _http = f.CreateClient("resolve"); _log = log; }
 
     public Task<IReadOnlyList<DepNode>> ResolveAsync(PackageRef root, int maxDepth, CancellationToken ct)
         => WalkAsync(root, Ecosystem.PyPI, maxDepth, ct);
@@ -59,15 +60,46 @@ public class PyPiResolver : TreeWalker, IDependencyResolver
                     // skip optional/extra deps; keep core runtime deps
                     if (spec.Contains("extra ==", StringComparison.OrdinalIgnoreCase)) continue;
                     var name = Regex.Match(spec, @"^[A-Za-z0-9_.\-]+").Value;
-                    var ver = Regex.Match(spec, @"==\s*([0-9][\w.\-]*)").Groups[1].Value;
-                    if (!string.IsNullOrEmpty(name))
-                        deps.Add(new PackageRef(Ecosystem.PyPI, name,
-                            string.IsNullOrEmpty(ver) ? "*" : ver));
+                    if (string.IsNullOrEmpty(name)) continue;
+                    // An exact "==X" pins the version; anything else (a range like ">=1.21,<3", or no
+                    // constraint) means pip would install the NEWEST version that satisfies it. Evaluating
+                    // "*" made OSV return every advisory for the package (old CVEs pip would never hit) and
+                    // blocked safe trees (#170). Resolve unpinned/range deps to the real latest version.
+                    var pinned = Regex.Match(spec, @"==\s*([0-9][\w.\-]*)").Groups[1].Value;
+                    var ver = !string.IsNullOrEmpty(pinned) ? pinned : await LatestVersionAsync(name, ct);
+                    deps.Add(new PackageRef(Ecosystem.PyPI, name, string.IsNullOrEmpty(ver) ? "*" : ver));
                 }
             }
         }
         catch { /* unresolved node still scanned at its own level */ }
         return deps;
+    }
+
+    // The package's newest version, per PyPI's own info.version (what `pip install <name>` resolves to
+    // for an unconstrained/range dependency). Cached per resolve-tree walk to avoid refetching.
+    private readonly Dictionary<string, string?> _latestCache = new(StringComparer.OrdinalIgnoreCase);
+    private async Task<string?> LatestVersionAsync(string name, CancellationToken ct)
+    {
+        if (_latestCache.TryGetValue(name, out var cached)) return cached;
+        string? latest = null;
+        // Two quick attempts — these lightweight metadata lookups sometimes lose the race for the shared
+        // resolve client under load; a transient cancel must not degrade to "*" (which over-flags CVEs).
+        for (var attempt = 0; attempt < 2 && string.IsNullOrEmpty(latest); attempt++)
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(await _http.GetStringAsync($"https://pypi.org/pypi/{name}/json", ct));
+                if (doc.RootElement.TryGetProperty("info", out var info) && info.TryGetProperty("version", out var v))
+                    latest = v.GetString();
+            }
+            catch when (attempt == 0) { /* transient — one quick retry below */ }
+            catch (Exception ex) { _log.LogDebug("resolve latest {Name} failed: {Err}", name, ex.Message); }
+        }
+        // Only cache a SUCCESS. A transient timeout/cancel must not stick as null (which would fall back
+        // to "*" forever on this singleton) — leave it uncached so a later evaluation retries and gets the
+        // real version. Falling back to "*" makes OSV return every advisory for the package (#170).
+        if (!string.IsNullOrEmpty(latest)) { _latestCache[name] = latest; _log.LogDebug("resolve latest {Name} -> {Ver}", name, latest); }
+        return latest;
     }
 }
 

@@ -27,8 +27,13 @@ public class FirewallPolicy
     public List<string> LicenseBlocklist { get; set; } = new() { "GPL-3.0", "AGPL-3.0" };
 
     // --- Supply-chain freshness gate (control: SEC-SC-01) — JFrog Curation's "immature version"
-    //     condition: a version younger than this is blocked (typosquat / hijacked-release window). ---
-    public int MinPackageAgeDays { get; set; } = 14;
+    //     condition: a version younger than this is flagged (typosquat / hijacked-release window). ---
+    public int MinPackageAgeDays { get; set; } = 7;
+    // What to do with a version younger than MinPackageAgeDays. "Notify" (default) FLAGS it but still
+    // allows the install — a brand-new release of a mainstream package (millions of downloads) shouldn't
+    // block real work, and the hard blocks that matter (CVE, malware, KEV) still apply. "Block" enforces
+    // the cooling-off as a hard stop (locked-down orgs). "Disabled" turns the check off entirely.
+    public string PackageAgeAction { get; set; } = "Notify";   // Notify | Block | Disabled
 
     // --- Operational risk gate (control: SEC-OPR-01) — JFrog Xray operational-risk model:
     //     EOL/deprecated, version age, # newer versions, release cadence → High/Medium/Low/None.
@@ -80,11 +85,24 @@ public class FirewallPolicy
             Packages = new() { "PyPI:numpy", "PyPI:pandas", "HuggingFace:sentence-transformers/all-MiniLM-L6-v2" } },
     };
 
-    // --- Time-boxed approved exceptions (replaces the ticket queue) ---
-    public List<PolicyException> Exceptions { get; set; } = new();
+    // --- Time-boxed approved exceptions (replaces the ticket queue). Ships with the universal Python
+    //     BUILD BACKENDS pre-approved: pip needs setuptools/wheel/pip/build to install ANY sdist, they're
+    //     ubiquitous and trivially trusted, and blocking them (e.g. on new-version cooling-off or a
+    //     scorecard dip) breaks essentially every real `pip install`. No expiry (permanent allow); an
+    //     operator can remove them for a locked-down org. ---
+    public List<PolicyException> Exceptions { get; set; } = new()
+    {
+        new PolicyException { Package = "setuptools", Ecosystem = Ecosystem.PyPI, Reason = "Universal Python build backend — required to install any sdist.", ApprovedBy = "system" },
+        new PolicyException { Package = "wheel",      Ecosystem = Ecosystem.PyPI, Reason = "Universal Python build backend — required to build wheels.",     ApprovedBy = "system" },
+        new PolicyException { Package = "pip",        Ecosystem = Ecosystem.PyPI, Reason = "The installer itself — bootstrap dependency.",                  ApprovedBy = "system" },
+        new PolicyException { Package = "build",      Ecosystem = Ecosystem.PyPI, Reason = "PEP 517 build front-end — required for source builds.",         ApprovedBy = "system" },
+    };
 
     // --- Enabled intel plugins, in priority order (pluggable org platform) ---
-    public List<string> EnabledSources { get; set; } = new() { "osv", "kev", "epss", "malware", "artifactory", "vsix-scanner" };
+    // NOTE: "artifactory" is intentionally NOT enabled by default — this platform gates through Nexus, so
+    // an Artifactory source would only ever report "not configured/licensed" (coverage noise). An org that
+    // actually runs Artifactory can add it via the admin Intelligence-sources UI.
+    public List<string> EnabledSources { get; set; } = new() { "osv", "kev", "epss", "malware", "vsix-scanner" };
 
     // --- Admin-managed source configuration (credentials/endpoints) for the built-in source types,
     //     keyed by source key. Credentials entered via the admin UI are stored here (self-hosted). ---
@@ -176,6 +194,12 @@ public class LlmGatewayPolicy
     public bool CaptureTranscripts { get; set; } = true;   // store a REDACTED preview of each prompt
     public bool UseAiDlp { get; set; } = true;             // Groq fallback for free-text PII/code
     public bool UsePrivacyFilter { get; set; } = true;     // on-prem OpenAI Privacy Filter as primary PII engine
+    // REDACT MODE: when true, instead of only blocking, the gateway FORWARDS THE REDACTED PROMPT — every
+    // detected PII/POPIA/PCI span is replaced with [CATEGORY:REDACTED] before the request reaches the AI
+    // provider. This is what lets Cursor / Claude Code / any OpenAI-compatible tool keep working while
+    // sensitive data never leaves the network in the clear. A hard-block rule (e.g. BlockCards) still
+    // blocks; redaction covers everything else that's merely scanned. Off by default (opt-in per site).
+    public bool RedactAndForward { get; set; } = false;
 
     public bool ScanPii { get; set; } = true;
     public bool BlockPii { get; set; } = false;            // notify by default; flip to enforce

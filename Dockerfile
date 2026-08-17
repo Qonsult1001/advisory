@@ -44,4 +44,5 @@ RUN chmod +x /app/said /app/said-orchestrate
 ENV SAID_BIN=/app/said SAID_FILE=/app/Advisory.said ORCH_BIN=/app/said-orchestrate
 ENV ASPNETCORE_URLS=http://+:5000
 EXPOSE 5000
+EXPOSE 8090
 ENTRYPOINT ["dotnet", "Advisory.Api.dll"]

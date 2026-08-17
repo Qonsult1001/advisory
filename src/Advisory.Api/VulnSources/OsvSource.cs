@@ -43,6 +43,16 @@ public class OsvSource : IVulnSource
             foreach (var v in vulns.EnumerateArray())
             {
                 var id = v.GetProperty("id").GetString() ?? "UNKNOWN";
+                // VERSION IDENTITY GUARD. OSV's /v1/query is version-aware, but for some version schemes it
+                // can surface advisories whose affected[] actually scopes a DIFFERENT version of the same
+                // package. Without this check, a clean 4.4.3 inherits 4.4.2's advisory → wrong block. So we
+                // re-verify the queried version is actually AFFECTED before keeping the finding. This applies
+                // to MALICIOUS advisories too: MAL-2025-46974 explicitly affects debug@4.4.2 only, so it must
+                // NOT block the clean 4.4.3. VersionIsAffected keeps an advisory that carries no version
+                // structure at all (can't disprove a version-scoped hit), so a genuinely rangeless malware
+                // report is still honoured.
+                if (!VersionIsAffected(v, eco, pkg.Name, pkg.Version))
+                    continue;
                 var summary = v.TryGetProperty("summary", out var s) ? s.GetString() : null;
                 var (sev, cvss, vector) = ExtractCvss(v);
                 var fixedVersion = ExtractFixedVersion(v, eco, pkg.Name, pkg.Version);
@@ -241,6 +251,73 @@ public class OsvSource : IVulnSource
         var greater = fixes.Where(f => CompareVersions(f, current) > 0).ToList();
         var pool = greater.Count > 0 ? greater : fixes;
         return pool.OrderBy(f => f, Comparer<string>.Create(CompareVersions)).First();
+    }
+
+    /// <summary>
+    /// Is <paramref name="current"/> actually affected by this advisory? Checks the OSV affected[] entry
+    /// scoped to this package: (1) an explicit "versions" list containing current → affected; (2) a
+    /// range where current is >= an "introduced" event and < the matching "fixed"/"last_affected". If the
+    /// advisory carries NEITHER a matching explicit version NOR a range for this package, we treat it as
+    /// NOT affected (fail-open on the block) — a rangeless CVE advisory must not block an arbitrary version.
+    /// Returns true if there's no affected[] block at all (can't scope → don't silently drop a real hit),
+    /// which keeps behaviour safe for advisories that genuinely omit structure but were returned by a
+    /// version-scoped query.
+    /// </summary>
+    private static bool VersionIsAffected(JsonElement v, string eco, string name, string current)
+    {
+        if (!v.TryGetProperty("affected", out var affected) || affected.ValueKind != JsonValueKind.Array)
+            return true;   // no structure to check against — keep (query was version-scoped)
+
+        bool sawScopedEntry = false;
+        foreach (var aff in affected.EnumerateArray())
+        {
+            // Scope to THIS package.
+            if (aff.TryGetProperty("package", out var pkgEl))
+            {
+                var an = pkgEl.TryGetProperty("name", out var n) ? n.GetString() : null;
+                var ae = pkgEl.TryGetProperty("ecosystem", out var e) ? e.GetString() : null;
+                if (an is not null && !string.Equals(an, name, StringComparison.OrdinalIgnoreCase)) continue;
+                if (ae is not null && !string.Equals(ae, eco, StringComparison.OrdinalIgnoreCase)) continue;
+            }
+            sawScopedEntry = true;
+
+            // (1) Explicit versions list — the most precise signal.
+            if (aff.TryGetProperty("versions", out var vers) && vers.ValueKind == JsonValueKind.Array)
+                foreach (var ver in vers.EnumerateArray())
+                    if (string.Equals(ver.GetString(), current, StringComparison.OrdinalIgnoreCase))
+                        return true;
+
+            // (2) Ranges — current is affected if, for some range, introduced <= current < fixed
+            // (or <= last_affected). Events are ordered; we walk them tracking the open interval.
+            if (aff.TryGetProperty("ranges", out var ranges) && ranges.ValueKind == JsonValueKind.Array)
+                foreach (var rng in ranges.EnumerateArray())
+                {
+                    if (!rng.TryGetProperty("events", out var events) || events.ValueKind != JsonValueKind.Array) continue;
+                    bool open = false;
+                    foreach (var ev in events.EnumerateArray())
+                    {
+                        if (ev.TryGetProperty("introduced", out var intro))
+                        {
+                            var iv = intro.GetString() ?? "0";
+                            if (iv == "0" || CompareVersions(current, iv) >= 0) open = true;
+                        }
+                        else if (ev.TryGetProperty("fixed", out var fx))
+                        {
+                            if (open && CompareVersions(current, fx.GetString() ?? "") < 0) return true;
+                            if (CompareVersions(current, fx.GetString() ?? "") >= 0) open = false;
+                        }
+                        else if (ev.TryGetProperty("last_affected", out var la))
+                        {
+                            if (open && CompareVersions(current, la.GetString() ?? "") <= 0) return true;
+                        }
+                    }
+                    // A range with only an "introduced" (no fixed/last_affected) means affected-onwards.
+                    if (open) return true;
+                }
+        }
+        // We found an entry for this package but current matched no explicit version and no range → NOT
+        // affected. If we never saw an entry scoped to this package, keep it (can't disprove).
+        return !sawScopedEntry;
     }
 
     /// <summary>Best-effort version compare: numeric dotted segments, ordinal fallback.</summary>

@@ -20,9 +20,15 @@ services:
 
   api:
     build: { context: ., dockerfile: Dockerfile }
-    ports: ["5000:5000"]
+    # 5000 = admin API/console; 8090 = the package firewall reverse proxy developers point pip/npm at.
+    ports: ["5000:5000", "8090:8090"]
     depends_on: [nexus, mssql]
     environment:
+      - PROXY_PORT=8090
+      # Per-developer tokens for exposure attribution (IT maps opaque token → person). "token=identity"
+      # pairs, comma-separated. IT bakes each token into the pip config it pushes; the dev types nothing.
+      # Demo mapping so the console shows real names on the recall list; replace/extend in production.
+      - PROXY_DEV_TOKENS=demo-alice=alice, demo-bob=bob
       - PolicyPath=/data/policy.json
       - AuditPath=/data/audit.jsonl
       - WormPath=/data/audit.worm.jsonl
@@ -42,6 +48,8 @@ services:
       - NEXUS_PASS=admin123          # change after first Nexus login
       - NEXUS_POLL_SECONDS=30
       - NEXUS_DELETE_ON_HOLD=false   # true => purge held packages instead of leaving them
+      # --- Auto-gate-on-pull: tail Nexus's request.log to gate dev pulls of not-yet-approved packages ---
+      - NEXUS_REQUEST_LOG=/nexus-data/log/request.log
       # --- Entra ID (Azure AD) auth + RBAC. Unset => dev fallback (all roles, local only) ---
       # - AzureAd__Instance=https://login.microsoftonline.com/
       # - AzureAd__TenantId=<tenant-guid>
@@ -77,6 +85,8 @@ services:
       - "./data:/data"
       # The repo itself, mounted READ-ONLY, so the API can see + run scripts/mutate-claude.sh directly.
       - "./:/workspace:ro"
+      # Read-only view of Nexus's data dir so the API can tail request.log (auto-gate-on-pull).
+      - "nexus-data:/nexus-data:ro"
 
   # OpenAI Privacy Filter (openai/privacy-filter, Apache-2.0) running on-prem via transformers.js.
   # Detects + redacts PII in unstructured text; model cached in a volume after first download.

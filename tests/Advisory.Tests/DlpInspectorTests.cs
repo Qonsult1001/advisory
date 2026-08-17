@@ -61,6 +61,19 @@ public class DlpInspectorTests
     }
 
     [Fact]
+    public async System.Threading.Tasks.Task RedactedBody_stays_valid_JSON_after_card_redaction()
+    {
+        var r = await new DlpInspector(new OfflineGroq(), new OfflinePf())
+            .InspectAsync(Body("charge card 4111 1111 1111 1111 now"), All(false));
+        // The forwarded body MUST parse as JSON (Anthropic 400s otherwise).
+        var doc = System.Text.Json.JsonDocument.Parse(r.RedactedBody); // throws if not JSON
+        var content = doc.RootElement.GetProperty("messages")[0].GetProperty("content").GetString();
+        Assert.DoesNotContain("4111111111111111", r.RedactedBody);
+        Assert.Contains("CREDIT_CARD:REDACTED", content);
+        Assert.Equal("gpt-4o", doc.RootElement.GetProperty("model").GetString()); // structure intact
+    }
+
+    [Fact]
     public async System.Threading.Tasks.Task Random_16_digit_order_id_is_not_flagged_as_card()
     {
         // 1234567890123456 fails Luhn → must not be a card finding.

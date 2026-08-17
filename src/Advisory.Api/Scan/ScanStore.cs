@@ -73,11 +73,142 @@ public class ScanStore
     public bool IsRevoked(Ecosystem eco, string name, string version)
         => _revoked.ContainsKey(RevKey(eco, name, version));
 
+    // Safe-version advice for a BLOCKED package (auto-gate-on-pull): "nearest safe" + "latest safe"
+    // versions that actually passed the gate. In-memory observability — the console reads it to turn a
+    // blocked verdict into "use this version instead".
+    private readonly ConcurrentDictionary<string, (string? Nearest, string? Latest)> _safeVersions = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Record the gate-verified safe alternatives for a blocked package version.</summary>
+    public void SetSafeVersions(Ecosystem eco, string name, string version, string? nearest, string? latest)
+        => _safeVersions[RevKey(eco, name, version)] = (nearest, latest);
+
+    /// <summary>The recommended safe versions for a blocked package, or (null,null) if none recorded.</summary>
+    public (string? Nearest, string? Latest) GetSafeVersions(Ecosystem eco, string name, string version)
+        => _safeVersions.TryGetValue(RevKey(eco, name, version), out var v) ? v : (null, null);
+
+    // Recent developer requests discovered by the log tailer (auto-gate-on-pull): who asked for what,
+    // when. Latest-per-{eco,name} so the console can show a developer the fate of what their install
+    // pulled in. In-memory, bounded — pure observability.
+    public record DevRequest(Ecosystem Ecosystem, string Name, string? User, DateTimeOffset RequestedAt);
+    private readonly ConcurrentDictionary<string, DevRequest> _requests = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Record that a developer requested a not-yet-approved package (from the request log).</summary>
+    public void RecordRequest(Ecosystem eco, string name, string? user, DateTimeOffset at)
+        => _requests[$"{eco}|{name}"] = new DevRequest(eco, name, user, at);
+
+    /// <summary>Recent developer requests, newest first (for the console "recent requests" view).</summary>
+    public IReadOnlyList<DevRequest> RecentRequests(int max = 100)
+        => _requests.Values.OrderByDescending(r => r.RequestedAt).Take(max).ToList();
+
+    // ─────────────────────────── exposure ledger (recall / asset tracking) ───────────────────────────
+    // Every artifact the proxy SERVES is recorded as an "exposure": a specific ASSET (developer machine)
+    // now has that exact version installed. Enterprise asset detail is captured at serve time — enough for
+    // a security team to LOCATE the machine (hostname/IP/MAC/OS), identify the OWNER (IT-issued developer,
+    // department, asset tag), and prove REMEDIATION (first/last seen, pull count, resolved-by/at). Network
+    // + request fields (IP, pip/python/os User-Agent) come from the HTTP request itself; the richer machine
+    // fields (hostname/MAC/OS/dept/assetTag) come from the X-Advisory-Asset header IT injects into its
+    // pushed pip config — absent header degrades gracefully to IP+token, missing fields render as unknown.
+    // When a version is LATER revoked, every asset holding it flips to Recall=true → the org-wide "installed
+    // copies that must be removed" worklist. Persisted so a restart never loses an open recall.
+
+    /// <summary>Enterprise asset detail for one endpoint that pulled a package. Every field is optional —
+    /// what's present depends on what IT injects; the proxy fills IP/UA fields itself.</summary>
+    public record AssetInfo(
+        string? Hostname, string? Ip, string? Mac, string? Os,
+        string? Department, string? AssetTag, string? OsUser,
+        string? PipVersion, string? PythonVersion, string? Platform,
+        string? Project = null);   // the project/app this pull belongs to (from IT/CI config) — drives the per-project SBOM
+
+    public record Exposure(
+        Ecosystem Ecosystem, string Name, string Version,
+        string User,                      // IT-issued developer identity (token) or "unattributed:<ip>"
+        AssetInfo Asset,                  // enterprise machine detail
+        DateTimeOffset FirstSeen, DateTimeOffset LastSeen, int PullCount,
+        bool Recall, string? Cve, string? SafeVersion,
+        bool Resolved, string? ResolvedBy, DateTimeOffset? ResolvedAt);
+
+    private readonly ConcurrentDictionary<string, Exposure> _exposure = new(StringComparer.OrdinalIgnoreCase);
+    private string ExposurePath => _path + ".exposure.json";
+
+    // An exposure is keyed by the ASSET, not just the user — the same developer on two machines is two
+    // installed copies to recall. Prefer a stable machine id (hostname → MAC → asset tag → IP), fall back
+    // to the user identity so a tokenless/headerless pull still records a distinct row.
+    private static string AssetId(AssetInfo a, string user)
+        => a.Hostname ?? a.Mac ?? a.AssetTag ?? a.Ip ?? user;
+    private static string ExpKey(Ecosystem eco, string name, string version, string assetId)
+        => $"{eco}|{name}|{version}|{assetId}";
+
+    /// <summary>Record that we served this exact version to this asset (it now has it installed). Idempotent
+    /// per {eco,name,version,asset}; bumps last-seen + pull count and merges any newly-supplied asset fields
+    /// on a re-pull.</summary>
+    public void RecordServed(Ecosystem eco, string name, string version, string user, AssetInfo asset)
+    {
+        var key = ExpKey(eco, name, version, AssetId(asset, user));
+        _exposure.AddOrUpdate(key,
+            _ => new Exposure(eco, name, version, user, asset,
+                              DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, 1,
+                              false, null, null, false, null, null),
+            (_, e) => e with { LastSeen = DateTimeOffset.UtcNow, PullCount = e.PullCount + 1, Asset = MergeAsset(e.Asset, asset) });
+        Persist();
+    }
+
+    // Keep any field we already learned; fill blanks from the new pull (asset detail can arrive over time).
+    // NOTE: every AssetInfo field must appear here — a missing positional arg silently takes the record's
+    // default (null) and WIPES that field on the next pull. Project was previously omitted, so a second
+    // pull for the same asset dropped its project and the SBOM row fell under "(unassigned)".
+    private static AssetInfo MergeAsset(AssetInfo old, AssetInfo now) => new(
+        old.Hostname ?? now.Hostname, old.Ip ?? now.Ip, old.Mac ?? now.Mac, old.Os ?? now.Os,
+        old.Department ?? now.Department, old.AssetTag ?? now.AssetTag, old.OsUser ?? now.OsUser,
+        now.PipVersion ?? old.PipVersion, now.PythonVersion ?? old.PythonVersion, now.Platform ?? old.Platform,
+        // Prefer a project the new pull carries (CI may set it later), else keep what we had.
+        now.Project ?? old.Project);
+
+    /// <summary>A package version was revoked — flag every asset that has it for recall, attaching the CVE
+    /// reason + recommended safe version. Returns the number of assets now on the recall list.</summary>
+    public int FlagRecall(Ecosystem eco, string name, string version, string? cve, string? safeVersion)
+    {
+        int n = 0;
+        foreach (var kv in _exposure)
+        {
+            var e = kv.Value;
+            if (e.Ecosystem == eco && e.Name.Equals(name, StringComparison.OrdinalIgnoreCase) && e.Version == version)
+            {
+                _exposure[kv.Key] = e with { Recall = true, Cve = cve ?? e.Cve, SafeVersion = safeVersion ?? e.SafeVersion,
+                                             Resolved = false, ResolvedBy = null, ResolvedAt = null };
+                n++;
+            }
+        }
+        if (n > 0) Persist();
+        return n;
+    }
+
+    /// <summary>Mark one asset's recall as handled (the vulnerable copy was removed / upgraded), recording
+    /// WHO cleared it and WHEN for the audit trail. Keyed by the asset id captured at serve time.</summary>
+    public void ResolveExposure(Ecosystem eco, string name, string version, string assetId, string resolvedBy)
+    {
+        var key = ExpKey(eco, name, version, assetId);
+        if (_exposure.TryGetValue(key, out var e))
+        { _exposure[key] = e with { Resolved = true, ResolvedBy = resolvedBy, ResolvedAt = DateTimeOffset.UtcNow }; Persist(); }
+    }
+
+    /// <summary>The recall worklist: served-then-revoked copies still on machines, newest last-seen first.</summary>
+    public IReadOnlyList<Exposure> Recalls(bool includeResolved = true)
+        => _exposure.Values.Where(e => e.Recall && (includeResolved || !e.Resolved))
+                           .OrderByDescending(e => e.LastSeen).ToList();
+
+    /// <summary>EVERY served package (the full install inventory), for the per-project SBOM. Unlike Recalls
+    /// this includes clean, still-approved packages — an SBOM is the complete bill of materials, not just
+    /// the problems.</summary>
+    public IReadOnlyList<Exposure> AllExposures()
+        => _exposure.Values.OrderBy(e => e.Asset?.Project ?? "").ThenBy(e => e.Name).ToList();
+
     /// <summary>Wipe all scan history AND revocations (the operator "reset demo data" action).</summary>
     public void ClearAll()
     {
         _scans.Clear();
         _revoked.Clear();
+        _safeVersions.Clear();
+        _exposure.Clear();
         Persist();
     }
 
@@ -203,6 +334,22 @@ public class ScanStore
             }
         }
         catch { /* ignore */ }
+        try
+        {
+            if (File.Exists(ExposurePath))
+            {
+                var exp = JsonSerializer.Deserialize<List<Exposure>>(File.ReadAllText(ExposurePath), Json);
+                if (exp is not null)
+                    foreach (var e in exp)
+                    {
+                        // Skip records written before the asset model existed (Asset would be null) — they
+                        // can't be keyed or displayed; a fresh serve re-records them with full detail.
+                        if (e.Asset is null) continue;
+                        _exposure[ExpKey(e.Ecosystem, e.Name, e.Version, AssetId(e.Asset, e.User))] = e;
+                    }
+            }
+        }
+        catch { /* ignore */ }
     }
 
     private void Persist()
@@ -212,6 +359,8 @@ public class ScanStore
             try { File.WriteAllText(_path, JsonSerializer.Serialize(_scans.Values.ToList(), Json)); }
             catch { /* best-effort persistence */ }
             try { File.WriteAllText(RevokedPath, JsonSerializer.Serialize(_revoked.Keys.ToList(), Json)); }
+            catch { /* best-effort persistence */ }
+            try { File.WriteAllText(ExposurePath, JsonSerializer.Serialize(_exposure.Values.ToList(), Json)); }
             catch { /* best-effort persistence */ }
         }
     }

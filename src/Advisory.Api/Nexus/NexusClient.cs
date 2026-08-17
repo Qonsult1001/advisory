@@ -29,6 +29,7 @@ public interface INexusClient
     Task<IReadOnlyList<NexusComponent>> ListQuarantineAsync(CancellationToken ct);
     Task<byte[]> DownloadAsync(string url, CancellationToken ct);
     Task PromoteAsync(NexusComponent c, byte[] bytes, CancellationToken ct);
+    Task<int> PromoteAllFilesAsync(NexusComponent c, CancellationToken ct);
     Task HoldAsync(NexusComponent c, string reason, CancellationToken ct);
 
     /// <summary>Idempotently create the quarantine proxy + approved hosted pair for an ecosystem
@@ -75,11 +76,26 @@ public class NexusClient : INexusClient
     private readonly string _quarantineSuffix;
     private readonly string _approvedSuffix;
     private readonly bool _deleteOnHold;
+    // Off by default: verified that Nexus 3.93 CE hosted (approved) repos serve dynamically and do NOT
+    // negatively-cache a miss, so a promoted package is served on the very next pull with no invalidation
+    // (the 24h negative-cache lives only on the quarantine PROXY, which developers never hit). Kept as a
+    // defensive switch for a future Nexus version or a proxy-fronted deployment where 404s could stick.
+    private readonly bool _invalidateOnPromote;
 
     // Per-ecosystem repo names follow the convention "<eco>-<suffix>". The prefix comes from the
     // single source of truth (NexusEcosystems, ADR 0001) — no per-ecosystem switch, no PyPI fallback.
     private string QuarantineRepo(Ecosystem e) => $"{NexusEcosystems.Prefix(e)}-{_quarantineSuffix}";
     private string ApprovedRepo(Ecosystem e) => $"{NexusEcosystems.Prefix(e)}-{_approvedSuffix}";
+
+    // A sensible upload filename when the component didn't carry one. Each ecosystem's hosted repo derives
+    // the coordinates from the filename, so the shape matters: pypi sdist, npm tgz, nuget nupkg, go zip.
+    private static string DefaultFileName(NexusComponent c) => c.Ecosystem switch
+    {
+        Ecosystem.npm => $"{(c.Name.Contains('/') ? c.Name[(c.Name.LastIndexOf('/') + 1)..] : c.Name)}-{c.Version}.tgz",
+        Ecosystem.NuGet => $"{c.Name}.{c.Version}.nupkg",
+        Ecosystem.Go => $"{c.Version}.zip",
+        _ => $"{c.Name}-{c.Version}.tar.gz",   // pypi + default
+    };
 
     public bool IsConfigured => !string.IsNullOrWhiteSpace(_baseUrl);
 
@@ -91,6 +107,7 @@ public class NexusClient : INexusClient
         _quarantineSuffix = cfg["NEXUS_QUARANTINE_SUFFIX"] ?? "quarantine";
         _approvedSuffix = cfg["NEXUS_APPROVED_SUFFIX"] ?? "approved";
         _deleteOnHold = cfg.GetValue("NEXUS_DELETE_ON_HOLD", false);
+        _invalidateOnPromote = cfg.GetValue("NEXUS_INVALIDATE_ON_PROMOTE", false);
 
         var user = cfg["NEXUS_USER"]; var pass = cfg["NEXUS_PASS"];
         if (!string.IsNullOrWhiteSpace(user))
@@ -151,7 +168,7 @@ public class NexusClient : INexusClient
             var url = $"{_baseUrl}/service/rest/v1/components?repository={repo}" +
                       (token is null ? "" : $"&continuationToken={token}");
             using var resp = await _http.GetAsync(url, ct);
-            if (!resp.IsSuccessStatusCode) { _log.LogWarning("Nexus list {Status}", (int)resp.StatusCode); break; }
+            if (!resp.IsSuccessStatusCode) { _log.LogWarning("Nexus list {Status} for {Url}", (int)resp.StatusCode, url); break; }
             using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
             foreach (var comp in doc.RootElement.GetProperty("items").EnumerateArray())
             {
@@ -184,6 +201,10 @@ public class NexusClient : INexusClient
                     name = m.Groups["n"].Value;
                     version = m.Groups["v"].Value;
                 }
+                // Nexus's Go format stores the module name WITH surrounding double-quotes (e.g. the component
+                // name is literally `"rsc.io/quote"`). Strip them so downstream matching (revoke, recall,
+                // approved-list) keys on the plain module path the proxy/gate uses.
+                if (eco == Ecosystem.Go) { name = name.Trim('"'); version = version.Trim('"'); }
                 items.Add(new NexusComponent(comp.GetProperty("id").GetString() ?? "",
                     eco, name, version, fileName, sha, dl ?? ""));
             }
@@ -198,14 +219,85 @@ public class NexusClient : INexusClient
     public async Task PromoteAsync(NexusComponent c, byte[] bytes, CancellationToken ct)
     {
         if (!IsConfigured || bytes.Length == 0) return;
-        // Upload to the approved repo (component upload API; PyPI form fields shown).
+        // Upload to the approved repo via the Nexus component API. The asset FIELD NAME and any required
+        // component fields differ per format (verified against /service/rest/v1/formats/<fmt>/upload-specs):
+        // pypi/npm/nuget/rubygems → "<fmt>.asset" (single file); go → "go.asset" + required "go.version".
+        // Using the wrong field silently mis-files (npm/nuget) or hard-400s (go) — this is why non-PyPI
+        // promotion never worked before.
         using var form = new MultipartFormDataContent();
         var file = new ByteArrayContent(bytes);
         file.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
-        form.Add(file, "pypi.asset", c.FileName ?? $"{c.Name}-{c.Version}.tar.gz");
+        var fmt = NexusEcosystems.Format(c.Ecosystem);          // "pypi","npm","nuget","go",…
+        form.Add(file, $"{fmt}.asset", c.FileName ?? DefaultFileName(c));
+        if (c.Ecosystem == Ecosystem.Go)                        // Go hosted requires the module version field
+            form.Add(new StringContent(c.Version), "go.version");
         var url = $"{_baseUrl}/service/rest/v1/components?repository={ApprovedRepo(c.Ecosystem)}";
         using var resp = await _http.PostAsync(url, form, ct);
-        _log.LogInformation("Promote {Pkg} -> {Repo}: {Status}", c.Name, ApprovedRepo(c.Ecosystem), (int)resp.StatusCode);
+        if (!resp.IsSuccessStatusCode)
+        {
+            var err = await resp.Content.ReadAsStringAsync(ct);
+            _log.LogWarning("Promote {Pkg}@{Ver} -> {Repo} FAILED {Status}: {Err}", c.Name, c.Version,
+                ApprovedRepo(c.Ecosystem), (int)resp.StatusCode, err.Length > 300 ? err[..300] : err);
+        }
+        else
+            _log.LogInformation("Promote {Pkg}@{Ver} -> {Repo}: {Status}", c.Name, c.Version, ApprovedRepo(c.Ecosystem), (int)resp.StatusCode);
+
+        // Defensive (off by default — hosted 404s are not sticky on Nexus 3.93 CE): if enabled, bust any
+        // negative cache on the approved repo so a developer's retry sees the freshly-uploaded package.
+        if (_invalidateOnPromote && resp.IsSuccessStatusCode)
+        {
+            try
+            {
+                using var inv = await _http.PostAsync(
+                    $"{_baseUrl}/service/rest/v1/repositories/{ApprovedRepo(c.Ecosystem)}/invalidate-cache", null, ct);
+            }
+            catch { /* best-effort */ }
+        }
+    }
+
+    /// <summary>Promote EVERY distribution file for an approved package VERSION — all platform wheels
+    /// plus the sdist — not just the single artifact the gate happened to scan. pip on a given OS/Python
+    /// needs its matching wheel (e.g. a Windows cp312 wheel), so promoting only one file (which may be a
+    /// macOS wheel) leaves the developer's install 404-ing. Best-effort per file; returns how many landed.
+    /// Currently implemented for PyPI (the simple index lists all files for the version); other ecosystems
+    /// fall back to the single-file PromoteAsync via the bridge.</summary>
+    public async Task<int> PromoteAllFilesAsync(NexusComponent c, CancellationToken ct)
+    {
+        if (!IsConfigured || c.Ecosystem != Ecosystem.PyPI) return 0;
+        var quarantineBase = $"{_baseUrl}/repository/{QuarantineRepo(c.Ecosystem)}";
+        var indexUrl = $"{quarantineBase}/simple/{Uri.EscapeDataString(c.Name.ToLowerInvariant())}/";
+        int promoted = 0;
+        try
+        {
+            var body = await _http.GetStringAsync(indexUrl, ct);
+            // Every file link whose version token matches this component's version.
+            var files = System.Text.RegularExpressions.Regex.Matches(body, "href=\"([^\"]+\\.(?:whl|tar\\.gz))")
+                .Select(m => m.Groups[1].Value.Split('#')[0])
+                .Where(href => PyVersionOf(href, c.Name) == c.Version)
+                .Distinct()
+                .ToList();
+            foreach (var rel in files)
+            {
+                var fileUrl = new Uri(new Uri(indexUrl), rel).ToString();
+                var fileName = rel.Substring(rel.LastIndexOf('/') + 1);
+                try
+                {
+                    var bytes = await DownloadAsync(fileUrl, ct);
+                    if (bytes.Length == 0) continue;
+                    using var form = new MultipartFormDataContent();
+                    var fc = new ByteArrayContent(bytes);
+                    fc.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+                    form.Add(fc, $"{NexusEcosystems.Format(c.Ecosystem)}.asset", fileName);
+                    using var resp = await _http.PostAsync(
+                        $"{_baseUrl}/service/rest/v1/components?repository={ApprovedRepo(c.Ecosystem)}", form, ct);
+                    if (resp.IsSuccessStatusCode) promoted++;
+                }
+                catch (Exception ex) { _log.LogDebug("promote file {File} failed: {Err}", fileName, ex.Message); }
+            }
+            _log.LogInformation("Promoted {Count} file(s) for {Pkg}@{Ver} -> {Repo}", promoted, c.Name, c.Version, ApprovedRepo(c.Ecosystem));
+        }
+        catch (Exception ex) { _log.LogWarning(ex, "PromoteAllFiles {Pkg}@{Ver} failed", c.Name, c.Version); }
+        return promoted;
     }
 
     public async Task HoldAsync(NexusComponent c, string reason, CancellationToken ct)
@@ -234,7 +326,12 @@ public class NexusClient : INexusClient
         var items = await ListComponentsAsync(repo, ct);
         var match = items.FirstOrDefault(c => string.Equals(c.Name, name, StringComparison.OrdinalIgnoreCase)
             && (string.IsNullOrEmpty(version) || string.Equals(c.Version, version, StringComparison.OrdinalIgnoreCase)));
-        if (match is null) return false;
+        if (match is null)
+        {
+            _log.LogWarning("Revoke miss in {Repo}: looking for [{Name}]@[{Ver}]; have [{Have}]", repo, name, version,
+                string.Join(", ", items.Select(i => $"{i.Name}@{i.Version}")));
+            return false;
+        }
         using var resp = await _http.DeleteAsync(
             $"{_baseUrl}/service/rest/v1/components/{Uri.EscapeDataString(match.ComponentId)}", ct);
         _log.LogWarning("REVOKED {Pkg}@{Ver} from {Repo}: {Status}", name, version, repo, (int)resp.StatusCode);
@@ -314,6 +411,11 @@ public class NexusClient : INexusClient
             Ecosystem.RubyGems=> $"{repoBase}/gems/{Uri.EscapeDataString(name)}-{Uri.EscapeDataString(version)}.gem",
             Ecosystem.Composer=> $"{repoBase}/p2/{Uri.EscapeDataString(name)}.json",
             Ecosystem.Maven   => $"{repoBase}/{name.Replace('.', '/').Replace(':', '/')}/",
+            // Go module proxy: the module path keeps its slashes (NOT url-encoded). With a version, hit the
+            // .zip directly; without one, ask @latest to discover the version (resolved in ResolveArtifactUrl).
+            Ecosystem.Go      => string.IsNullOrEmpty(version)
+                ? $"{repoBase}/{GoEscape(name)}/@latest"
+                : $"{repoBase}/{GoEscape(name)}/@v/{Uri.EscapeDataString(version)}.zip",
             _                 => $"{repoBase}/{Uri.EscapeDataString(name)}",
         };
         try
@@ -340,6 +442,44 @@ public class NexusClient : INexusClient
         catch (Exception ex) { _log.LogWarning(ex, "Fetch {Pkg} into quarantine failed.", name); return false; }
     }
 
+    /// <summary>True if a PyPI artifact filename is a pre-release (alpha/beta/rc/dev/preview), which
+    /// `pip install <name>` skips by default (PEP 440). We look for a pre-release marker attached to the
+    /// numeric version, e.g. "wrapt-2.3.0rc1.tar.gz", "foo-1.0b2-py3...", "bar-2.0.dev3-...". A plain
+    /// stable version like "wrapt-1.16.0-cp312...whl" returns false.</summary>
+    /// <summary>Extract the version token from a PyPI artifact filename given the package name — the
+    /// segment right after "&lt;name&gt;-". "idna-3.18-py3-none-any.whl"→"3.18"; "idna-3.18.tar.gz"→"3.18".
+    /// PyPI normalises the name (─/. → -) in filenames, so we match case-insensitively on the leading
+    /// "&lt;name&gt;-" and read up to the next "-" (wheel) or ".tar.gz"/".zip" (sdist).</summary>
+    public static string? PyVersionOf(string fileName, string name)
+    {
+        // Take just the file part (strip any leading path).
+        var f = fileName.Substring(fileName.LastIndexOf('/') + 1);
+        var m = System.Text.RegularExpressions.Regex.Match(f,
+            @"^.+?-(?<ver>[^-]+?)(?:-.*)?\.(?:whl|tar\.gz|zip)$",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        return m.Success ? m.Groups["ver"].Value : null;
+    }
+
+    public static bool IsPyPreRelease(string fileName) =>
+        // A pre-release marker (a/b/c/rc/alpha/beta/dev/pre/preview) sits on the numeric version, either
+        // attached ("2.3.0rc1", "1.0b2") or dot-separated (".dev3", ".pre2"), followed by a number. The
+        // preceding "\d[.]?" anchors it to the version so build tags like "cp312" don't false-positive.
+        System.Text.RegularExpressions.Regex.IsMatch(fileName,
+            @"\d\.?(?:a|b|c|rc|alpha|beta|dev|pre|preview)\d",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+    /// <summary>Escape a Go module path for the module proxy: keep '/' separators, but the Go proxy
+    /// lowercases the path by encoding each uppercase letter X as "!x". Most module paths are already
+    /// lowercase; this handles the occasional uppercase (e.g. github.com/BurntSushi/toml).</summary>
+    private static string GoEscape(string module)
+    {
+        var sb = new System.Text.StringBuilder(module.Length);
+        foreach (var c in module)
+            if (char.IsUpper(c)) { sb.Append('!'); sb.Append(char.ToLowerInvariant(c)); }
+            else sb.Append(c);
+        return sb.ToString();
+    }
+
     /// <summary>
     /// Given a proxy index/metadata response, work out the URL of the actual artifact to pull so Nexus
     /// caches a component. Each registry exposes the artifact differently; unknown ecosystems fall back
@@ -353,14 +493,32 @@ public class NexusClient : INexusClient
             {
                 case Ecosystem.PyPI:
                 {
-                    // simple-index HTML: first wheel/sdist link (prefer one matching the version).
-                    var matches = System.Text.RegularExpressions.Regex.Matches(body, "href=\"([^\"]+\\.(?:whl|tar\\.gz))");
-                    string? rel = null;
-                    foreach (System.Text.RegularExpressions.Match m in matches)
+                    // simple-index HTML lists all files (wheels + sdists) in ASCENDING version order. Choose
+                    // the file `pip install <name>` would install: newest STABLE version (pip skips
+                    // pre-releases by default), and for that version PREFER the wheel (.whl) over the sdist
+                    // (.tar.gz) — a wheel installs with no build step, so we don't drag in build backends
+                    // (setuptools/wheel) that would also need gating. If a version is pinned, match it.
+                    var hrefs = System.Text.RegularExpressions.Regex.Matches(body, "href=\"([^\"]+\\.(?:whl|tar\\.gz))")
+                        .Select(m => m.Groups[1].Value.Split('#')[0]).ToList();
+                    string? Pick(IEnumerable<string> files)
                     {
-                        var href = m.Groups[1].Value.Split('#')[0];
-                        if (!string.IsNullOrEmpty(version) && href.Contains(version)) { rel = href; break; }
-                        rel ??= href;
+                        // Among files for the chosen version, prefer a .whl; else the sdist.
+                        string? whl = null, sdist = null;
+                        foreach (var f in files)
+                            if (f.EndsWith(".whl")) whl ??= f; else sdist ??= f;
+                        return whl ?? sdist;
+                    }
+                    string? rel;
+                    if (!string.IsNullOrEmpty(version))
+                        rel = Pick(hrefs.Where(h => h.Contains(version)));
+                    else
+                    {
+                        // Newest stable = the version of the LAST non-pre-release file; group by that token.
+                        var stable = hrefs.Where(h => !IsPyPreRelease(h)).ToList();
+                        var pool = stable.Count > 0 ? stable : hrefs;   // fall back to pre-releases only if nothing stable
+                        var newest = pool.LastOrDefault();
+                        var ver = newest is null ? null : PyVersionOf(newest, name);
+                        rel = ver is null ? newest : Pick(pool.Where(h => PyVersionOf(h, name) == ver));
                     }
                     return rel is null ? null : new Uri(new Uri(indexUrl.EndsWith('/') ? indexUrl : indexUrl + "/"), rel).ToString();
                 }
@@ -389,6 +547,16 @@ public class NexusClient : INexusClient
                     var verLower = ver.ToLowerInvariant();
                     return $"{repoBase}/v3/content/0/{nameLower}/{verLower}/{nameLower}.{verLower}.nupkg";
                 }
+                case Ecosystem.Go:
+                    // With a known version we already requested the .zip (index URL was the artifact).
+                    // For @latest, the response is {"Version":"vX.Y.Z",...}; resolve its .zip.
+                    if (!string.IsNullOrEmpty(version)) return null;
+                    using (var doc = System.Text.Json.JsonDocument.Parse(body))
+                    {
+                        if (doc.RootElement.TryGetProperty("Version", out var gv) && gv.GetString() is { Length: > 0 } gver)
+                            return $"{repoBase}/{GoEscape(name)}/@v/{Uri.EscapeDataString(gver)}.zip";
+                    }
+                    return null;
                 case Ecosystem.RubyGems:
                     // The index URL IS the .gem download — the first fetch already cached it; nothing more to pull.
                     return null;

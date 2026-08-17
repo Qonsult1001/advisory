@@ -9,7 +9,11 @@ namespace Advisory.Api.Llm;
 public record DlpFinding(string Category, string Rule, string Severity, int Count, string Sample, string Method = "regex");
 
 /// <summary>Result of inspecting an outbound LLM request: findings + original & redacted previews.</summary>
-public record DlpResult(List<DlpFinding> Findings, string RedactedPreview, string OriginalPreview, bool Block, string? BlockReason);
+// RedactedPreview/OriginalPreview are 2000-char samples for the AUDIT LOG. RedactedBody is the FULL
+// request text with every detected PII/card/secret/custom span replaced — this is what the gateway can
+// forward upstream in "redact" mode so sensitive data (POPIA/PCI) is stripped BEFORE it reaches the AI
+// provider, rather than blocking the whole call.
+public record DlpResult(List<DlpFinding> Findings, string RedactedPreview, string OriginalPreview, bool Block, string? BlockReason, string RedactedBody);
 
 /// <summary>
 /// Data-loss-prevention inspector for outbound LLM traffic (the LiteLLM "guardrails" idea, but
@@ -196,8 +200,25 @@ public class DlpInspector
         if (customBlocking.Count > 0) parts.Add($"Custom ({string.Join(",", customBlocking.Distinct())})");
         var reason = block ? string.Join("; ", parts) : null;
 
-        var original = text.Length > 2000 ? text[..2000] + "…" : text;
-        return new DlpResult(findings, Redact(text, findings, pfSpans, cfg.CustomRules), original, block, reason);
+        // The transcript preview should show what the user ACTUALLY TYPED — the last user turn — not the
+        // whole prepended context. Claude Code / Cursor front-load a large <system-reminder> / session-start
+        // block as the first message, so showing all-messages made every record's "original" look identical
+        // (the boilerplate) instead of the real prompt. Detection still runs over the full `text` above;
+        // only the human-readable preview is scoped to the last user message.
+        var previewSrc = LastUserText(body) ?? text;
+        var original = previewSrc.Length > 2000 ? previewSrc[..2000] + "…" : previewSrc;
+        var redactedPreview = Redact(previewSrc, findings, pfSpans, cfg.CustomRules, cap: true);
+        // The FORWARDED body must stay valid JSON. Redacting the raw serialized text can splice a
+        // [CAT:REDACTED] token across a structural quote/brace and corrupt the JSON (Anthropic then
+        // 400s: "not valid JSON at char 0"). So when the body parses as JSON, redact only inside
+        // STRING VALUES and re-serialize — structure is preserved. Non-JSON bodies fall back to the
+        // flat text redaction.
+        // Build the FORWARDED body from the ORIGINAL request JSON (`body`), not the extracted `text` —
+        // `text` is only the message content pulled out by ExtractText for detection. Redacting `body`
+        // JSON-aware keeps the {model, messages, ...} envelope intact so the upstream still gets valid
+        // JSON (redacting `text` would forward the bare message string → Anthropic 400 "invalid JSON").
+        var redactedBody = RedactJsonAware(body, findings, pfSpans, cfg.CustomRules);
+        return new DlpResult(findings, redactedPreview, original, block, reason, redactedBody);
     }
 
     // ---- AI classifier ----
@@ -241,6 +262,37 @@ public class DlpInspector
     // ---- helpers ----
 
     /// <summary>Pull human text out of an OpenAI/Anthropic request body (messages + system + tools).</summary>
+    /// <summary>The text of the LAST user message — what the human actually typed this turn — for the
+    /// transcript preview. Tools like Claude Code / Cursor prepend a large session-start / system-reminder
+    /// block as earlier messages; showing those made every audit row's "original" identical. Returns null
+    /// if the body isn't a chat request or has no user turn, so the caller can fall back to the full text.</summary>
+    private static string? LastUserText(string body)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            if (!doc.RootElement.TryGetProperty("messages", out var msgs) || msgs.ValueKind != JsonValueKind.Array)
+                return null;
+            string? last = null;
+            foreach (var m in msgs.EnumerateArray())
+            {
+                if (!m.TryGetProperty("role", out var role) || role.GetString() != "user") continue;
+                if (!m.TryGetProperty("content", out var c)) continue;
+                if (c.ValueKind == JsonValueKind.String) { last = c.GetString(); continue; }
+                if (c.ValueKind == JsonValueKind.Array)
+                {
+                    var sb = new StringBuilder();
+                    foreach (var part in c.EnumerateArray())
+                        if (part.TryGetProperty("type", out var pt) && pt.GetString() == "text"
+                            && part.TryGetProperty("text", out var t)) sb.AppendLine(t.GetString());
+                    if (sb.Length > 0) last = sb.ToString().TrimEnd();
+                }
+            }
+            return string.IsNullOrWhiteSpace(last) ? null : last;
+        }
+        catch { return null; }
+    }
+
     private static string ExtractText(string body)
     {
         try
@@ -248,10 +300,15 @@ public class DlpInspector
             using var doc = JsonDocument.Parse(body);
             var sb = new StringBuilder();
             var root = doc.RootElement;
-            if (root.TryGetProperty("system", out var sys) && sys.ValueKind == JsonValueKind.String) sb.AppendLine(sys.GetString());
+            // Scan ONLY the USER turns — what the human actually sent to the model. We deliberately do NOT
+            // scan the `system` field or assistant turns: coding tools (Claude Code / Cursor) load a large
+            // session-start / <system-reminder> / skill block there, and its incidental digit runs and text
+            // trip card/ID/phone patterns → false-positive findings on innocent prompts like "whats your
+            // name". The user's own data is in the user turns; that's the exfiltration surface that matters.
             if (root.TryGetProperty("messages", out var msgs) && msgs.ValueKind == JsonValueKind.Array)
                 foreach (var m in msgs.EnumerateArray())
                 {
+                    if (m.TryGetProperty("role", out var role) && role.GetString() != "user") continue; // user turns only
                     if (!m.TryGetProperty("content", out var c)) continue;
                     if (c.ValueKind == JsonValueKind.String) sb.AppendLine(c.GetString());
                     else if (c.ValueKind == JsonValueKind.Array)
@@ -294,9 +351,11 @@ public class DlpInspector
     /// regex/Luhn patterns, the AI Privacy Filter's exact spans (names, addresses, account numbers),
     /// payment cards, and CVV. This is the text the audit log stores as "what would leave".</summary>
     private static string Redact(string text, List<DlpFinding> findings, List<(string Sample, string Rule)>? pfSpans = null,
-        List<(string Name, string Pattern, bool Block)>? customRules = null)
+        List<(string Name, string Pattern, bool Block)>? customRules = null, bool cap = true)
     {
-        var preview = text.Length > 2000 ? text[..2000] + "…" : text;
+        // cap=true → a 2000-char sample for the audit preview. cap=false → the WHOLE text redacted, for the
+        // body we actually forward upstream (so nothing sensitive is truncated-then-forwarded).
+        var preview = cap && text.Length > 2000 ? text[..2000] + "…" : text;
 
         // 0) Custom admin rules — mask their matches too.
         if (customRules is { Count: > 0 })
@@ -329,6 +388,78 @@ public class DlpInspector
                 preview = re.Replace(preview, _ => $"[{rule}:REDACTED]");
         return preview;
     }
+
+    /// <summary>Redact PII while keeping the body valid JSON: parse the tree, apply the same span/
+    /// pattern replacements to each STRING VALUE only, and re-serialize. If the body isn't JSON
+    /// (or parsing/rebuilding fails), fall back to the flat full-text redaction so we never forward
+    /// unredacted content — the failure mode is "over-redact / plain text", never "leak".</summary>
+    private static string RedactJsonAware(string text, List<DlpFinding> findings,
+        List<(string Sample, string Rule)>? pfSpans, List<(string Name, string Pattern, bool Block)>? customRules)
+    {
+        try
+        {
+            var node = System.Text.Json.Nodes.JsonNode.Parse(text);
+            if (node is null) return Redact(text, findings, pfSpans, customRules, cap: false);
+            // Redact ONLY the fields that carry user prompt text — NOT tool schemas, model, metadata, etc.
+            // A chat request (Anthropic/OpenAI) puts the prompt in `messages`; some completion/embedding
+            // shapes use `prompt` or `input`. Redacting the whole tree corrupted `tools[].input_schema`
+            // (a redaction inside a JSON-Schema string made it fail draft-2020-12 validation → 400). System
+            // instructions can also carry PII, so `system` is redacted too. Everything else is left intact.
+            if (node is System.Text.Json.Nodes.JsonObject root)
+            {
+                foreach (var field in new[] { "messages", "prompt", "input", "system" })
+                    if (root[field] is { } sub)
+                        RedactNode(sub, findings, pfSpans, customRules);
+                return root.ToJsonString();
+            }
+            // Body isn't a JSON object (unexpected) — redact the whole node rather than forward raw.
+            RedactNode(node, findings, pfSpans, customRules);
+            return node.ToJsonString();
+        }
+        catch
+        {
+            // Not JSON, or the tree couldn't be rebuilt — redact the raw text instead of forwarding raw.
+            return Redact(text, findings, pfSpans, customRules, cap: false);
+        }
+    }
+
+    private static void RedactNode(System.Text.Json.Nodes.JsonNode node, List<DlpFinding> findings,
+        List<(string Sample, string Rule)>? pfSpans, List<(string Name, string Pattern, bool Block)>? customRules)
+    {
+        switch (node)
+        {
+            case System.Text.Json.Nodes.JsonObject obj:
+                // Copy keys first — we replace values in-place while iterating.
+                foreach (var key in obj.Select(kv => kv.Key).ToList())
+                {
+                    var child = obj[key];
+                    if (child is System.Text.Json.Nodes.JsonValue v &&
+                        v.TryGetValue<string>(out var s) && s is not null)
+                        obj[key] = RedactString(s, findings, pfSpans, customRules);
+                    else if (child is not null)
+                        RedactNode(child, findings, pfSpans, customRules);
+                }
+                break;
+            case System.Text.Json.Nodes.JsonArray arr:
+                for (var i = 0; i < arr.Count; i++)
+                {
+                    var child = arr[i];
+                    if (child is System.Text.Json.Nodes.JsonValue v &&
+                        v.TryGetValue<string>(out var s) && s is not null)
+                        arr[i] = RedactString(s, findings, pfSpans, customRules);
+                    else if (child is not null)
+                        RedactNode(child, findings, pfSpans, customRules);
+                }
+                break;
+        }
+    }
+
+    /// <summary>Apply the full redaction pass to a single JSON string value. Reuses Redact() with
+    /// cap:false; the returned string is stored back as a JSON value, so System.Text.Json handles
+    /// all escaping — the bracketed [CAT:REDACTED] token can never break the surrounding JSON.</summary>
+    private static string RedactString(string value, List<DlpFinding> findings,
+        List<(string Sample, string Rule)>? pfSpans, List<(string Name, string Pattern, bool Block)>? customRules)
+        => Redact(value, findings, pfSpans, customRules, cap: false);
 }
 
 /// <summary>Per-category DLP configuration read from the LLM gateway policy.</summary>

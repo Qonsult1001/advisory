@@ -63,7 +63,12 @@ PROJECT_CONTEXT.md
 tools/said/*
 !tools/said/README.md
 .claude-worker/
+# Bulk vulnerability feeds — we query VulnCheck/MITRE ONLINE (api.vulncheck.com via VULNCHECK_API_KEY),
+# so these local dumps are unused. They are also far over GitHub's 100 MB file limit (mitre-cve.json is
+# ~1.5 GB) and would break any push that included them.
 vulncheck_known_exploited_vulnerabilities.json
+mitre-cve.json
+Vulncheck/
 .tmp-pip-test/
 advisory-rollout-*.tar.gz
 

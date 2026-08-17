@@ -14,6 +14,12 @@ namespace Advisory.Api.Gate;
 public interface IGateEngine
 {
     Task<GateResult> EvaluateAsync(PackageRef pkg, CancellationToken ct);
+    /// <summary>Fast root-only gate for the synchronous reverse-proxy path: runs the per-artifact
+    /// coordinate checks (OSV/malware/KEV/cooling-off) + the content scan of the supplied bytes
+    /// (secrets/IaC/pickle) on the ROOT package only — NO transitive-tree resolution (that's the slow
+    /// part, ~10-30s; it runs async afterwards). Catches known-bad AND hidden-payload threats in ~1-3s so
+    /// pip doesn't time out. Provide pkg.LocalPath pointing at the downloaded artifact for the content scan.</summary>
+    Task<GateResult> EvaluateFastAsync(PackageRef pkg, CancellationToken ct);
 }
 
 /// <summary>
@@ -72,9 +78,17 @@ public class GateEngine : IGateEngine
 
         int hits = 0;
 
-        // SEC-SC-01 — immature version (JFrog Curation "package version is immature").
-        if (p.MinPackageAgeDays > 0 && OpRiskService.VersionAgeDays(risk) is double ageDays && ageDays < p.MinPackageAgeDays)
-        { decision.Value = GateDecision.Block; triggered.Add($"SEC-SC-01:IMMATURE:{ageDays:0}d<{p.MinPackageAgeDays}d"); hits++; }
+        // SEC-SC-01 — immature version (JFrog Curation "package version is immature"). By default this
+        // NOTIFIES (flags but allows) — a fresh release of a mainstream package shouldn't block real work;
+        // the hard blocks (CVE/malware/KEV) still apply. Set PackageAgeAction=Block to enforce a hard stop.
+        if (p.MinPackageAgeDays > 0 && !string.Equals(p.PackageAgeAction, "Disabled", StringComparison.OrdinalIgnoreCase)
+            && OpRiskService.VersionAgeDays(risk) is double ageDays && ageDays < p.MinPackageAgeDays)
+        {
+            if (string.Equals(p.PackageAgeAction, "Block", StringComparison.OrdinalIgnoreCase))
+            { decision.Value = GateDecision.Block; triggered.Add($"SEC-SC-01:IMMATURE:{ageDays:0}d<{p.MinPackageAgeDays}d"); hits++; }
+            else
+                triggered.Add($"SEC-SC-01:IMMATURE-NOTIFY:{ageDays:0}d<{p.MinPackageAgeDays}d");   // flagged, not blocked
+        }
 
         // LEG-LIC-01 — prohibited license (was a declared-but-unenforced policy field).
         if (risk.License is { Length: > 0 } lic &&
@@ -175,7 +189,13 @@ public class GateEngine : IGateEngine
             $"contextual analysis: {reachable} reachable, {notReachable} not-reachable of {collected.Count} findings", 0, false);
     }
 
-    public async Task<GateResult> EvaluateAsync(PackageRef root, CancellationToken ct)
+    public Task<GateResult> EvaluateAsync(PackageRef root, CancellationToken ct)
+        => EvaluateInternalAsync(root, fastRootOnly: false, ct);
+
+    public Task<GateResult> EvaluateFastAsync(PackageRef root, CancellationToken ct)
+        => EvaluateInternalAsync(root, fastRootOnly: true, ct);
+
+    private async Task<GateResult> EvaluateInternalAsync(PackageRef root, bool fastRootOnly, CancellationToken ct)
     {
         var p = _policy.Current;
         var triggered = new List<string>();
@@ -188,8 +208,10 @@ public class GateEngine : IGateEngine
         if (root.Ecosystem == Ecosystem.HuggingFace)
             return await Finish(EvaluateWeights(root, p, triggered), p, ct);
 
-        // Resolve full tree.
-        var resolver = _resolvers.FirstOrDefault(r => r.Ecosystem == root.Ecosystem);
+        // Resolve the tree — UNLESS this is the fast (proxy) path, which evaluates the ROOT only and skips
+        // the slow transitive resolution + per-node OSV walk (that runs async afterwards; each transitive
+        // dep is gated when pip pulls it anyway). The root's own coordinate checks + content scan still run.
+        var resolver = fastRootOnly ? null : _resolvers.FirstOrDefault(r => r.Ecosystem == root.Ecosystem);
         var tree = resolver is not null
             ? await resolver.ResolveAsync(root, p.MaxTreeDepth, ct)
             : new List<DepNode> { new(root, 0, null) };
@@ -215,12 +237,23 @@ public class GateEngine : IGateEngine
         foreach (var node in tree)
         {
             var nodeFindings = new List<Finding>();
-            foreach (var src in _sources.Where(s => p.EnabledSources.Contains(s.Key)))
+            // Query all enabled sources for this node CONCURRENTLY — they're independent network calls
+            // (OSV, malware, artifactory, …). Sequential was a needless multiplier on the gate latency
+            // that the reverse proxy holds pip's connection through. (Enrichment sources kev/epss/vulncheck
+            // are per-CVE and handled below.)
+            var queryable = _sources
+                .Where(s => p.EnabledSources.Contains(s.Key) && s.Key is not ("kev" or "epss" or "vulncheck"))
+                .ToList();
+            var tasks = queryable.Select(async s =>
             {
-                if (!src.IsAvailable) { Merge(src.Key, SourceStatus.NotConfigured, 0, "source not configured", 0); continue; }
-                if (src.Key is "kev" or "epss" or "vulncheck") continue; // enrichment, handled separately (per-CVE)
-                var res = await src.QueryAsync(node.Package, ct);
-                Merge(src.Key, res.Status, res.Findings.Count, res.Detail, res.ElapsedMs);
+                if (!s.IsAvailable) return (s.Key, (SourceResult?)null);
+                var r = await s.QueryAsync(node.Package, ct);
+                return (s.Key, (SourceResult?)r);
+            }).ToList();
+            foreach (var (key, res) in await Task.WhenAll(tasks))
+            {
+                if (res is null) { Merge(key, SourceStatus.NotConfigured, 0, "source not configured", 0); continue; }
+                Merge(key, res.Status, res.Findings.Count, res.Detail, res.ElapsedMs);
                 nodeFindings.AddRange(res.Findings);
             }
 
@@ -251,6 +284,15 @@ public class GateEngine : IGateEngine
                 collected.Add((f with { KnownExploited = f.KnownExploited || kev || vcExploited, EpssScore = epss }, node));
             }
         }
+
+        // EPSS (and vulncheck) are PER-FINDING enrichment: they score an existing CVE, they don't scan the
+        // package. If there were no findings to score, there was nothing for them to do — that's conclusive
+        // coverage (Empty), NOT an unverified gap. Only record a not-run status if they were never touched;
+        // a package with zero findings should not report "epss did not run".
+        if (p.EnabledSources.Contains("epss") && !health.ContainsKey("epss"))
+            Merge("epss", SourceStatus.Empty, 0, "no findings to score (nothing to enrich)", 0);
+        if (p.EnabledSources.Contains("vulncheck") && _vc.IsAvailable && !health.ContainsKey("vulncheck"))
+            Merge("vulncheck", SourceStatus.Empty, 0, "no CVEs to look up", 0);
 
         // Contextual analysis (npm reachability): annotate findings in place, then derive blocks.
         var reachCov = await AnnotateReachability(root, p, collected, Merge, ct);
@@ -287,12 +329,17 @@ public class GateEngine : IGateEngine
         var contentCov = ScanArtifactContent(root, p, triggered, ref decision);
 
         // Curation-style root-package conditions: immature version, license, operational risk, OpenSSF.
+        // No artificial timeout here (we moved away from hard-coded time frames — fragile under
+        // congestion). Latency is kept in check structurally instead: sources run in parallel (above),
+        // the promote is deferred off the request path, and the reverse proxy bounds concurrent fetches
+        // with a semaphore + relies on pip's (IT-raised) client timeout — so the request completes when
+        // the work honestly finishes, however long congestion makes that.
         var decisionBox = new System.Runtime.CompilerServices.StrongBox<GateDecision>(decision);
         var (curationCov, opRisk) = await EvaluateCuration(root, p, triggered, decisionBox, ct);
         decision = decisionBox.Value;
 
         // Build coverage report; decide if required sources were conclusive.
-        var coverage = BuildCoverage(p, health, contentCov, reachCov, curationCov);
+        var coverage = BuildCoverage(p, health, root.Ecosystem, contentCov, reachCov, curationCov);
         if (decision == GateDecision.Allow && p.QuarantineOnUncertainty && !coverage.AllRequiredConclusive)
         {
             decision = GateDecision.Quarantine;
@@ -306,6 +353,7 @@ public class GateEngine : IGateEngine
 
     private static CoverageReport BuildCoverage(FirewallPolicy p,
         Dictionary<string, (SourceStatus status, int findings, string? detail, long ms)> health,
+        Ecosystem ecosystem,
         SourceCoverage? contentScan = null, SourceCoverage? reachScan = null, SourceCoverage? curation = null)
     {
         var rows = new List<SourceCoverage>();
@@ -314,6 +362,11 @@ public class GateEngine : IGateEngine
 
         foreach (var key in p.EnabledSources)
         {
+            // The vsix-scanner only applies to editor extensions (.vsix). For every other ecosystem it is
+            // correctly not run — skip it entirely so it doesn't report as a coverage gap on every pip/npm
+            // install. It's only a real dimension (and a real gap if it fails) for AIEditorExtensions.
+            if (key == "vsix-scanner" && ecosystem != Ecosystem.AIEditorExtensions) continue;
+
             var required = p.RequiredSources.Contains(key);
             var (status, findings, detail, ms) = health.TryGetValue(key, out var h)
                 ? h : (SourceStatus.Skipped, 0, "not queried", 0L);

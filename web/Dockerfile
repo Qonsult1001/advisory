@@ -10,4 +10,7 @@ RUN npm run build
 
 FROM docker.io/library/nginx:alpine
 COPY --from=build /web/dist /usr/share/nginx/html
+# Ship our nginx config: it proxies /api/ and /v1/ to the api container so the console works same-origin
+# (dev AND behind an HTTPS reverse proxy). Without this the console's "/api" calls would 404.
+COPY web/nginx.conf /etc/nginx/conf.d/default.conf
 EXPOSE 80
